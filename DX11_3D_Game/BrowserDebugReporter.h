@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CombatDesign.h"
 #include "PerformanceProfiler.h"
 
 #include <string>
@@ -19,7 +20,7 @@ public:
     void Init(const std::wstring& outputDirectory);
 
     /** @brief 最新のデバッグスナップショットをJSONへ書き出す。 */
-    void Write(const PerformanceSnapshot& snapshot);
+    void Write(const PerformanceSnapshot& snapshot, const Combat::CombatDebugState& combatState);
 
 private:
     void WriteHtml() const;

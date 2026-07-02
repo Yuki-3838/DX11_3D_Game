@@ -11,7 +11,7 @@ void BrowserDebugReporter::Init(const std::wstring& outputDirectory)
     WriteHtml();
 }
 
-void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot)
+void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot, const Combat::CombatDebugState& combatState)
 {
     std::filesystem::create_directories(m_outputDirectory);
     const std::filesystem::path jsonPath = std::filesystem::path(m_outputDirectory) / L"debug_state.json";
@@ -31,6 +31,12 @@ void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot)
     file << "    \"gpuMilliseconds\": " << snapshot.budget.gpuMilliseconds << ",\n";
     file << "    \"systemsMilliseconds\": " << snapshot.budget.systemsMilliseconds << ",\n";
     file << "    \"reserveMilliseconds\": " << snapshot.budget.reserveMilliseconds << "\n";
+    file << "  },\n";
+    file << "  \"combat\": {\n";
+    file << "    \"currentAttackId\": \"" << combatState.currentAttackId << "\",\n";
+    file << "    \"currentPhase\": \"" << Combat::ToString(combatState.currentPhase) << "\",\n";
+    file << "    \"broadPhaseCandidateCount\": " << combatState.broadPhaseCandidateCount << ",\n";
+    file << "    \"confirmedCollisionCount\": " << combatState.confirmedCollisionCount << "\n";
     file << "  }\n";
     file << "}\n";
 }
@@ -71,7 +77,7 @@ void BrowserDebugReporter::WriteHtml() const
         "    async function refresh(){\n"
         "      const data=await fetch('debug_state.json?ts='+Date.now()).then(r=>r.json()).catch(()=>null);\n"
         "      if(!data)return;\n"
-        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds]];\n"
+        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds],['Attack',data.combat.currentAttackId],['Phase',data.combat.currentPhase],['Broad Candidates',data.combat.broadPhaseCandidateCount],['Collisions',data.combat.confirmedCollisionCount]];\n"
         "      document.getElementById('grid').innerHTML=items.map(([k,v])=>`<section class=\"tile\"><div class=\"label\">${labels[k]||k}</div><div class=\"value\">${v}</div></section>`).join('');\n"
         "    }\n"
         "    refresh(); setInterval(refresh, 500);\n"

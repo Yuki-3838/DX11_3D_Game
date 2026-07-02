@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CombatDesign.h"
 #include "PerformanceProfiler.h"
 
 /**
@@ -15,8 +16,14 @@ public:
     /** @brief ImGuiウィンドウに表示する最新フレーム情報を更新する。 */
     void SetPerformanceSnapshot(const PerformanceSnapshot& snapshot) { m_performanceSnapshot = snapshot; }
 
+    /** @brief 戦闘の読み合い状態をImGui表示用に更新する。 */
+    void SetCombatDebugState(const Combat::CombatDebugState& state) { m_combatDebugState = state; }
+
     /** @brief ブラウザ出力やテストから同じデバッグ値を参照する。 */
     const PerformanceSnapshot& GetPerformanceSnapshot() const { return m_performanceSnapshot; }
+
+    /** @brief 現在の戦闘デバッグ状態を返す。 */
+    const Combat::CombatDebugState& GetCombatDebugState() const { return m_combatDebugState; }
 
     /**
      * @brief Dear ImGui描画関数を接続するための拡張点。
@@ -28,4 +35,5 @@ public:
 
 private:
     PerformanceSnapshot m_performanceSnapshot;
+    Combat::CombatDebugState m_combatDebugState;
 };

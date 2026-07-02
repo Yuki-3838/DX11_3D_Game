@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BrowserDebugReporter.h" />
+    <ClInclude Include="CombatDesign.h" />
     <ClInclude Include="DebugOverlay.h" />
     <ClInclude Include="FrameTimer.h" />
     <ClInclude Include="GameApp.h" />
@@ -28,6 +29,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BrowserDebugReporter.cpp" />
+    <ClCompile Include="CombatDesign.cpp" />
     <ClCompile Include="DebugOverlay.cpp" />
     <ClCompile Include="FrameTimer.cpp" />
     <ClCompile Include="GameApp.cpp" />

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BrowserDebugReporter.h"
+#include "CombatDesign.h"
 #include "DebugOverlay.h"
 #include "FrameTimer.h"
 #include "PerformanceProfiler.h"
@@ -76,4 +77,7 @@ private:
     PerformanceProfiler m_profiler;             ///< CPU/GPU予算の見える化用プロファイラ。
     DebugOverlay m_debugOverlay;                 ///< ImGuiに渡すデバッグ表示モデル。
     BrowserDebugReporter m_browserDebugReporter; ///< ブラウザで確認できるJSON/HTML出力。
+    Combat::AttackData m_prototypeAttack;         ///< Phase 1で攻撃フレーム設計を確認するサンプル攻撃。
+    Combat::CombatDebugState m_combatDebugState;  ///< ImGui/ブラウザへ渡す戦闘デバッグ状態。
+    float m_combatPhaseSeconds = 0.0f;            ///< サンプル攻撃のフェーズ進行時間。
 };

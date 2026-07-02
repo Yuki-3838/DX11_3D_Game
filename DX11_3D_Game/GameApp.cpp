@@ -32,6 +32,9 @@ bool GameApp::Init(HINSTANCE hInstance, int windowWidth, int windowHeight)
 
     m_profiler.SetBudgetMilliseconds(4.5, 8.5, 3.0, 0.6);
     m_browserDebugReporter.Init(L"debug");
+    m_prototypeAttack = Combat::CreatePrototypeHeavySlash();
+    m_combatDebugState.currentAttackId = m_prototypeAttack.attackId;
+    m_combatDebugState.currentPhase = Combat::AttackPhase::Anticipation;
     m_frameTimer.Reset();
     m_isRunning = true;
     return true;
@@ -213,8 +216,40 @@ void GameApp::ProcessFrame()
 
 void GameApp::FixedUpdate(float fixedDeltaSeconds)
 {
-    (void)fixedDeltaSeconds;
-    // Phase 2以降で入力、戦闘、AI、物理をここへ接続する。
+    m_combatPhaseSeconds += fixedDeltaSeconds;
+
+    const auto& frames = m_prototypeAttack.frames;
+    const float anticipationEnd = frames.anticipationSeconds;
+    const float activeEnd = anticipationEnd + frames.activeSeconds;
+    const float recoveryEnd = activeEnd + frames.recoverySeconds;
+    const float cooldownEnd = recoveryEnd + frames.cooldownSeconds;
+
+    if (m_combatPhaseSeconds < anticipationEnd)
+    {
+        m_combatDebugState.currentPhase = Combat::AttackPhase::Anticipation;
+        m_combatDebugState.broadPhaseCandidateCount = 0;
+        m_combatDebugState.confirmedCollisionCount = 0;
+    }
+    else if (m_combatPhaseSeconds < activeEnd)
+    {
+        m_combatDebugState.currentPhase = Combat::AttackPhase::Active;
+        m_combatDebugState.broadPhaseCandidateCount = 1;
+        m_combatDebugState.confirmedCollisionCount = 1;
+    }
+    else if (m_combatPhaseSeconds < recoveryEnd)
+    {
+        m_combatDebugState.currentPhase = Combat::AttackPhase::Recovery;
+        m_combatDebugState.broadPhaseCandidateCount = 0;
+        m_combatDebugState.confirmedCollisionCount = 0;
+    }
+    else if (m_combatPhaseSeconds < cooldownEnd)
+    {
+        m_combatDebugState.currentPhase = Combat::AttackPhase::Cooldown;
+    }
+    else
+    {
+        m_combatPhaseSeconds = 0.0f;
+    }
 }
 
 void GameApp::Draw()
@@ -237,7 +272,8 @@ void GameApp::UpdateDebugOutputs()
 {
     const PerformanceSnapshot snapshot = m_profiler.GetSnapshot();
     m_debugOverlay.SetPerformanceSnapshot(snapshot);
-    m_browserDebugReporter.Write(snapshot);
+    m_debugOverlay.SetCombatDebugState(m_combatDebugState);
+    m_browserDebugReporter.Write(snapshot, m_combatDebugState);
 }
 
 LRESULT CALLBACK GameApp::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
