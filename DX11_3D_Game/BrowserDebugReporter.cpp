@@ -36,7 +36,13 @@ void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot, const Comb
     file << "    \"currentAttackId\": \"" << combatState.currentAttackId << "\",\n";
     file << "    \"currentPhase\": \"" << Combat::ToString(combatState.currentPhase) << "\",\n";
     file << "    \"broadPhaseCandidateCount\": " << combatState.broadPhaseCandidateCount << ",\n";
-    file << "    \"confirmedCollisionCount\": " << combatState.confirmedCollisionCount << "\n";
+    file << "    \"confirmedCollisionCount\": " << combatState.confirmedCollisionCount << ",\n";
+    file << "    \"playerHp\": " << combatState.playerHp << ",\n";
+    file << "    \"playerStamina\": " << combatState.playerStamina << ",\n";
+    file << "    \"enemyHp\": " << combatState.enemyHp << ",\n";
+    file << "    \"distanceMeters\": " << combatState.distanceMeters << ",\n";
+    file << "    \"playerGuarding\": " << (combatState.playerGuarding ? "true" : "false") << ",\n";
+    file << "    \"enemyInRecovery\": " << (combatState.enemyInRecovery ? "true" : "false") << "\n";
     file << "  }\n";
     file << "}\n";
 }
@@ -77,7 +83,7 @@ void BrowserDebugReporter::WriteHtml() const
         "    async function refresh(){\n"
         "      const data=await fetch('debug_state.json?ts='+Date.now()).then(r=>r.json()).catch(()=>null);\n"
         "      if(!data)return;\n"
-        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds],['Attack',data.combat.currentAttackId],['Phase',data.combat.currentPhase],['Broad Candidates',data.combat.broadPhaseCandidateCount],['Collisions',data.combat.confirmedCollisionCount]];\n"
+        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds],['Attack',data.combat.currentAttackId],['Phase',data.combat.currentPhase],['Player HP',data.combat.playerHp],['Player Stamina',data.combat.playerStamina],['Enemy HP',data.combat.enemyHp],['Distance m',data.combat.distanceMeters],['Guarding',data.combat.playerGuarding],['Enemy Recovery',data.combat.enemyInRecovery],['Broad Candidates',data.combat.broadPhaseCandidateCount],['Collisions',data.combat.confirmedCollisionCount]];\n"
         "      document.getElementById('grid').innerHTML=items.map(([k,v])=>`<section class=\"tile\"><div class=\"label\">${labels[k]||k}</div><div class=\"value\">${v}</div></section>`).join('');\n"
         "    }\n"
         "    refresh(); setInterval(refresh, 500);\n"

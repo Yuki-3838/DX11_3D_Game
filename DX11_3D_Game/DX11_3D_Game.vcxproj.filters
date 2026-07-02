@@ -39,6 +39,9 @@
     <ClInclude Include="Renderer.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="SimpleDebugRenderer.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BrowserDebugReporter.cpp">
@@ -63,6 +66,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="PerformanceProfiler.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="SimpleDebugRenderer.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
   </ItemGroup>

@@ -24,6 +24,12 @@ void ImGuiDebugAdapter::Render(const DebugOverlay& overlay)
     ImGui::Separator();
     ImGui::Text("Attack %s", combat.currentAttackId.c_str());
     ImGui::Text("Phase %s", Combat::ToString(combat.currentPhase));
+    ImGui::Text("Player HP %d", combat.playerHp);
+    ImGui::Text("Player Stamina %d", combat.playerStamina);
+    ImGui::Text("Enemy HP %d", combat.enemyHp);
+    ImGui::Text("Distance %.2f m", combat.distanceMeters);
+    ImGui::Text("Guarding %s", combat.playerGuarding ? "true" : "false");
+    ImGui::Text("Enemy Recovery %s", combat.enemyInRecovery ? "true" : "false");
     ImGui::Text("Broad Candidates %d", combat.broadPhaseCandidateCount);
     ImGui::Text("Collisions %d", combat.confirmedCollisionCount);
     ImGui::End();

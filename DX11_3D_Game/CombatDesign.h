@@ -134,6 +134,12 @@ struct CombatDebugState
     AttackPhase currentPhase = AttackPhase::Idle;
     int broadPhaseCandidateCount = 0;
     int confirmedCollisionCount = 0;
+    int playerHp = 100;
+    int playerStamina = 100;
+    int enemyHp = 160;
+    float distanceMeters = 3.0f;
+    bool playerGuarding = false;
+    bool enemyInRecovery = false;
 };
 
 /**
