@@ -1,0 +1,22 @@
+PROJECT_NAME           = "DX11_3D_Game"
+PROJECT_BRIEF          = "DX11/C++ one-on-one action prototype"
+OUTPUT_DIRECTORY       = docs/generated
+INPUT                  = DX11_3D_Game docs
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.cpp *.md
+EXTENSION_MAPPING      = md=md
+USE_MDFILE_AS_MAINPAGE = docs/設計概要.md
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+GENERATE_TREEVIEW      = YES
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+INPUT_ENCODING         = UTF-8
+MARKDOWN_SUPPORT       = YES
+QUIET                  = NO
+WARN_IF_UNDOCUMENTED   = NO
