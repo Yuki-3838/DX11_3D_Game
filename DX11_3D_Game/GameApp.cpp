@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <thread>
 
 namespace
 {
@@ -10,6 +12,29 @@ constexpr wchar_t kWindowClassName[] = L"DX11_3D_Game_Window";
 constexpr float kTargetFrameSeconds = 1.0f / 60.0f;
 constexpr float kPrototypeMinX = -0.82f;
 constexpr float kPrototypeMaxX = 0.82f;
+
+using FrameClock = std::chrono::steady_clock;
+
+double WaitForLockedFrameRate(const FrameClock::time_point& frameStart)
+{
+    constexpr auto targetFrameDuration = std::chrono::duration<double>(kTargetFrameSeconds);
+    const FrameClock::time_point targetEnd = frameStart + std::chrono::duration_cast<FrameClock::duration>(targetFrameDuration);
+    const FrameClock::time_point sleepEnd = targetEnd - std::chrono::milliseconds(1);
+    const FrameClock::time_point beforeSleep = FrameClock::now();
+
+    if (beforeSleep < sleepEnd)
+    {
+        std::this_thread::sleep_until(sleepEnd);
+    }
+
+    while (FrameClock::now() < targetEnd)
+    {
+        std::this_thread::yield();
+    }
+
+    const FrameClock::time_point frameEnd = FrameClock::now();
+    return std::chrono::duration<double>(frameEnd - frameStart).count();
+}
 }
 
 GameApp::GameApp() = default;
@@ -208,6 +233,8 @@ bool GameApp::InitDirectX()
 
 void GameApp::ProcessFrame()
 {
+    const FrameClock::time_point frameStart = FrameClock::now();
+
     m_frameTimer.Tick();
     m_profiler.BeginFrame();
 
@@ -222,7 +249,8 @@ void GameApp::ProcessFrame()
     Draw();
     Present();
 
-    m_profiler.EndFrame(m_frameTimer.GetDeltaSeconds(), fixedUpdateCount);
+    const double lockedFrameSeconds = WaitForLockedFrameRate(frameStart);
+    m_profiler.EndFrame(lockedFrameSeconds, fixedUpdateCount);
     UpdateDebugOutputs();
 }
 
