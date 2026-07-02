@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <timeapi.h>
 
 namespace
 {
@@ -19,7 +20,7 @@ double WaitForLockedFrameRate(const FrameClock::time_point& frameStart)
 {
     constexpr auto targetFrameDuration = std::chrono::duration<double>(kTargetFrameSeconds);
     const FrameClock::time_point targetEnd = frameStart + std::chrono::duration_cast<FrameClock::duration>(targetFrameDuration);
-    const FrameClock::time_point sleepEnd = targetEnd - std::chrono::milliseconds(1);
+    const FrameClock::time_point sleepEnd = targetEnd - std::chrono::milliseconds(2);
     const FrameClock::time_point beforeSleep = FrameClock::now();
 
     if (beforeSleep < sleepEnd)
@@ -46,6 +47,8 @@ GameApp::~GameApp()
 
 bool GameApp::Init(HINSTANCE hInstance, int windowWidth, int windowHeight)
 {
+    timeBeginPeriod(1);
+
     m_windowWidth = windowWidth;
     m_windowHeight = windowHeight;
 
@@ -119,6 +122,8 @@ void GameApp::Cleanup()
         DestroyWindow(m_windowHandle);
         m_windowHandle = nullptr;
     }
+
+    timeEndPeriod(1);
 }
 
 bool GameApp::InitWindow(HINSTANCE hInstance)
@@ -370,7 +375,10 @@ void GameApp::Present()
 {
     if (m_swapChain)
     {
-        m_swapChain->Present(1, 0);
+        // The app owns the 60 FPS limiter in ProcessFrame.
+        // Using sync interval 1 here can add a second wait on some systems,
+        // which drops the prototype to roughly 30 FPS.
+        m_swapChain->Present(0, 0);
     }
 }
 
