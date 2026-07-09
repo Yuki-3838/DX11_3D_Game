@@ -1,0 +1,15 @@
+# Sample MTL for Only Tower
+newmtl Bricks-A011
+# Base color / albedo
+map_Kd only_tower_bricks_basecolor.png
+Kd 1.0 1.0 1.0
+# Ambient (often unused, set to white)
+Ka 1.0 1.0 1.0
+# Specular color (kept low)
+Ks 0.02 0.02 0.02
+Ns 8
+# Normal map (some tools use 'bump' or 'map_Bump')
+bump only_tower_bricks_normal.png
+# Extra maps (not standard MTL, but kept here for reference)
+# Roughness: only_tower_bricks_roughness.png
+# AO: only_tower_bricks_ao.png
