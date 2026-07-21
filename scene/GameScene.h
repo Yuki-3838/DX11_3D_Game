@@ -33,10 +33,22 @@ public:
 	void DebugWalls();
 	void DebugEnemies();
 	void DebugPlayerSRT();
+	void DebugCamera();
 	void DebugCombat();
 
 private:
-	Camera m_camera;										// 固定カメラ
+	void UpdateFreeCamera(uint64_t deltatime);
+
+	Camera m_camera;										// デバッグ用フリーカメラ
+	float m_cameraYaw = 0.0f;
+	float m_cameraPitch = -0.05f;
+	float m_cameraMoveSpeed = 20.0f;
+	float m_cameraMouseSensitivity = 0.004f;
+	float m_cameraLookDistance = 80.0f;
+	bool m_cameraFreeControl = true;
+	int m_lastCameraMouseX = 0;
+	int m_lastCameraMouseY = 0;
+	bool m_cameraMouseInitialized = false;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ

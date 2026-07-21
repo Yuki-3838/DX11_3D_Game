@@ -444,6 +444,7 @@ GameScene::GameScene()
 void GameScene::update(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
+	UpdateFreeCamera(deltatime);
 
     if (input.IsKeyTriggered(DIK_R))
     {
@@ -714,6 +715,10 @@ void GameScene::init()
 		});
 
 	DebugUI::RedistDebugFunction([this]() {
+		DebugCamera();
+		});
+
+	DebugUI::RedistDebugFunction([this]() {
 		DebugCombat();
 		});
 
@@ -956,21 +961,114 @@ void GameScene::DebugPlayerSRT()
 	SRT playercurrentsrt = m_player->getSRT();
 	Vector3 scale = playercurrentsrt.scale;
 	Vector3 rot = playercurrentsrt.rot;
+	Vector3 position = playercurrentsrt.pos;
 
 	bool isChanged = false;
 
 	// スライダーが操作されて値が変わった場合、isChanged が true になる
 	isChanged |= ImGui::SliderFloat3("rotation", &rot.x, -PI, PI);
-	isChanged |= ImGui::SliderFloat3("scale", &scale.x, 1.0f, 10.0f);
+	isChanged |= ImGui::SliderFloat3("scale", &scale.x, 0.01f, 10.0f);
+	isChanged |= ImGui::SliderFloat3("position", &position.x, -1000.0f, 1000.0f);
+	if (ImGui::Button("Reset Player Transform"))
+	{
+		position = Vector3(0.0f, 0.0f, 0.0f);
+		rot = Vector3(0.0f, 0.0f, 0.0f);
+		scale = Vector3(1.0f, 1.0f, 1.0f);
+		isChanged = true;
+	}
 
 	if (isChanged)
 	{
+		playercurrentsrt.pos = position;
 		playercurrentsrt.rot = rot;
 		playercurrentsrt.scale = scale;
 
 		m_player->setSRT(playercurrentsrt);
 	}
 
+	ImGui::End();
+}
+
+void GameScene::UpdateFreeCamera(uint64_t deltatime)
+{
+	if (!m_cameraFreeControl)
+	{
+		return;
+	}
+
+	auto& input = CInputManager::GetInstance();
+	const float deltaSeconds = std::min(static_cast<float>(deltatime) * 0.000001f, 0.05f);
+	const float cosPitch = std::cos(m_cameraPitch);
+	Vector3 forward(
+		std::sin(m_cameraYaw) * cosPitch,
+		std::sin(m_cameraPitch),
+		std::cos(m_cameraYaw) * cosPitch);
+	forward.Normalize();
+
+	Vector3 right = Vector3(0.0f, 1.0f, 0.0f).Cross(forward);
+	right.Normalize();
+	const Vector3 up(0.0f, 1.0f, 0.0f);
+	Vector3 position = m_camera.GetPosition();
+	const float move = m_cameraMoveSpeed * deltaSeconds;
+
+	if (!ImGui::GetIO().WantCaptureKeyboard)
+	{
+		if (input.IsKeyPressed(DIK_W)) position += forward * move;
+		if (input.IsKeyPressed(DIK_S)) position -= forward * move;
+		if (input.IsKeyPressed(DIK_D)) position += right * move;
+		if (input.IsKeyPressed(DIK_A)) position -= right * move;
+		if (input.IsKeyPressed(DIK_E)) position += up * move;
+		if (input.IsKeyPressed(DIK_Q)) position -= up * move;
+	}
+
+	const bool rotating = input.IsMousePressed(CInputManager::MOUSE_CENTER) && !ImGui::GetIO().WantCaptureMouse;
+	const int mouseX = input.GetMouseX();
+	const int mouseY = input.GetMouseY();
+	if (!m_cameraMouseInitialized || !rotating)
+	{
+		m_lastCameraMouseX = mouseX;
+		m_lastCameraMouseY = mouseY;
+		m_cameraMouseInitialized = true;
+	}
+	else
+	{
+		m_cameraYaw += static_cast<float>(mouseX - m_lastCameraMouseX) * m_cameraMouseSensitivity;
+		m_cameraPitch -= static_cast<float>(mouseY - m_lastCameraMouseY) * m_cameraMouseSensitivity;
+		m_cameraPitch = std::clamp(m_cameraPitch, -1.5f, 1.5f);
+		m_lastCameraMouseX = mouseX;
+		m_lastCameraMouseY = mouseY;
+	}
+
+	m_camera.SetPosition(position);
+	m_camera.SetLookat(position + forward * m_cameraLookDistance);
+}
+
+void GameScene::DebugCamera()
+{
+	ImGui::Begin("Free Camera");
+	ImGui::Checkbox("Enable free camera", &m_cameraFreeControl);
+	ImGui::Text("Middle drag: look / WASD: move / Q,E: up-down");
+	ImGui::SliderFloat("Move speed", &m_cameraMoveSpeed, 1.0f, 200.0f);
+	ImGui::SliderFloat("Mouse sensitivity", &m_cameraMouseSensitivity, 0.0005f, 0.02f);
+	ImGui::SliderFloat("Look distance", &m_cameraLookDistance, 1.0f, 500.0f);
+
+	Vector3 position = m_camera.GetPosition();
+	if (ImGui::SliderFloat3("Camera position", &position.x, -2000.0f, 2000.0f))
+	{
+		m_camera.SetPosition(position);
+	}
+	ImGui::SliderFloat("Yaw", &m_cameraYaw, -PI, PI);
+	ImGui::SliderFloat("Pitch", &m_cameraPitch, -1.5f, 1.5f);
+
+	if (ImGui::Button("Reset Camera"))
+	{
+		m_cameraYaw = 0.0f;
+		m_cameraPitch = -0.05f;
+		m_cameraMoveSpeed = 20.0f;
+		m_cameraMouseSensitivity = 0.004f;
+		m_cameraLookDistance = 80.0f;
+		m_camera.SetPosition(Vector3(0.0f, 12.0f, -80.0f));
+	}
 	ImGui::End();
 }
 
