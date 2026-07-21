@@ -628,8 +628,8 @@ void GameScene::init()
 	m_combat.Reset();
 	// カメラ(3D)の初期化
 	m_camera.Init();
-	m_camera.SetPosition(Vector3(0, 50, -300));
-	m_camera.SetLookat(Vector3(0, 0, 0));
+	m_camera.SetPosition(Vector3(0, 12, -80));
+	m_camera.SetLookat(Vector3(0, 8, 0));
 	m_camera.SetUP(Vector3(0, 1, 0));
 
 	// ローカル軸表示用線分の初期化
@@ -668,7 +668,7 @@ void GameScene::init()
 	m_player = std::make_unique<player>(this);
 	m_player->init();
 	SRT playerModelSrt = m_player->getSRT();
-	playerModelSrt.scale = Vector3(0.1f, 0.1f, 0.1f);
+	playerModelSrt.scale = Vector3(1.0f, 1.0f, 1.0f);
 	m_player->setSRT(playerModelSrt);
 
 	m_field = std::make_unique<field>(this);
