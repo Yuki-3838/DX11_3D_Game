@@ -51,7 +51,7 @@ public:
         if (it != registry.end()) {
             return it->second();
         }
-		assert(false && "SceneClassFactory: ƒNƒ‰ƒX–¼‚ª“o˜^‚³‚ê‚Ä‚¢‚Ü‚¹‚ñ");   
+        assert(false && "SceneClassFactory: scene class is not registered");
         return nullptr;
     }
 

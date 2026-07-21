@@ -150,6 +150,9 @@ namespace myAssimp{
 			{
 				for (auto& w : bone.weights) {
 					int& idx = g_vertices[subsetid][w.vertexindex].bonecnt;
+					if (idx >= 4) {
+						continue;
+					}
 
 					g_vertices[subsetid][w.vertexindex].BoneName[idx] = w.bonename;	// ボーン名をセット
 					g_vertices[subsetid][w.vertexindex].BoneWeight[idx] = w.weight;	// weight値をセット
@@ -336,7 +339,7 @@ namespace myAssimp{
 	void GetModelData(std::string filename,std::string texturedirectory)
 	{
 		// 日本語パス対策：filesystem::path → UTF-8 string（あなたの utility に合わせる）
-		const std::string srcUtf8 = utility::PathToUtf8String(filename);
+		const std::string& srcUtf8 = filename;
 
 		// シーン情報構築
 		Assimp::Importer importer;

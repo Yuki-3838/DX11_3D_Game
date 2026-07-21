@@ -28,6 +28,82 @@
     <ClInclude Include="PerformanceProfiler.h" />
     <ClInclude Include="Renderer.h" />
     <ClInclude Include="SimpleDebugRenderer.h" />
+    <ClInclude Include="..\system\imgui\imconfig.h" />
+    <ClInclude Include="..\system\imgui\imgui.h" />
+    <ClInclude Include="..\system\imgui\imgui_impl_dx11.h" />
+    <ClInclude Include="..\system\imgui\imgui_impl_win32.h" />
+    <ClInclude Include="..\system\imgui\imgui_internal.h" />
+    <ClInclude Include="..\system\imgui\imstb_rectpack.h" />
+    <ClInclude Include="..\system\imgui\imstb_textedit.h" />
+    <ClInclude Include="..\system\imgui\imstb_truetype.h" />
+    <ClInclude Include="..\Application.h" />
+    <ClInclude Include="..\fpscontrol.h" />
+    <ClInclude Include="..\game.h" />
+    <ClInclude Include="..\main.h" />
+    <ClInclude Include="..\gameobject\enemy.h" />
+    <ClInclude Include="..\gameobject\field.h" />
+    <ClInclude Include="..\gameobject\gameobject.h" />
+    <ClInclude Include="..\gameobject\player.h" />
+    <ClInclude Include="..\gameobject\wall.h" />
+    <ClInclude Include="..\scene\CarScene.h" />
+    <ClInclude Include="..\scene\GameScene.h" />
+    <ClInclude Include="..\scene\WallScene.h" />
+    <ClInclude Include="..\system\AimOrientation.h" />
+    <ClInclude Include="..\system\AssimpPerse.h" />
+    <ClInclude Include="..\system\BoneCombMatrix.h" />
+    <ClInclude Include="..\system\BoxDrawer.h" />
+    <ClInclude Include="..\system\C3DShape.h" />
+    <ClInclude Include="..\system\camera.h" />
+    <ClInclude Include="..\system\CAnimationData.h" />
+    <ClInclude Include="..\system\CAnimationMesh.h" />
+    <ClInclude Include="..\system\CAnimationMeshBlender.h" />
+    <ClInclude Include="..\system\CAnimationObject.h" />
+    <ClInclude Include="..\system\CapsuleDrawer.h" />
+    <ClInclude Include="..\system\CBoxMesh.h" />
+    <ClInclude Include="..\system\CConeMesh.h" />
+    <ClInclude Include="..\system\CCylinderMesh.h" />
+    <ClInclude Include="..\system\CDirectInput.h" />
+    <ClInclude Include="..\system\CIndexBuffer.h" />
+    <ClInclude Include="..\system\CLineMesh.h" />
+    <ClInclude Include="..\system\CMaterial.h" />
+    <ClInclude Include="..\system\CMesh.h" />
+    <ClInclude Include="..\system\CMeshRenderer.h" />
+    <ClInclude Include="..\system\collision.h" />
+    <ClInclude Include="..\system\commontypes.h" />
+    <ClInclude Include="..\system\ConeDrawer.h" />
+    <ClInclude Include="..\system\CPlane.h" />
+    <ClInclude Include="..\system\CPlaneMesh.h" />
+    <ClInclude Include="..\system\CPolar3D.h" />
+    <ClInclude Include="..\system\CShader.h" />
+    <ClInclude Include="..\system\CSphereMesh.h" />
+    <ClInclude Include="..\system\CSprite.h" />
+    <ClInclude Include="..\system\CStaticMesh.h" />
+    <ClInclude Include="..\system\CStaticMeshRenderer.h" />
+    <ClInclude Include="..\system\CTexture.h" />
+    <ClInclude Include="..\system\CTreeNode.h" />
+    <ClInclude Include="..\system\CVertexBuffer.h" />
+    <ClInclude Include="..\system\CylinderDrawer.h" />
+    <ClInclude Include="..\system\DebugUI.h" />
+    <ClInclude Include="..\system\DirectWrite.h" />
+    <ClInclude Include="..\system\dx11helper.h" />
+    <ClInclude Include="..\system\fpscontrol.h" />
+    <ClInclude Include="..\system\Inputmanager.h" />
+    <ClInclude Include="..\system\IScene.h" />
+    <ClInclude Include="..\system\LineDrawer.h" />
+    <ClInclude Include="..\system\meshmanager.h" />
+    <ClInclude Include="..\system\noncopyable.h" />
+    <ClInclude Include="..\system\PlaneDrawer.h" />
+    <ClInclude Include="..\system\RandomEngine.h" />
+    <ClInclude Include="..\system\renderer.h" />
+    <ClInclude Include="..\system\SceneClassFactory.h" />
+    <ClInclude Include="..\system\scenemanager.h" />
+    <ClInclude Include="..\system\OneVsOneCombat.h" />
+    <ClInclude Include="..\system\SphereDrawer.h" />
+    <ClInclude Include="..\system\stb_image.h" />
+    <ClInclude Include="..\system\stb_perlin.h" />
+    <ClInclude Include="..\system\transform.h" />
+    <ClInclude Include="..\system\TriangleDrawer.h" />
+    <ClInclude Include="..\system\utility.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BrowserDebugReporter.cpp" />
@@ -39,6 +115,63 @@
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="PerformanceProfiler.cpp" />
     <ClCompile Include="SimpleDebugRenderer.cpp" />
+    <ClCompile Include="..\system\imgui\imgui.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_demo.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_impl_dx11.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_impl_win32.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\system\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\Application.cpp" />
+    <ClCompile Include="..\main.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="..\game.cpp" />
+    <ClCompile Include="..\gameobject\enemy.cpp" />
+    <ClCompile Include="..\gameobject\field.cpp" />
+    <ClCompile Include="..\gameobject\player.cpp" />
+    <ClCompile Include="..\gameobject\wall.cpp" />
+    <ClCompile Include="..\scene\CarScene.cpp" />
+    <ClCompile Include="..\scene\GameScene.cpp" />
+    <ClCompile Include="..\scene\WallScene.cpp" />
+    <ClCompile Include="..\system\AssimpPerse.cpp" />
+    <ClCompile Include="..\system\BoneCombMatrix.cpp" />
+    <ClCompile Include="..\system\BoxDrawer.cpp" />
+    <ClCompile Include="..\system\C3DShape.cpp" />
+    <ClCompile Include="..\system\camera.cpp" />
+    <ClCompile Include="..\system\CAnimationData.cpp" />
+    <ClCompile Include="..\system\CAnimationMesh.cpp" />
+    <ClCompile Include="..\system\CAnimationMeshBlender.cpp" />
+    <ClCompile Include="..\system\CAnimationObject.cpp" />
+    <ClCompile Include="..\system\CapsuleDrawer.cpp" />
+    <ClCompile Include="..\system\CConeMesh.cpp" />
+    <ClCompile Include="..\system\CCylinderMesh.cpp" />
+    <ClCompile Include="..\system\CLineMesh.cpp" />
+    <ClCompile Include="..\system\collision.cpp" />
+    <ClCompile Include="..\system\ConeDrawer.cpp" />
+    <ClCompile Include="..\system\CPlane.cpp" />
+    <ClCompile Include="..\system\CPlaneMesh.cpp" />
+    <ClCompile Include="..\system\CShader.cpp" />
+    <ClCompile Include="..\system\CSprite.cpp" />
+    <ClCompile Include="..\system\CStaticMesh.cpp" />
+    <ClCompile Include="..\system\CStaticMeshRenderer.cpp" />
+    <ClCompile Include="..\system\CTexture.cpp" />
+    <ClCompile Include="..\system\CylinderDrawer.cpp" />
+    <ClCompile Include="..\system\DebugUI.cpp" />
+    <ClCompile Include="..\system\DirectWrite.cpp" />
+    <ClCompile Include="..\system\dx11helper.cpp" />
+    <ClCompile Include="..\system\LineDrawer.cpp" />
+    <ClCompile Include="..\system\meshmanager.cpp" />
+    <ClCompile Include="..\system\PlaneDrawer.cpp" />
+    <ClCompile Include="..\system\renderer.cpp" />
+    <ClCompile Include="..\system\scenemanager.cpp" />
+    <ClCompile Include="..\system\SimpleMathIdentity.cpp" />
+    <ClCompile Include="..\system\OneVsOneCombat.cpp" />
+    <ClCompile Include="..\system\SphereDrawer.cpp" />
+    <ClCompile Include="..\system\stb.cpp" />
+    <ClCompile Include="..\system\stbperlin.cpp" />
+    <ClCompile Include="..\system\TriangleDrawer.cpp" />
+    <ClCompile Include="..\system\utility.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
@@ -92,19 +225,33 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -113,9 +260,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -124,21 +272,24 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -147,9 +298,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -158,6 +310,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

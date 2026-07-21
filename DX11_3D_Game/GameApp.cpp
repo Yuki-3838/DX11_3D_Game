@@ -7,6 +7,14 @@
 #include <thread>
 #include <timeapi.h>
 
+#if defined(DX11_GAME_ENABLE_IMGUI)
+#include "../system/imgui/imgui.h"
+#include "../system/imgui/imgui_impl_dx11.h"
+#include "../system/imgui/imgui_impl_win32.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+#endif
+
 namespace
 {
 constexpr wchar_t kWindowClassName[] = L"DX11_3D_Game_Window";
@@ -67,6 +75,20 @@ bool GameApp::Init(HINSTANCE hInstance, int windowWidth, int windowHeight)
         return false;
     }
 
+#if defined(DX11_GAME_ENABLE_IMGUI)
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    if (!ImGui_ImplWin32_Init(m_windowHandle) || !ImGui_ImplDX11_Init(m_device.Get(), m_deviceContext.Get()))
+    {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
+    m_imguiInitialized = true;
+#endif
+
     m_profiler.SetBudgetMilliseconds(4.5, 8.5, 3.0, 0.6);
     m_browserDebugReporter.Init(L"debug");
     m_prototypeAttack = Combat::CreatePrototypeHeavySlash();
@@ -107,6 +129,16 @@ void GameApp::Run()
 
 void GameApp::Cleanup()
 {
+#if defined(DX11_GAME_ENABLE_IMGUI)
+    if (m_imguiInitialized)
+    {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        m_imguiInitialized = false;
+    }
+#endif
+
     if (m_deviceContext)
     {
         m_deviceContext->ClearState();
@@ -242,6 +274,7 @@ void GameApp::ProcessFrame()
 
     m_frameTimer.Tick();
     m_profiler.BeginFrame();
+    BeginImGuiFrame();
 
     int fixedUpdateCount = 0;
     while (m_frameTimer.ShouldRunFixedUpdate())
@@ -252,6 +285,7 @@ void GameApp::ProcessFrame()
     }
 
     Draw();
+    RenderImGui();
     Present();
 
     const double lockedFrameSeconds = WaitForLockedFrameRate(frameStart);
@@ -371,6 +405,34 @@ void GameApp::DrawCombatPrototype()
     m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {-0.90f, 0.64f, -0.90f + staminaRatio, 0.59f, {0.20f, 0.68f, 1.0f, 1.0f}});
 }
 
+void GameApp::BeginImGuiFrame()
+{
+#if defined(DX11_GAME_ENABLE_IMGUI)
+    if (!m_imguiInitialized)
+    {
+        return;
+    }
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+#endif
+}
+
+void GameApp::RenderImGui()
+{
+#if defined(DX11_GAME_ENABLE_IMGUI)
+    if (!m_imguiInitialized)
+    {
+        return;
+    }
+
+    m_imguiDebugAdapter.Render(m_debugOverlay);
+    ImGui::Render();
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+#endif
+}
+
 void GameApp::Present()
 {
     if (m_swapChain)
@@ -392,6 +454,13 @@ void GameApp::UpdateDebugOutputs()
 
 LRESULT CALLBACK GameApp::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+#if defined(DX11_GAME_ENABLE_IMGUI)
+    if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam))
+    {
+        return true;
+    }
+#endif
+
     switch (message)
     {
     case WM_DESTROY:

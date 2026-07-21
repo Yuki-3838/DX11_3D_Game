@@ -4,7 +4,7 @@
 #include "DebugOverlay.h"
 
 #if defined(DX11_GAME_ENABLE_IMGUI)
-#include <imgui.h>
+#include "../system/imgui/imgui.h"
 #endif
 
 void ImGuiDebugAdapter::Render(const DebugOverlay& overlay)

@@ -14,7 +14,7 @@
 #include <wrl/client.h>
 
  // リンクすべき外部ライブラリ
-#pragma comment(lib,"directxtk.lib")
+
 #pragma comment(lib,"d3d11.lib")
 
 /**
