@@ -45,8 +45,11 @@ namespace {
 	};
 
 	std::string getfilename(std::string_view filestring) {
-		auto u8name = std::filesystem::path(filestring).filename().u8string();
-		return { reinterpret_cast<const char*>(u8name.data()), u8name.size() };
+		const auto separator = filestring.find_last_of("/\\");
+		const auto filename = separator == std::string_view::npos
+			? filestring
+			: filestring.substr(separator + 1);
+		return std::string(filename);
 	}
 
 	std::array<Load3DInfo, 3> g_loadmodel =
