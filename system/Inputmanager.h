@@ -165,4 +165,5 @@ public:
 	//==========================================================================
 	int GetMouseX() const { return CDirectInput::GetInstance().GetMousePosX(); }
 	int GetMouseY() const { return CDirectInput::GetInstance().GetMousePosY(); }
+	int GetMouseWheelDelta() const { return CDirectInput::GetInstance().GetMouseWheelDelta(); }
 };

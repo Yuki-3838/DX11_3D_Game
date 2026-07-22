@@ -444,7 +444,6 @@ GameScene::GameScene()
 void GameScene::update(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
-	UpdateFreeCamera(deltatime);
 
     if (input.IsKeyTriggered(DIK_R))
     {
@@ -530,6 +529,7 @@ void GameScene::update(uint64_t deltatime)
 
 	resolveEnemyCollisions(m_enemies, m_localbsenemy);
 	resolvePlayerEnemyCollisions(m_player.get(), m_enemies, m_localbsplayer, m_localbsenemy);
+	UpdateThirdPersonCamera(deltatime);
     if (!m_enemies.empty())
     {
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
@@ -632,6 +632,9 @@ void GameScene::init()
 	m_camera.SetPosition(Vector3(0, 12, -80));
 	m_camera.SetLookat(Vector3(0, 8, 0));
 	m_camera.SetUP(Vector3(0, 1, 0));
+	m_cameraYaw = 0.0f;
+	m_cameraPitch = 0.1f;
+	m_cameraLookDistance = 80.0f;
 
 	// ローカル軸表示用線分の初期化
 	m_segments[0] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(100, 0, 0));
@@ -989,7 +992,7 @@ void GameScene::DebugPlayerSRT()
 	ImGui::End();
 }
 
-void GameScene::UpdateFreeCamera(uint64_t deltatime)
+void GameScene::UpdateThirdPersonCamera(uint64_t deltatime)
 {
 	if (!m_cameraFreeControl)
 	{
@@ -997,31 +1000,8 @@ void GameScene::UpdateFreeCamera(uint64_t deltatime)
 	}
 
 	auto& input = CInputManager::GetInstance();
-	const float deltaSeconds = std::min(static_cast<float>(deltatime) * 0.000001f, 0.05f);
-	const float cosPitch = std::cos(m_cameraPitch);
-	Vector3 forward(
-		std::sin(m_cameraYaw) * cosPitch,
-		std::sin(m_cameraPitch),
-		std::cos(m_cameraYaw) * cosPitch);
-	forward.Normalize();
-
-	Vector3 right = Vector3(0.0f, 1.0f, 0.0f).Cross(forward);
-	right.Normalize();
-	const Vector3 up(0.0f, 1.0f, 0.0f);
-	Vector3 position = m_camera.GetPosition();
-	const float move = m_cameraMoveSpeed * deltaSeconds;
-
-	if (!ImGui::GetIO().WantCaptureKeyboard)
-	{
-		if (input.IsKeyPressed(DIK_W)) position += forward * move;
-		if (input.IsKeyPressed(DIK_S)) position -= forward * move;
-		if (input.IsKeyPressed(DIK_D)) position += right * move;
-		if (input.IsKeyPressed(DIK_A)) position -= right * move;
-		if (input.IsKeyPressed(DIK_E)) position += up * move;
-		if (input.IsKeyPressed(DIK_Q)) position -= up * move;
-	}
-
-	const bool rotating = input.IsMousePressed(CInputManager::MOUSE_CENTER) && !ImGui::GetIO().WantCaptureMouse;
+	const bool rotating = input.IsMousePressed(CInputManager::MOUSE_RIGHT) &&
+		(m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse);
 	const int mouseX = input.GetMouseX();
 	const int mouseY = input.GetMouseY();
 	if (!m_cameraMouseInitialized || !rotating)
@@ -1039,35 +1019,49 @@ void GameScene::UpdateFreeCamera(uint64_t deltatime)
 		m_lastCameraMouseY = mouseY;
 	}
 
-	m_camera.SetPosition(position);
-	m_camera.SetLookat(position + forward * m_cameraLookDistance);
+	const float wheel = static_cast<float>(input.GetMouseWheelDelta());
+	if ((m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse) && wheel != 0.0f)
+	{
+		m_cameraLookDistance = std::clamp(m_cameraLookDistance - wheel * 0.02f, 3.0f, 300.0f);
+	}
+
+	const Vector3 target = m_player->getSRT().pos + Vector3(0.0f, m_cameraTargetHeight, 0.0f);
+	const float cosPitch = std::cos(m_cameraPitch);
+	const Vector3 offset(
+		std::sin(m_cameraYaw) * cosPitch * m_cameraLookDistance,
+		std::sin(m_cameraPitch) * m_cameraLookDistance,
+		-std::cos(m_cameraYaw) * cosPitch * m_cameraLookDistance);
+	m_camera.SetPosition(target + offset);
+	m_camera.SetLookat(target);
 }
 
 void GameScene::DebugCamera()
 {
-	ImGui::Begin("Free Camera");
-	ImGui::Checkbox("Enable free camera", &m_cameraFreeControl);
-	ImGui::Text("Middle drag: look / WASD: move / Q,E: up-down");
-	ImGui::SliderFloat("Move speed", &m_cameraMoveSpeed, 1.0f, 200.0f);
-	ImGui::SliderFloat("Mouse sensitivity", &m_cameraMouseSensitivity, 0.0005f, 0.02f);
-	ImGui::SliderFloat("Look distance", &m_cameraLookDistance, 1.0f, 500.0f);
+	ImGui::Begin("Third Person Camera");
+	ImGui::Checkbox("Enable camera control", &m_cameraFreeControl);
+	ImGui::Text("Right drag: orbit around player");
+	ImGui::Text("Mouse wheel: zoom / WASD: move player");
 
-	Vector3 position = m_camera.GetPosition();
-	if (ImGui::SliderFloat3("Camera position", &position.x, -2000.0f, 2000.0f))
-	{
-		m_camera.SetPosition(position);
-	}
-	ImGui::SliderFloat("Yaw", &m_cameraYaw, -PI, PI);
-	ImGui::SliderFloat("Pitch", &m_cameraPitch, -1.5f, 1.5f);
+	const ImVec2 viewportSize(360.0f, 200.0f);
+	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
+	m_cameraViewportHovered = ImGui::IsItemHovered();
+	const ImVec2 viewportMin = ImGui::GetItemRectMin();
+	const ImVec2 viewportMax = ImGui::GetItemRectMax();
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddRectFilled(viewportMin, viewportMax, IM_COL32(28, 34, 42, 255));
+	drawList->AddRect(viewportMin, viewportMax, IM_COL32(90, 150, 220, 255));
+	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 12.0f),
+		IM_COL32(230, 235, 245, 255), "CAMERA VIEWPORT");
+	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 38.0f),
+		IM_COL32(190, 200, 215, 255), "Drag here to orbit the player");
 
 	if (ImGui::Button("Reset Camera"))
 	{
 		m_cameraYaw = 0.0f;
-		m_cameraPitch = -0.05f;
-		m_cameraMoveSpeed = 20.0f;
-		m_cameraMouseSensitivity = 0.004f;
+		m_cameraPitch = 0.1f;
 		m_cameraLookDistance = 80.0f;
-		m_camera.SetPosition(Vector3(0.0f, 12.0f, -80.0f));
+		m_cameraTargetHeight = 8.0f;
+		m_cameraMouseSensitivity = 0.004f;
 	}
 	ImGui::End();
 }

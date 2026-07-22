@@ -164,6 +164,10 @@ public:
 		return m_MousePoint.y;
 	}
 
+	int GetMouseWheelDelta() const {
+		return m_MouseState.lZ;
+	}
+
 	//----------------------------------
 	// マウス左ボタンチェック
 	//----------------------------------

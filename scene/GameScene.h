@@ -37,15 +37,16 @@ public:
 	void DebugCombat();
 
 private:
-	void UpdateFreeCamera(uint64_t deltatime);
+	void UpdateThirdPersonCamera(uint64_t deltatime);
 
 	Camera m_camera;										// デバッグ用フリーカメラ
 	float m_cameraYaw = 0.0f;
 	float m_cameraPitch = -0.05f;
-	float m_cameraMoveSpeed = 20.0f;
 	float m_cameraMouseSensitivity = 0.004f;
 	float m_cameraLookDistance = 80.0f;
+	float m_cameraTargetHeight = 8.0f;
 	bool m_cameraFreeControl = true;
+	bool m_cameraViewportHovered = false;
 	int m_lastCameraMouseX = 0;
 	int m_lastCameraMouseY = 0;
 	bool m_cameraMouseInitialized = false;
