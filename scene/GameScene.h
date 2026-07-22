@@ -47,6 +47,7 @@ private:
 	float m_cameraTargetHeight = 8.0f;
 	bool m_cameraFreeControl = true;
 	bool m_cameraViewportHovered = false;
+	bool m_cameraOrbiting = false;
 	int m_lastCameraMouseX = 0;
 	int m_lastCameraMouseY = 0;
 	bool m_cameraMouseInitialized = false;

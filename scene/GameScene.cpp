@@ -534,7 +534,8 @@ void GameScene::update(uint64_t deltatime)
     {
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
         const bool attackTriggered = input.IsKeyTriggered(DIK_SPACE) || input.IsKeyTriggered(DIK_J);
-        const bool guardPressed = input.IsKeyPressed(DIK_K) || input.IsMousePressed(CInputManager::MOUSE_RIGHT);
+        const bool guardPressed = input.IsKeyPressed(DIK_K) ||
+            (input.IsMousePressed(CInputManager::MOUSE_RIGHT) && !m_cameraOrbiting);
         m_combat.Update(deltatime, m_player->getSRT().pos, enemyPosition, attackTriggered, guardPressed);
     }
 }
@@ -1002,6 +1003,7 @@ void GameScene::UpdateThirdPersonCamera(uint64_t deltatime)
 	auto& input = CInputManager::GetInstance();
 	const bool rotating = input.IsMousePressed(CInputManager::MOUSE_RIGHT) &&
 		(m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse);
+	m_cameraOrbiting = rotating;
 	const int mouseX = input.GetMouseX();
 	const int mouseY = input.GetMouseY();
 	if (!m_cameraMouseInitialized || !rotating)
