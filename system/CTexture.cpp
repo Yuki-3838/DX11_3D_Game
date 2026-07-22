@@ -8,11 +8,11 @@
 bool CTexture::Load(const std::u8string& filename)
 {
 	std::filesystem::path filepath = filename;
-	m_texname = filepath.string();  // UTF-8‚Æ‚µ‚Ä•Û
+	m_texname.assign(reinterpret_cast<const char*>(filename.data()), filename.size()); // UTF-8?????
 
 	std::ifstream ifs(filepath, std::ios::binary | std::ios::ate);
 	if (!ifs) {
-		std::cerr << "Failed to open file: " << filepath << std::endl;
+		std::cerr << "Failed to open file: " << m_texname << std::endl;
 		return false;
 	}
 
@@ -21,7 +21,7 @@ bool CTexture::Load(const std::u8string& filename)
 
 	std::vector<unsigned char> buffer(size);
 	if (!ifs.read(reinterpret_cast<char*>(buffer.data()), size)) {
-		std::cerr << "Failed to read file: " << filepath << std::endl;
+		std::cerr << "Failed to read file: " << m_texname << std::endl;
 		return false;
 	}
 
@@ -30,7 +30,7 @@ bool CTexture::Load(const std::u8string& filename)
 		&m_width, &m_height, &m_bpp, STBI_rgb_alpha);
 
 	if (!pixels) {
-		std::cerr << "Failed to decode image: " << filepath << std::endl;
+		std::cerr << "Failed to decode image: " << m_texname << std::endl;
 		return false;
 	}
 

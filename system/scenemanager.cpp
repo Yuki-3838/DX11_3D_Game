@@ -1,9 +1,11 @@
 #include	"scenemanager.h"
 #include	"SceneClassFactory.h"
+#include	"DebugUI.h"
 
 // “o˜^‚³‚ê‚Ä‚¢‚éƒV[ƒ“‚ð‘S‚Ä”jŠü‚·‚é
 void SceneManager::Dispose() 
 {
+	DebugUI::ClearDebugFunctions();
 	// “o˜^‚³‚ê‚Ä‚¢‚é‚·‚×‚ÄƒV[ƒ“‚ÌI—¹ˆ—
 	for (auto& s : m_scenes) 
 	{
@@ -14,12 +16,30 @@ void SceneManager::Dispose()
 	m_currentSceneName.clear();
 }
 
-void SceneManager::SetCurrentScene(std::string currentscenename) 
+void SceneManager::SetCurrentScene(std::string currentscenename)
 {
-	m_currentSceneName = currentscenename;
-	auto obj = SceneClassFactory::getInstance().create(currentscenename);
-	obj->init();
-	m_scenes[m_currentSceneName] = std::move(obj);
+    if (currentscenename.empty() || currentscenename == m_currentSceneName)
+    {
+        return;
+    }
+
+    auto obj = SceneClassFactory::getInstance().create(currentscenename);
+    if (!obj)
+    {
+        return;
+    }
+
+    DebugUI::ClearDebugFunctions();
+
+    for (auto& scene : m_scenes)
+    {
+        scene.second->dispose();
+    }
+    m_scenes.clear();
+
+    obj->init();
+    m_currentSceneName = std::move(currentscenename);
+    m_scenes.emplace(m_currentSceneName, std::move(obj));
 }
 
 void SceneManager::Init()
@@ -28,13 +48,24 @@ void SceneManager::Init()
 
 void SceneManager::Draw(uint64_t deltatime)
 {
-
-	// Œ»Ý‚ÌƒV[ƒ“‚ð•`‰æ
-	m_scenes[m_currentSceneName]->draw(deltatime);
+    IScene* scene = GetCurrentScene();
+    if (scene)
+    {
+        scene->draw(deltatime);
+    }
 }
 
 void SceneManager::Update(uint64_t deltatime)
 {
-	// Œ»Ý‚ÌƒV[ƒ“‚ðXV
-	m_scenes[m_currentSceneName]->update(deltatime);
+    IScene* scene = GetCurrentScene();
+    if (scene)
+    {
+        scene->update(deltatime);
+    }
+}
+
+IScene* SceneManager::GetCurrentScene()
+{
+    auto it = m_scenes.find(m_currentSceneName);
+    return it != m_scenes.end() ? it->second.get() : nullptr;
 }

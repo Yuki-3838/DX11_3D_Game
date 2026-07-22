@@ -4,6 +4,7 @@
 #include "CombatDesign.h"
 #include "DebugOverlay.h"
 #include "FrameTimer.h"
+#include "ImGuiDebugAdapter.h"
 #include "PerformanceProfiler.h"
 #include "SimpleDebugRenderer.h"
 
@@ -45,6 +46,8 @@ private:
     void FixedUpdate(float fixedDeltaSeconds);
     void Draw();
     void DrawCombatPrototype();
+    void BeginImGuiFrame();
+    void RenderImGui();
     void Present();
     void UpdateDebugOutputs();
 
@@ -67,6 +70,8 @@ private:
     PerformanceProfiler m_profiler;
     DebugOverlay m_debugOverlay;
     BrowserDebugReporter m_browserDebugReporter;
+    ImGuiDebugAdapter m_imguiDebugAdapter;
+    bool m_imguiInitialized = false;
 
     Combat::AttackData m_prototypeAttack;
     Combat::CombatDebugState m_combatDebugState;

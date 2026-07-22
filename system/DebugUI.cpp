@@ -49,6 +49,10 @@ void DebugUI::RedistDebugFunction(std::function<void(void)> f) {
     m_debugfunction.push_back(std::move(f));
 }
 
+void DebugUI::ClearDebugFunctions() {
+    m_debugfunction.clear();
+}
+
 void DebugUI::Render() {
     // ImGuiの新しいフレームを開始
     ImGui_ImplDX11_NewFrame();

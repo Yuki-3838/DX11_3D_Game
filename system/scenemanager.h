@@ -20,6 +20,7 @@ public:
 	static void Init();
 	static void Update(uint64_t deltatime);
 	static void Draw(uint64_t deltatime);
-	static IScene* GetCurrentScene() { return m_scenes[m_currentSceneName].get(); }
+	static IScene* GetCurrentScene();
+	static const std::string& GetCurrentSceneName() { return m_currentSceneName; }
 
 };

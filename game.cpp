@@ -24,17 +24,26 @@ void gameinit()
 	SceneManager::Init();
 
 	//　シーン選択
-	SceneManager::SetCurrentScene("WallScene");
+	SceneManager::SetCurrentScene("GameScene");
 
 }
 
 void gameupdate(uint64_t deltatime)
 {
-	CInputManager::GetInstance().Update();
+    auto& input = CInputManager::GetInstance();
+    input.Update();
 
-	// シーンマネージャの更新
-	SceneManager::Update(deltatime);
+    // F1: 壁・衝突デバッグシーン、F2: 車モデル確認シーン
+    if (input.IsKeyTriggered(DIK_F1))
+    {
+        SceneManager::SetCurrentScene("GameScene");
+    }
+    else if (input.IsKeyTriggered(DIK_F2))
+    {
+        SceneManager::SetCurrentScene("CarScene");
+    }
 
+    SceneManager::Update(deltatime);
 }
 
 void gamedraw(uint64_t deltatime) 
