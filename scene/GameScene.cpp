@@ -1,4 +1,4 @@
-﻿#include    <memory>
+#include    <memory>
 #include	<string>
 #include	<array>
 #include	<cstdint>
@@ -56,7 +56,7 @@ namespace {
 	{
 			Load3DInfo(
 				"furina_player",
-				"assets/model/Furina/【芙宁娜】.pmx",			// モデル名
+				"assets/model/Furina/Furina.pmx",			// ASCII名に変換したプレイヤーモデル
 				"assets/model/Furina/"),				// テクスチャのパス
 
 			Load3DInfo(
@@ -467,7 +467,7 @@ void GameScene::update(uint64_t deltatime)
 	SRT prevPlayerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere prevPlayerSphere = transformBSphere(m_localbsplayer, prevPlayerSrt);
 
-	m_player->update(deltatime);
+	m_player->update(deltatime, m_camera.GetYaw());
 
 	SRT playerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere nextPlayerSphere = transformBSphere(m_localbsplayer, playerSrt);
@@ -534,7 +534,7 @@ void GameScene::update(uint64_t deltatime)
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
         const bool attackTriggered = input.IsKeyTriggered(DIK_SPACE) || input.IsKeyTriggered(DIK_J);
         const bool guardPressed = input.IsKeyPressed(DIK_K) ||
-            (input.IsMousePressed(CInputManager::MOUSE_RIGHT) && !m_cameraOrbiting);
+            (input.IsMousePressed(CInputManager::MOUSE_RIGHT) && !m_camera.IsOrbiting());
         m_combat.Update(deltatime, m_player->getSRT().pos, enemyPosition, attackTriggered, guardPressed);
     }
 }
@@ -629,12 +629,6 @@ void GameScene::init()
 	m_combat.Reset();
 	// カメラ(3D)の初期化
 	m_camera.Init();
-	m_camera.SetPosition(Vector3(0, 12, -80));
-	m_camera.SetLookat(Vector3(0, 8, 0));
-	m_camera.SetUP(Vector3(0, 1, 0));
-	m_cameraYaw = 0.0f;
-	m_cameraPitch = 0.1f;
-	m_cameraLookDistance = 80.0f;
 
 	// ローカル軸表示用線分の初期化
 	m_segments[0] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(100, 0, 0));
@@ -992,76 +986,22 @@ void GameScene::DebugPlayerSRT()
 	ImGui::End();
 }
 
-void GameScene::UpdateThirdPersonCamera(uint64_t deltatime)
-{
-	if (!m_cameraFreeControl)
-	{
-		m_cameraOrbiting = false;
-		return;
-	}
-
-	auto& input = CInputManager::GetInstance();
-	const bool rightMouse = input.IsMousePressed(CInputManager::MOUSE_RIGHT);
-	const bool mouseLook = m_cameraMouseLook &&
-		(m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse);
-	const bool rotating = rightMouse &&
-		(m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse);
-	m_cameraOrbiting = rotating;
-	const int mouseX = input.GetMouseX();
-	const int mouseY = input.GetMouseY();
-	if (!m_cameraMouseInitialized)
-	{
-		m_lastCameraMouseX = mouseX;
-		m_lastCameraMouseY = mouseY;
-		m_cameraMouseInitialized = true;
-	}
-
-	const ImVec2 imguiMouseDelta = ImGui::GetIO().MouseDelta;
-	float mouseDeltaX = imguiMouseDelta.x;
-	float mouseDeltaY = imguiMouseDelta.y;
-	if (std::abs(mouseDeltaX) < 0.001f && std::abs(mouseDeltaY) < 0.001f)
-	{
-		mouseDeltaX = static_cast<float>(mouseX - m_lastCameraMouseX);
-		mouseDeltaY = static_cast<float>(mouseY - m_lastCameraMouseY);
-	}
-	m_lastCameraMouseX = mouseX;
-	m_lastCameraMouseY = mouseY;
-
-	if (mouseLook || rotating)
-	{
-		m_cameraYaw += mouseDeltaX * m_cameraMouseSensitivity;
-		m_cameraPitch -= mouseDeltaY * m_cameraMouseSensitivity;
-		m_cameraPitch = std::clamp(m_cameraPitch, -1.5f, 1.5f);
-	}
-
-	const float wheel = static_cast<float>(input.GetMouseWheelDelta());
-	if ((m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse) && wheel != 0.0f)
-	{
-		m_cameraLookDistance = std::clamp(m_cameraLookDistance - wheel * 0.02f, 3.0f, 300.0f);
-	}
-
-	const Vector3 target = m_player->getSRT().pos + Vector3(0.0f, m_cameraTargetHeight, 0.0f);
-	const float cosPitch = std::cos(m_cameraPitch);
-	const Vector3 offset(
-		std::sin(m_cameraYaw) * cosPitch * m_cameraLookDistance,
-		std::sin(m_cameraPitch) * m_cameraLookDistance,
-		-std::cos(m_cameraYaw) * cosPitch * m_cameraLookDistance);
-	m_camera.SetPosition(target + offset);
-	m_camera.SetLookat(target);
-}
-
 void GameScene::DebugCamera()
 {
 	ImGui::Begin("Third Person Camera");
-	ImGui::Checkbox("Enable camera control", &m_cameraFreeControl);
-	ImGui::Checkbox("Mouse movement controls camera", &m_cameraMouseLook);
+	bool mouseLookEnabled = m_camera.IsMouseLookEnabled();
+	if (ImGui::Checkbox("Mouse movement controls camera", &mouseLookEnabled))
+	{
+		m_camera.SetMouseLookEnabled(mouseLookEnabled);
+	}
+	ImGui::Text("Third-person camera: always active");
 	ImGui::Text("Move mouse: orbit / Right drag also works");
 	ImGui::Text("Mouse wheel: zoom / WASD: move player");
 
 	const ImVec2 viewportSize(360.0f, 200.0f);
 	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
-	m_cameraViewportHovered = ImGui::IsItemHovered();
-	UpdateThirdPersonCamera(0);
+	const bool viewportHovered = ImGui::IsItemHovered();
+	m_camera.Update(m_player->getSRT().pos, viewportHovered);
 	const ImVec2 viewportMin = ImGui::GetItemRectMin();
 	const ImVec2 viewportMax = ImGui::GetItemRectMax();
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -1074,11 +1014,7 @@ void GameScene::DebugCamera()
 
 	if (ImGui::Button("Reset Camera"))
 	{
-		m_cameraYaw = 0.0f;
-		m_cameraPitch = 0.1f;
-		m_cameraLookDistance = 80.0f;
-		m_cameraTargetHeight = 8.0f;
-		m_cameraMouseSensitivity = 0.004f;
+		m_camera.Reset(m_player->getSRT().pos);
 	}
 	ImGui::End();
 }

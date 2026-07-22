@@ -7,25 +7,26 @@
 
 class player : public gameobject {
 	//	
-	/* –{—ˆ‚ÌƒR[ƒh
-	static constexpr float VALUE_MOVE_MODEL = 2.0f;				// ˆÚ“®—Ê
-	static constexpr float VALUE_ROTATE_MODEL = PI * 0.02f;		// ‰ñ“]—Ê
-	static constexpr float RATE_ROTATE_MODEL = 0.4f;			// ‰ñ“]Š„‡	
-	static constexpr float RATE_MOVE_MODEL = 0.2f;					// ˆÚ“®Œ¸ŠŠ„‡
+	/* æœ¬æ¥ã®ã‚³ãƒ¼ãƒ‰
+	static constexpr float VALUE_MOVE_MODEL = 2.0f;				// ç§»å‹•é‡
+	static constexpr float VALUE_ROTATE_MODEL = PI * 0.02f;		// å›è»¢é‡
+	static constexpr float RATE_ROTATE_MODEL = 0.4f;			// å›è»¢å‰²åˆ	
+	static constexpr float RATE_MOVE_MODEL = 0.2f;					// ç§»å‹•æ¸›è¡°å‰²åˆ
 	*/
-	// debug—p
+	// debugç”¨
 public:
-	inline static float VALUE_MOVE_MODEL = 2.0f;				// ˆÚ“®—Ê
-	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// ‰ñ“]—Ê
-	inline static float RATE_ROTATE_MODEL = 0.4f;				// ‰ñ“]Š„‡	
-	inline static float RATE_MOVE_MODEL = 0.2f;					// ˆÚ“®Œ¸ŠŠ„‡
+	inline static float VALUE_MOVE_MODEL = 2.0f;				// ç§»å‹•é‡
+	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// å›è»¢é‡
+	inline static float RATE_ROTATE_MODEL = 0.4f;				// å›è»¢å‰²åˆ	
+	inline static float RATE_MOVE_MODEL = 0.2f;					// ç§»å‹•æ¸›è¡°å‰²åˆ
 
 public:
 	
-	// IScene‚Ìƒ|ƒCƒ“ƒ^‚ğó‚¯æ‚éƒRƒ“ƒXƒgƒ‰ƒNƒ^‚ğ’Ç‰Á
+	// ISceneã®ãƒã‚¤ãƒ³ã‚¿ã‚’å—ã‘å–ã‚‹ã‚³ãƒ³ã‚¹ãƒˆãƒ©ã‚¯ã‚¿ã‚’è¿½åŠ 
 	player(IScene* scene) :gameobject(scene) {}
 
 	void update(uint64_t delta) override;
+	void update(uint64_t delta, float cameraYaw);
 	void draw(uint64_t delta) override;
 	void init() override;
 	void dispose() override;
@@ -43,7 +44,7 @@ public:
 	}
 
 private:
-	Vector3 m_move{0,0,0};				// ˆÚ“®—Ê
-	Vector3 m_destrot{0,0,0};			// –Ú•Wp¨
+	Vector3 m_move{0,0,0};				// ç§»å‹•é‡
+	Vector3 m_destrot{0,0,0};			// ç›®æ¨™å§¿å‹¢
 
 };

@@ -6,7 +6,7 @@
 #include "../system/SceneClassFactory.h"
 #include "../system/IScene.h"
 #include "../system/C3DShape.h"
-#include "../system/Camera.h"
+#include "../system/ThirdPersonCamera.h"
 #include "../system/collision.h"
 #include "../system/OneVsOneCombat.h"
 #include "../gameobject/player.h"
@@ -37,21 +37,7 @@ public:
 	void DebugCombat();
 
 private:
-	void UpdateThirdPersonCamera(uint64_t deltatime);
-
-	Camera m_camera;										// デバッグ用フリーカメラ
-	float m_cameraYaw = 0.0f;
-	float m_cameraPitch = -0.05f;
-	float m_cameraMouseSensitivity = 0.004f;
-	float m_cameraLookDistance = 80.0f;
-	float m_cameraTargetHeight = 8.0f;
-	bool m_cameraFreeControl = true;
-	bool m_cameraMouseLook = true;
-	bool m_cameraViewportHovered = false;
-	bool m_cameraOrbiting = false;
-	int m_lastCameraMouseX = 0;
-	int m_lastCameraMouseY = 0;
-	bool m_cameraMouseInitialized = false;
+	ThirdPersonCamera m_camera;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ

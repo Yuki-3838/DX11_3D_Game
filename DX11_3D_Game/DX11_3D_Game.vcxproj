@@ -54,6 +54,7 @@
     <ClInclude Include="..\system\BoxDrawer.h" />
     <ClInclude Include="..\system\C3DShape.h" />
     <ClInclude Include="..\system\camera.h" />
+    <ClInclude Include="..\system\ThirdPersonCamera.h" />
     <ClInclude Include="..\system\CAnimationData.h" />
     <ClInclude Include="..\system\CAnimationMesh.h" />
     <ClInclude Include="..\system\CAnimationMeshBlender.h" />
@@ -139,6 +140,7 @@
     <ClCompile Include="..\system\BoxDrawer.cpp" />
     <ClCompile Include="..\system\C3DShape.cpp" />
     <ClCompile Include="..\system\camera.cpp" />
+    <ClCompile Include="..\system\ThirdPersonCamera.cpp" />
     <ClCompile Include="..\system\CAnimationData.cpp" />
     <ClCompile Include="..\system\CAnimationMesh.cpp" />
     <ClCompile Include="..\system\CAnimationMeshBlender.cpp" />
@@ -245,7 +247,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -264,7 +266,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -283,7 +285,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -302,7 +304,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
