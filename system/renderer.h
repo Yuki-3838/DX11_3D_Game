@@ -58,8 +58,6 @@ struct VERTEX_3D
     Vector2 TexCoord;            ///< テクスチャ座標
     int BoneIndex[4];            ///< ボーンインデックス（最大4つ） 20231225
     float BoneWeight[4];         ///< 各ボーンのウェイト値 20231225
-    std::string BoneName[4];     ///< 各ボーンの名前 20231226
-    int bonecnt = 0;             ///< 影響を与えるボーン数 20231226
 };
 
 /**
@@ -120,7 +118,8 @@ enum EBlendState {
  * @brief ボーンコンビネーション行列を保持する構造体
  * @date 20240713
  */
-constexpr int MAX_BONE = 400;
+// 物理・衣装ボーンを含むPMXモデル用。400本では脚ボーンが範囲外になる場合がある。
+constexpr int MAX_BONE = 800;
 struct CBBoneCombMatrix {
     DirectX::XMFLOAT4X4 BoneCombMtx[MAX_BONE];  ///< ボーンコンビネーション行列の配列
 };

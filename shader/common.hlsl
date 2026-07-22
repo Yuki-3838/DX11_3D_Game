@@ -41,7 +41,7 @@ cbuffer LightBuffer : register(b4)
     LIGHT Light;
 };
 
-#define MAX_BONE 400
+#define MAX_BONE 800
 cbuffer BoneMatrixBuffer : register(b5)
 {
     matrix BoneMatrix[MAX_BONE];

@@ -6,6 +6,8 @@
 #include	<string_view>
 #include	<utility>
 #include	<vector>
+#include	<unordered_map>
+#include	<initializer_list>
 #include	<cmath>
 #include	"GameScene.h"
 #include	"../system/CShader.h"
@@ -69,6 +71,8 @@ namespace {
 				"assets/model/car002.x",			// モデル名
 				"assets/model/"),					// テクスチャのパス
 	};
+
+	constexpr float ENEMY_MODEL_SCALE = 0.7f;
 
 	// 壁データ
 	struct WallData {
@@ -452,6 +456,7 @@ void GameScene::update(uint64_t deltatime)
         playerReset.pos = Vector3(0, 0, 0);
         playerReset.rot = Vector3(0, 0, 0);
         m_player->setSRT(playerReset);
+		m_player->resetMotion();
         if (!m_enemies.empty())
         {
             SRT enemyReset = m_enemies.front()->getSRT();
@@ -493,6 +498,7 @@ void GameScene::update(uint64_t deltatime)
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		m_player->setVel(Vector3(0, 0, 0));
 	}
+	UpdatePlayerBonePose();
 
 	for (auto& e : m_enemies) {
 		SRT prevEnemySrt = e->getSRT();
@@ -573,14 +579,16 @@ void GameScene::draw(uint64_t deltatime)
 
 	// モデルを描画
 	{
-		// プレイヤモデルの姿勢情報を取得
-		SRT srt = m_player->getSRT();
+	// プレイヤモデルの姿勢情報を取得
+		SRT srt = m_player->getRenderSRT();
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
 		Renderer::SetWorldMatrix(&worldmtx);
 
-		ShaderManager::Get<CShader>("Shader3D")->SetGPU();					// シェーダをセット
-		MeshManager::getRenderer<CStaticMeshRenderer>(g_loadmodel[0].meshid)->Draw();	// メッシュを描画
+		ShaderManager::Get<CShader>("Shader3DSkin")->SetGPU();
+		m_playerBoneComb.Update();
+		m_playerBoneComb.SetGPU();
+		m_playerAnimationMesh->Draw();
 	}
 
 	// 敵を描画
@@ -590,7 +598,11 @@ void GameScene::draw(uint64_t deltatime)
 		worldmtx = srt.GetMatrix();
 		Renderer::SetWorldMatrix(&worldmtx);
 
-		MeshManager::getRenderer<CStaticMeshRenderer>("car001.x")->Draw();
+		ShaderManager::Get<CShader>("Shader3D")->SetGPU();
+		if (auto* enemyRenderer = MeshManager::getRenderer<CStaticMeshRenderer>(g_loadmodel[1].meshid))
+		{
+			enemyRenderer->Draw();
+		}
 	}
 
 	std::vector<wall*> hitWallObjects = m_hitWallObjects;
@@ -644,6 +656,13 @@ void GameScene::init()
 	);
 	ShaderManager::Register<CShader>("Shader3D", std::move(shader));
 
+	std::unique_ptr<CShader> skinShader = std::make_unique<CShader>();
+	skinShader->Create(
+		"shader/vertexLightingOneSkinVS.hlsl",
+		"shader/vertexLightingPS.hlsl"
+	);
+	ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
+
 	// メッシュを生成
 	for (int cnt = 0; cnt < g_loadmodel.size(); cnt++) {
 		std::unique_ptr<CStaticMesh> mesh{};
@@ -663,6 +682,11 @@ void GameScene::init()
 		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[cnt].meshid, std::move(meshrenderer));
 	}
 
+	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
+	m_playerAnimationMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
+	m_playerBoneComb.Create();
+	m_playerAnimationMesh->UpdateManualPose(m_playerBoneComb, {});
+
 	m_player = std::make_unique<player>(this);
 	m_player->init();
 	SRT playerModelSrt = m_player->getSRT();
@@ -673,7 +697,7 @@ void GameScene::init()
 	m_field->init();
 
 	m_enemies.reserve(INITIAL_ENEMYNUM);
-	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos(0, 0, -120); 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, 0.7f)); 	}
+	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos(0, 0, -120); 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, ENEMY_MODEL_SCALE)); 	}
 	// PLAYER BS作成
 	{
 	CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[0].meshid);
@@ -690,16 +714,24 @@ void GameScene::init()
 
 	// ENEMY BS作成
 	{
-		CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>("car001.x");
-		const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
-
-		std::vector<Vector3> vs;
-		for (auto& v : vertices) {
-			vs.push_back(v.Position);
+		CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[1].meshid);
+		if (mesh == nullptr || mesh->GetVertices().empty())
+		{
+			m_localbsenemy = { Vector3(0, 0, 0), 0.0f };
 		}
+		else
+		{
+			const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
 
-		SRT srt{};
-		m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
+			std::vector<Vector3> vs;
+			vs.reserve(vertices.size());
+			for (const auto& v : vertices) {
+				vs.push_back(v.Position);
+			}
+
+			SRT srt{};
+			m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
+		}
 	}
 	// 敵のパラメータを設定
 	DebugUI::RedistDebugFunction([this]() {
@@ -723,7 +755,123 @@ void GameScene::init()
 	
 void GameScene::dispose()
 {
+	m_playerAnimationMesh.reset();
+}
 
+void GameScene::UpdatePlayerBonePose()
+{
+	if (!m_playerAnimationMesh || !m_player)
+	{
+		return;
+	}
+
+	const std::vector<std::string> boneNames = m_playerAnimationMesh->GetBoneNames();
+	const auto normalizeBoneName = [](std::string value) {
+		std::string normalized;
+		normalized.reserve(value.size());
+		for (const char c : value)
+		{
+			if (c == '_' || c == '-' || c == ' ')
+			{
+				continue;
+			}
+			if (c >= 'A' && c <= 'Z')
+			{
+				normalized.push_back(static_cast<char>(c - 'A' + 'a'));
+			}
+			else
+			{
+				normalized.push_back(c);
+			}
+		}
+		return normalized;
+	};
+	const auto findBone = [&boneNames, &normalizeBoneName](std::initializer_list<std::string_view> aliases) {
+		for (const auto alias : aliases)
+		{
+			const std::string normalizedAlias = normalizeBoneName(std::string(alias));
+			for (const auto& name : boneNames)
+			{
+				if (normalizeBoneName(name) == normalizedAlias)
+				{
+					return name;
+				}
+			}
+		}
+		for (const auto& name : boneNames)
+		{
+			const std::string normalizedName = normalizeBoneName(name);
+			for (const auto alias : aliases)
+			{
+				if (normalizedName.find(normalizeBoneName(std::string(alias))) != std::string::npos)
+				{
+					return name;
+				}
+			}
+		}
+		return std::string{};
+	};
+
+	const std::string leftArm = findBone({ "左腕", "左上臂", "左臂", "leftarm", "left_arm", "left arm" });
+	const std::string rightArm = findBone({ "右腕", "右上臂", "右臂", "rightarm", "right_arm", "right arm" });
+	const std::string leftElbow = findBone({ "左ひじ", "左肘", "leftelbow", "left_elbow", "left elbow" });
+	const std::string rightElbow = findBone({ "右ひじ", "右肘", "rightelbow", "right_elbow", "right elbow" });
+	const std::string leftHand = findBone({ "左手首", "左手", "lefthand", "left_hand", "left hand" });
+	const std::string rightHand = findBone({ "右手首", "右手", "righthand", "right_hand", "right hand" });
+	const std::string leftLeg = findBone({ "Bip001 L Thigh", "左足", "左脚", "左腿", "leftthigh", "leftleg", "leg_l", "thigh_l", "left leg" });
+	const std::string rightLeg = findBone({ "Bip001 R Thigh", "右足", "右脚", "右腿", "rightthigh", "rightleg", "leg_r", "thigh_r", "right leg" });
+	const std::string leftKnee = findBone({ "Bip001 L Calf", "左ひざ", "左膝", "leftknee", "leftcalf", "knee_l", "calf_l", "left knee" });
+	const std::string rightKnee = findBone({ "Bip001 R Calf", "右ひざ", "右膝", "rightknee", "rightcalf", "knee_r", "calf_r", "right knee" });
+	const std::string leftFoot = findBone({ "Bip001 L Foot", "左足首", "左足先", "左つま先", "leftankle", "left_ankle", "left ankle", "leftfoot", "left_foot", "left foot", "lefttoe", "left_toe", "left toe" });
+	const std::string rightFoot = findBone({ "Bip001 R Foot", "右足首", "右足先", "右つま先", "rightankle", "right_ankle", "right ankle", "rightfoot", "right_foot", "right foot", "righttoe", "right_toe", "right toe" });
+
+	const float walkPhase = std::sinf(m_player->getMotionTime() * 7.0f);
+	const bool walking =
+		m_player->getMotionState() == player::MotionState::Walk ||
+		m_player->getVel().Length() > 0.01f;
+	const bool jumping = m_player->getMotionState() == player::MotionState::Jump;
+	const float armSwing = walking ? walkPhase * 0.45f : 0.0f;
+	const float elbowSwing = walking ? -walkPhase * 0.18f : 0.0f;
+	const float legSwing = walking ? -walkPhase * 0.65f : 0.0f;
+	const float kneeSwing = walking ? std::max(0.0f, walkPhase) * 0.45f : 0.0f;
+	const float footSwing = walking ? walkPhase * 0.5f : (jumping ? -0.2f : 0.0f);
+	const float armRaise = jumping ? 0.75f : 0.0f;
+
+	std::unordered_map<std::string, Matrix4x4> rotations;
+	const auto setRotation = [&rotations](const std::string& boneName, float angle) {
+		if (!boneName.empty())
+		{
+			rotations[boneName] = Matrix4x4::CreateRotationZ(angle);
+		}
+	};
+	const auto setRotationX = [&rotations](const std::string& boneName, float angle) {
+		if (!boneName.empty())
+		{
+			rotations[boneName] = Matrix4x4::CreateRotationX(angle);
+		}
+	};
+	const auto setRotationXZ = [&rotations](const std::string& boneName, float zAngle, float xAngle) {
+		if (!boneName.empty())
+		{
+			rotations[boneName] =
+				Matrix4x4::CreateRotationZ(zAngle) * Matrix4x4::CreateRotationX(xAngle);
+		}
+	};
+
+	setRotation(leftArm, armSwing + armRaise);
+	setRotation(rightArm, -armSwing - armRaise);
+	setRotation(leftElbow, elbowSwing);
+	setRotation(rightElbow, -elbowSwing);
+	setRotation(leftHand, -armSwing * 0.25f);
+	setRotation(rightHand, armSwing * 0.25f);
+	setRotationXZ(leftLeg, legSwing * 0.25f, legSwing);
+	setRotationXZ(rightLeg, -legSwing * 0.25f, -legSwing);
+	setRotationXZ(leftKnee, kneeSwing * 0.2f, kneeSwing);
+	setRotationXZ(rightKnee, std::max(0.0f, -walkPhase) * 0.04f, std::max(0.0f, -walkPhase) * 0.22f);
+	setRotationX(leftFoot, footSwing);
+	setRotationX(rightFoot, -footSwing);
+
+	m_playerAnimationMesh->UpdateManualPose(m_playerBoneComb, rotations);
 }
 
 // 壁パラメータ調整
@@ -866,7 +1014,7 @@ void GameScene::DebugEnemies()
 	if (ImGui::Button("Add Enemy"))
 	{
 		Vector3 enemyPos = m_player->getSRT().pos + Vector3(120.0f, 0, 0);
-		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, 0.0f, 0.7f));
+		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, 0.0f, ENEMY_MODEL_SCALE));
 		selected_model = static_cast<int>(m_enemies.size()) - 1;
 	}
 
@@ -995,13 +1143,13 @@ void GameScene::DebugCamera()
 		m_camera.SetMouseLookEnabled(mouseLookEnabled);
 	}
 	ImGui::Text("Third-person camera: always active");
-	ImGui::Text("Move mouse: orbit / Right drag also works");
+	ImGui::Text("Right drag: orbit / Mouse wheel: zoom");
 	ImGui::Text("Mouse wheel: zoom / WASD: move player");
 
 	const ImVec2 viewportSize(360.0f, 200.0f);
 	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
 	const bool viewportHovered = ImGui::IsItemHovered();
-	m_camera.Update(m_player->getSRT().pos, viewportHovered);
+		m_camera.Update(m_player->getSRT().pos, m_player->getSRT().rot.y, viewportHovered);
 	const ImVec2 viewportMin = ImGui::GetItemRectMin();
 	const ImVec2 viewportMax = ImGui::GetItemRectMax();
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -1014,7 +1162,7 @@ void GameScene::DebugCamera()
 
 	if (ImGui::Button("Reset Camera"))
 	{
-		m_camera.Reset(m_player->getSRT().pos);
+		m_camera.Reset(m_player->getSRT().pos, m_player->getSRT().rot.y);
 	}
 	ImGui::End();
 }
@@ -1023,6 +1171,8 @@ void GameScene::DebugCombat()
 {
     ImGui::Begin("1v1 Combat");
     ImGui::Text("State: %s", m_combat.GetStateName().data());
+    ImGui::Text("Player Motion: %s", m_player->getMotionStateName());
+    ImGui::Text("Left Shift: Jump");
     ImGui::Text("Space / J: Attack");
     ImGui::Text("K / Right Mouse: Guard");
     ImGui::Text("R: Reset Match");

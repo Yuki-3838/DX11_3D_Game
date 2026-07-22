@@ -9,7 +9,7 @@
 
 class CStaticMesh : public CMesh {
 public:
-	void Load(std::string filename, std::string texturedirectory="");
+	void Load(std::string filename, std::string texturedirectory="", bool pretransformVertices = false);
 
 	const std::vector<MATERIAL>& GetMaterials() {
 		return m_materials;

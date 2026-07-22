@@ -27,6 +27,7 @@ PS_IN main(in VS_IN In)
 
 	Out.Diffuse.xyz = In.Diffuse.xyz * Material.Diffuse.xyz * d * Light.Diffuse.xyz;
 	Out.Diffuse.xyz += In.Diffuse.xyz * Material.Ambient.xyz * Light.Ambient.xyz;
+	Out.Diffuse.xyz += In.Diffuse.xyz * Material.Diffuse.xyz * 0.15f;
 	Out.Diffuse.xyz += Material.Emission.xyz;
     Out.Diffuse.a = In.Diffuse.a* Material.Diffuse.a;
 	
