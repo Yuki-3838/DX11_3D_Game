@@ -1008,11 +1008,30 @@ void GameScene::UpdateThirdPersonCamera(uint64_t deltatime)
 	const bool rotating = rightMouse &&
 		(m_cameraViewportHovered || !ImGui::GetIO().WantCaptureMouse);
 	m_cameraOrbiting = rotating;
+	const int mouseX = input.GetMouseX();
+	const int mouseY = input.GetMouseY();
+	if (!m_cameraMouseInitialized)
+	{
+		m_lastCameraMouseX = mouseX;
+		m_lastCameraMouseY = mouseY;
+		m_cameraMouseInitialized = true;
+	}
+
+	const ImVec2 imguiMouseDelta = ImGui::GetIO().MouseDelta;
+	float mouseDeltaX = imguiMouseDelta.x;
+	float mouseDeltaY = imguiMouseDelta.y;
+	if (std::abs(mouseDeltaX) < 0.001f && std::abs(mouseDeltaY) < 0.001f)
+	{
+		mouseDeltaX = static_cast<float>(mouseX - m_lastCameraMouseX);
+		mouseDeltaY = static_cast<float>(mouseY - m_lastCameraMouseY);
+	}
+	m_lastCameraMouseX = mouseX;
+	m_lastCameraMouseY = mouseY;
+
 	if (mouseLook || rotating)
 	{
-		const auto& directInput = CDirectInput::GetInstance();
-		m_cameraYaw += static_cast<float>(directInput.GetMouseDeltaX()) * m_cameraMouseSensitivity;
-		m_cameraPitch -= static_cast<float>(directInput.GetMouseDeltaY()) * m_cameraMouseSensitivity;
+		m_cameraYaw += mouseDeltaX * m_cameraMouseSensitivity;
+		m_cameraPitch -= mouseDeltaY * m_cameraMouseSensitivity;
 		m_cameraPitch = std::clamp(m_cameraPitch, -1.5f, 1.5f);
 	}
 

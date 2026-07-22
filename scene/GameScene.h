@@ -49,6 +49,9 @@ private:
 	bool m_cameraMouseLook = true;
 	bool m_cameraViewportHovered = false;
 	bool m_cameraOrbiting = false;
+	int m_lastCameraMouseX = 0;
+	int m_lastCameraMouseY = 0;
+	bool m_cameraMouseInitialized = false;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ
