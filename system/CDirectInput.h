@@ -166,6 +166,9 @@ public:
 
 	int GetMouseWheelDelta() const {
 		return m_MouseState.lZ;
+
+	int GetMouseDeltaX() const { return m_MouseState.lX; }
+	int GetMouseDeltaY() const { return m_MouseState.lY; }
 	}
 
 	//----------------------------------
