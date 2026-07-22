@@ -529,7 +529,6 @@ void GameScene::update(uint64_t deltatime)
 
 	resolveEnemyCollisions(m_enemies, m_localbsenemy);
 	resolvePlayerEnemyCollisions(m_player.get(), m_enemies, m_localbsplayer, m_localbsenemy);
-	UpdateThirdPersonCamera(deltatime);
     if (!m_enemies.empty())
     {
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
@@ -1062,6 +1061,7 @@ void GameScene::DebugCamera()
 	const ImVec2 viewportSize(360.0f, 200.0f);
 	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
 	m_cameraViewportHovered = ImGui::IsItemHovered();
+	UpdateThirdPersonCamera(0);
 	const ImVec2 viewportMin = ImGui::GetItemRectMin();
 	const ImVec2 viewportMax = ImGui::GetItemRectMax();
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
