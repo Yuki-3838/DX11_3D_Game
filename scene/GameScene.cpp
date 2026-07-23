@@ -498,7 +498,17 @@ void GameScene::update(uint64_t deltatime)
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		m_player->setVel(Vector3(0, 0, 0));
 	}
-	UpdatePlayerBonePose();
+	if (m_playerAnimationMesh && m_player)
+	{
+		m_playerAnimator.Update(
+			*m_playerAnimationMesh,
+			m_playerBoneComb,
+			{
+				m_player->getMotionState() == player::MotionState::Walk || m_player->getVel().Length() > 0.01f,
+				m_player->getMotionState() == player::MotionState::Jump,
+				m_player->getMotionTime()
+			});
+	}
 
 	for (auto& e : m_enemies) {
 		SRT prevEnemySrt = e->getSRT();
@@ -684,6 +694,7 @@ void GameScene::init()
 
 	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
 	m_playerAnimationMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
+	m_playerAnimator.Initialize(*m_playerAnimationMesh);
 	m_playerBoneComb.Create();
 	m_playerAnimationMesh->UpdateManualPose(m_playerBoneComb, {});
 
@@ -758,121 +769,6 @@ void GameScene::dispose()
 	m_playerAnimationMesh.reset();
 }
 
-void GameScene::UpdatePlayerBonePose()
-{
-	if (!m_playerAnimationMesh || !m_player)
-	{
-		return;
-	}
-
-	const std::vector<std::string> boneNames = m_playerAnimationMesh->GetBoneNames();
-	const auto normalizeBoneName = [](std::string value) {
-		std::string normalized;
-		normalized.reserve(value.size());
-		for (const char c : value)
-		{
-			if (c == '_' || c == '-' || c == ' ')
-			{
-				continue;
-			}
-			if (c >= 'A' && c <= 'Z')
-			{
-				normalized.push_back(static_cast<char>(c - 'A' + 'a'));
-			}
-			else
-			{
-				normalized.push_back(c);
-			}
-		}
-		return normalized;
-	};
-	const auto findBone = [&boneNames, &normalizeBoneName](std::initializer_list<std::string_view> aliases) {
-		for (const auto alias : aliases)
-		{
-			const std::string normalizedAlias = normalizeBoneName(std::string(alias));
-			for (const auto& name : boneNames)
-			{
-				if (normalizeBoneName(name) == normalizedAlias)
-				{
-					return name;
-				}
-			}
-		}
-		for (const auto& name : boneNames)
-		{
-			const std::string normalizedName = normalizeBoneName(name);
-			for (const auto alias : aliases)
-			{
-				if (normalizedName.find(normalizeBoneName(std::string(alias))) != std::string::npos)
-				{
-					return name;
-				}
-			}
-		}
-		return std::string{};
-	};
-
-	const std::string leftArm = findBone({ "左腕", "左上臂", "左臂", "leftarm", "left_arm", "left arm" });
-	const std::string rightArm = findBone({ "右腕", "右上臂", "右臂", "rightarm", "right_arm", "right arm" });
-	const std::string leftElbow = findBone({ "左ひじ", "左肘", "leftelbow", "left_elbow", "left elbow" });
-	const std::string rightElbow = findBone({ "右ひじ", "右肘", "rightelbow", "right_elbow", "right elbow" });
-	const std::string leftHand = findBone({ "左手首", "左手", "lefthand", "left_hand", "left hand" });
-	const std::string rightHand = findBone({ "右手首", "右手", "righthand", "right_hand", "right hand" });
-	const std::string leftLeg = findBone({ "Bip001 L Thigh", "左足", "左脚", "左腿", "leftthigh", "leftleg", "leg_l", "thigh_l", "left leg" });
-	const std::string rightLeg = findBone({ "Bip001 R Thigh", "右足", "右脚", "右腿", "rightthigh", "rightleg", "leg_r", "thigh_r", "right leg" });
-	const std::string leftKnee = findBone({ "Bip001 L Calf", "左ひざ", "左膝", "leftknee", "leftcalf", "knee_l", "calf_l", "left knee" });
-	const std::string rightKnee = findBone({ "Bip001 R Calf", "右ひざ", "右膝", "rightknee", "rightcalf", "knee_r", "calf_r", "right knee" });
-	const std::string leftFoot = findBone({ "Bip001 L Foot", "左足首", "左足先", "左つま先", "leftankle", "left_ankle", "left ankle", "leftfoot", "left_foot", "left foot", "lefttoe", "left_toe", "left toe" });
-	const std::string rightFoot = findBone({ "Bip001 R Foot", "右足首", "右足先", "右つま先", "rightankle", "right_ankle", "right ankle", "rightfoot", "right_foot", "right foot", "righttoe", "right_toe", "right toe" });
-
-	const float walkPhase = std::sinf(m_player->getMotionTime() * 7.0f);
-	const bool walking =
-		m_player->getMotionState() == player::MotionState::Walk ||
-		m_player->getVel().Length() > 0.01f;
-	const bool jumping = m_player->getMotionState() == player::MotionState::Jump;
-	const float armSwing = walking ? walkPhase * 0.45f : 0.0f;
-	const float elbowSwing = walking ? -walkPhase * 0.18f : 0.0f;
-	const float legSwing = walking ? -walkPhase * 0.65f : 0.0f;
-	const float kneeSwing = walking ? std::max(0.0f, walkPhase) * 0.45f : 0.0f;
-	const float footSwing = walking ? walkPhase * 0.5f : (jumping ? -0.2f : 0.0f);
-	const float armRaise = jumping ? 0.75f : 0.0f;
-
-	std::unordered_map<std::string, Matrix4x4> rotations;
-	const auto setRotation = [&rotations](const std::string& boneName, float angle) {
-		if (!boneName.empty())
-		{
-			rotations[boneName] = Matrix4x4::CreateRotationZ(angle);
-		}
-	};
-	const auto setRotationX = [&rotations](const std::string& boneName, float angle) {
-		if (!boneName.empty())
-		{
-			rotations[boneName] = Matrix4x4::CreateRotationX(angle);
-		}
-	};
-	const auto setRotationXZ = [&rotations](const std::string& boneName, float zAngle, float xAngle) {
-		if (!boneName.empty())
-		{
-			rotations[boneName] =
-				Matrix4x4::CreateRotationZ(zAngle) * Matrix4x4::CreateRotationX(xAngle);
-		}
-	};
-
-	setRotation(leftArm, armSwing + armRaise);
-	setRotation(rightArm, -armSwing - armRaise);
-	setRotation(leftElbow, elbowSwing);
-	setRotation(rightElbow, -elbowSwing);
-	setRotation(leftHand, -armSwing * 0.25f);
-	setRotation(rightHand, armSwing * 0.25f);
-	setRotationXZ(leftLeg, legSwing * 0.25f, legSwing);
-	setRotationXZ(rightLeg, -legSwing * 0.25f, -legSwing);
-	setRotationXZ(leftKnee, kneeSwing * 0.2f, kneeSwing);
-	setRotationXZ(rightKnee, std::max(0.0f, -walkPhase) * 0.04f, std::max(0.0f, -walkPhase) * 0.22f);
-	setRotationX(leftFoot, footSwing);
-	setRotationX(rightFoot, -footSwing);
-
-	m_playerAnimationMesh->UpdateManualPose(m_playerBoneComb, rotations);
-}
 
 // 壁パラメータ調整
 void GameScene::DebugWalls()

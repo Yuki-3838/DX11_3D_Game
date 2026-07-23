@@ -57,6 +57,7 @@
     <ClInclude Include="..\system\ThirdPersonCamera.h" />
     <ClInclude Include="..\system\CAnimationData.h" />
     <ClInclude Include="..\system\CAnimationMesh.h" />
+	<ClInclude Include="..\system\CCharacterAnimator.h" />
     <ClInclude Include="..\system\CAnimationMeshBlender.h" />
     <ClInclude Include="..\system\CAnimationObject.h" />
     <ClInclude Include="..\system\CapsuleDrawer.h" />
@@ -143,6 +144,7 @@
     <ClCompile Include="..\system\ThirdPersonCamera.cpp" />
     <ClCompile Include="..\system\CAnimationData.cpp" />
     <ClCompile Include="..\system\CAnimationMesh.cpp" />
+	<ClCompile Include="..\system\CCharacterAnimator.cpp" />
     <ClCompile Include="..\system\CAnimationMeshBlender.cpp" />
     <ClCompile Include="..\system\CAnimationObject.cpp" />
     <ClCompile Include="..\system\CapsuleDrawer.cpp" />

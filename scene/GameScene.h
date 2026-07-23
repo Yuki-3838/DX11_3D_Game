@@ -8,6 +8,7 @@
 #include "../system/C3DShape.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
+#include "../system/CCharacterAnimator.h"
 #include "../system/BoneCombMatrix.h"
 #include "../system/collision.h"
 #include "../system/OneVsOneCombat.h"
@@ -37,11 +38,11 @@ public:
 	void DebugPlayerSRT();
 	void DebugCamera();
 	void DebugCombat();
-	void UpdatePlayerBonePose();
 
 private:
 	ThirdPersonCamera m_camera;
 	std::unique_ptr<CAnimationMesh> m_playerAnimationMesh;
+	CCharacterAnimator m_playerAnimator;
 	BoneCombMatrix m_playerBoneComb;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
