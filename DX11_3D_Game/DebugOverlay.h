@@ -24,6 +24,7 @@ public:
 
     /** @brief 現在の戦闘デバッグ状態を返す。 */
     const Combat::CombatDebugState& GetCombatDebugState() const { return m_combatDebugState; }
+    Combat::CombatDebugState& MutableCombatDebugState() { return m_combatDebugState; }
 
     /**
      * @brief Dear ImGui描画関数を接続するための拡張点。

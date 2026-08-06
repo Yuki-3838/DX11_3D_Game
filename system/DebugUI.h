@@ -14,8 +14,7 @@ class DebugUI {
 public:
 
     static void Init(ID3D11Device* device, ID3D11DeviceContext* context);
-
-    // デバッグ表示関数の登録
+// Debug window registration
     static void RedistDebugFunction(std::function<void(void)> f);
 
     static void ClearDebugFunctions();

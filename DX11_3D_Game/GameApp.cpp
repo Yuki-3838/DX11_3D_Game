@@ -297,10 +297,9 @@ void GameApp::FixedUpdate(float fixedDeltaSeconds)
 {
     const bool moveLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
     const bool moveRight = (GetAsyncKeyState('D') & 0x8000) != 0;
-    const bool guard = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     const bool restartAttack = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
 
-    const float moveSpeed = guard ? 0.35f : 0.65f;
+    const float moveSpeed = 0.65f;
     if (moveLeft)
     {
         m_playerX -= moveSpeed * fixedDeltaSeconds;
@@ -314,6 +313,7 @@ void GameApp::FixedUpdate(float fixedDeltaSeconds)
     if (restartAttack)
     {
         m_combatPhaseSeconds = 0.0f;
+        m_attackHitRegistered = false;
     }
 
     m_combatPhaseSeconds += fixedDeltaSeconds;
@@ -330,14 +330,31 @@ void GameApp::FixedUpdate(float fixedDeltaSeconds)
         m_combatDebugState.broadPhaseCandidateCount = 0;
         m_combatDebugState.confirmedCollisionCount = 0;
         m_combatDebugState.enemyInRecovery = false;
+        m_combatDebugState.narrowPhaseHit = false;
+        m_collisionResult = {};
     }
     else if (m_combatPhaseSeconds < activeEnd)
     {
         m_combatDebugState.currentPhase = Combat::AttackPhase::Active;
-        const float distance = std::abs(m_enemyX - m_playerX);
-        const bool inRange = distance <= 0.36f;
-        m_combatDebugState.broadPhaseCandidateCount = inRange ? 1 : 0;
-        m_combatDebugState.confirmedCollisionCount = inRange && !guard ? 1 : 0;
+        Combat::CombatantCollisionState attacker;
+        attacker.id = "player";
+        attacker.position = Vector3(m_playerX, 0.0f, 0.0f);
+        attacker.forward = Vector3(1.0f, 0.0f, 0.0f);
+
+        Combat::CombatantCollisionState target;
+        target.id = "enemy";
+        target.position = Vector3(m_enemyX, 0.0f, 0.0f);
+
+        m_collisionResult = Combat::EvaluateAttackCollision(m_prototypeAttack, attacker, {target});
+        const bool hit = !m_collisionResult.pairs.empty() && !m_attackHitRegistered;
+        if (hit)
+        {
+            m_attackHitRegistered = true;
+            m_combatDebugState.enemyHp = std::max(0, m_combatDebugState.enemyHp - m_prototypeAttack.damage);
+        }
+        m_combatDebugState.broadPhaseCandidateCount = m_collisionResult.broadPhaseCandidateCount;
+        m_combatDebugState.confirmedCollisionCount = hit ? 1 : 0;
+        m_combatDebugState.narrowPhaseHit = !m_collisionResult.pairs.empty();
         m_combatDebugState.enemyInRecovery = false;
     }
     else if (m_combatPhaseSeconds < recoveryEnd)
@@ -345,21 +362,26 @@ void GameApp::FixedUpdate(float fixedDeltaSeconds)
         m_combatDebugState.currentPhase = Combat::AttackPhase::Recovery;
         m_combatDebugState.broadPhaseCandidateCount = 0;
         m_combatDebugState.confirmedCollisionCount = 0;
+        m_combatDebugState.narrowPhaseHit = false;
         m_combatDebugState.enemyInRecovery = true;
     }
     else if (m_combatPhaseSeconds < cooldownEnd)
     {
         m_combatDebugState.currentPhase = Combat::AttackPhase::Cooldown;
+        m_combatDebugState.narrowPhaseHit = false;
         m_combatDebugState.enemyInRecovery = false;
     }
     else
     {
         m_combatPhaseSeconds = 0.0f;
+        m_attackHitRegistered = false;
     }
 
-    m_combatDebugState.playerGuarding = guard;
     m_combatDebugState.distanceMeters = std::abs(m_enemyX - m_playerX) * 4.0f;
-    m_combatDebugState.playerStamina = guard ? 82 : 100;
+    m_combatDebugState.playerStamina = 100;
+    m_combatDebugState.attackHitboxActive = m_combatDebugState.currentPhase == Combat::AttackPhase::Active;
+    m_combatDebugState.broadPhaseRadius = m_prototypeAttack.broadPhaseFilter.maxDistance;
+    m_combatDebugState.attackHitboxLength = m_prototypeAttack.hitboxes.empty() ? 0.0f : m_prototypeAttack.hitboxes.front().length;
 }
 
 void GameApp::Draw()
@@ -374,26 +396,30 @@ void GameApp::Draw()
 void GameApp::DrawCombatPrototype()
 {
     const DebugColor arenaColor = {0.12f, 0.15f, 0.18f, 1.0f};
-    const DebugColor playerColor = m_combatDebugState.playerGuarding
-        ? DebugColor{0.15f, 0.85f, 0.95f, 1.0f}
-        : DebugColor{0.25f, 0.55f, 1.0f, 1.0f};
+    const DebugColor playerColor = {0.25f, 0.55f, 1.0f, 1.0f};
     const DebugColor enemyColor = m_combatDebugState.enemyInRecovery
         ? DebugColor{1.0f, 0.72f, 0.22f, 1.0f}
         : DebugColor{1.0f, 0.22f, 0.18f, 1.0f};
     const DebugColor hitboxColor = {1.0f, 0.25f, 0.08f, 0.80f};
     const DebugColor rangeColor = {0.35f, 0.24f, 0.12f, 1.0f};
+    const DebugColor hurtboxColor = {0.30f, 0.90f, 0.35f, 0.65f};
 
     m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {-0.90f, 0.12f, 0.90f, -0.55f, arenaColor});
     m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {m_playerX - 0.06f, -0.02f, m_playerX + 0.06f, -0.36f, playerColor});
     m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {m_enemyX - 0.08f, 0.02f, m_enemyX + 0.08f, -0.36f, enemyColor});
 
-    if (m_combatDebugState.currentPhase == Combat::AttackPhase::Anticipation)
+    if (m_combatDebugState.debugDrawCollision && m_combatDebugState.currentPhase == Combat::AttackPhase::Anticipation)
     {
         m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {m_enemyX - 0.38f, -0.08f, m_enemyX - 0.08f, -0.30f, rangeColor});
     }
-    else if (m_combatDebugState.currentPhase == Combat::AttackPhase::Active)
+    else if (m_combatDebugState.debugDrawCollision && m_combatDebugState.currentPhase == Combat::AttackPhase::Active)
     {
         m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {m_enemyX - 0.40f, -0.06f, m_enemyX - 0.08f, -0.32f, hitboxColor});
+    }
+
+    if (m_combatDebugState.debugDrawCollision)
+    {
+        m_simpleDebugRenderer.DrawRect(m_deviceContext.Get(), {m_enemyX - 0.10f, 0.04f, m_enemyX + 0.10f, -0.38f, hurtboxColor});
     }
 
     const float phaseProgress = std::clamp(m_combatPhaseSeconds / 2.0f, 0.0f, 1.0f);

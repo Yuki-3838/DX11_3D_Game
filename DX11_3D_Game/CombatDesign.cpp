@@ -15,7 +15,6 @@ AttackData CreatePrototypeHeavySlash()
     attack.broadPhaseFilter.maxDistance = 3.4f;
     attack.broadPhaseFilter.maxAngleDegrees = 65.0f;
     attack.hitboxes.push_back({"weapon_blade", NarrowPhaseType::Capsule, 0.22f, 1.4f});
-    attack.guardType = GuardType::GuardBreak;
     attack.damage = 28;
     attack.staminaDamage = 30;
     attack.postureDamage = 20;

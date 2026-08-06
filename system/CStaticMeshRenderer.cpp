@@ -2,53 +2,105 @@
 
 void CStaticMeshRenderer::Init(CStaticMesh& mesh)
 {
-	// ’¸“_ƒoƒbƒtƒ@‚ÆƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@‚ğ¶¬
+	// å†åˆæœŸåŒ–ã•ã‚Œã‚‹ã‚±ãƒ¼ã‚¹ã§ã‚‚ã€å‰ã®ãƒ¡ãƒƒã‚·ãƒ¥ã®æç”»æƒ…å ±ã‚’æ®‹ã•ãªã„ã€‚
+	m_Subsets.clear();
+	m_DiffuseTextures.clear();
+	m_Materiales.clear();
+
+	// é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ã¨ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ã‚’ç”Ÿæˆ
 	CMeshRenderer::Init(mesh);
 
-	// ƒTƒuƒZƒbƒgî•ñæ“¾
+	// ã‚µãƒ–ã‚»ãƒƒãƒˆæƒ…å ±å–å¾—
 	m_Subsets = mesh.GetSubsets();
 
-	// diffuseƒeƒNƒXƒ`ƒƒî•ñæ“¾
+	// ä¸€éƒ¨ã®FBXã¯ãƒãƒ†ãƒªã‚¢ãƒ«/ã‚µãƒ–ã‚»ãƒƒãƒˆæƒ…å ±ã‚’æŒãŸãšã€é ‚ç‚¹ã¨ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ã ã‘
+	// èª­ã¿è¾¼ã¾ã‚Œã‚‹ã“ã¨ãŒã‚ã‚‹ã€‚ãã®å ´åˆã‚‚ãƒ¡ãƒƒã‚·ãƒ¥å…¨ä½“ã‚’1å›ã§æç”»ã§ãã‚‹ã‚ˆã†ã«ã™ã‚‹ã€‚
+	if (m_Subsets.empty() && !mesh.GetIndices().empty())
+	{
+		SUBSET fallbackSubset{};
+		fallbackSubset.IndexNum = static_cast<unsigned int>(mesh.GetIndices().size());
+		fallbackSubset.VertexNum = static_cast<unsigned int>(mesh.GetVertices().size());
+		fallbackSubset.IndexBase = 0;
+		fallbackSubset.VertexBase = 0;
+		fallbackSubset.MaterialIdx = 0;
+		fallbackSubset.MtrlName = "FallbackMaterial";
+		m_Subsets.push_back(fallbackSubset);
+	}
+
+	// diffuseãƒ†ã‚¯ã‚¹ãƒãƒ£æƒ…å ±å–å¾—
 	m_DiffuseTextures = mesh.GetDiffuseTextures();
 
-	// ƒ}ƒeƒŠƒAƒ‹î•ñæ“¾	
+	// ãƒãƒ†ãƒªã‚¢ãƒ«æƒ…å ±å–å¾—
 	std::vector<MATERIAL> materials;
 	materials = mesh.GetMaterials();
 
-	// ƒ}ƒeƒŠƒAƒ‹”•ªƒ‹[ƒv‚µ‚Äƒ}ƒeƒŠƒAƒ‹ƒf[ƒ^‚ğ¶¬
+	// ãƒãƒ†ãƒªã‚¢ãƒ«ãŒãªã„ãƒ¡ãƒƒã‚·ãƒ¥ç”¨ã®ä¸é€æ˜ãªæ—¢å®šãƒãƒ†ãƒªã‚¢ãƒ«ã€‚
+	if (materials.empty() && !mesh.GetIndices().empty())
+	{
+		MATERIAL fallbackMaterial{};
+		fallbackMaterial.Ambient = Color(0.65f, 0.65f, 0.70f, 1.0f);
+		fallbackMaterial.Diffuse = Color(0.85f, 0.85f, 0.90f, 1.0f);
+		fallbackMaterial.Specular = Color(0.25f, 0.25f, 0.25f, 1.0f);
+		fallbackMaterial.Emission = Color(0.0f, 0.0f, 0.0f, 1.0f);
+		fallbackMaterial.Shiness = 16.0f;
+		fallbackMaterial.TextureEnable = FALSE;
+		materials.push_back(fallbackMaterial);
+	}
+
+	// ãƒãƒ†ãƒªã‚¢ãƒ«æ•°åˆ†ãƒ«ãƒ¼ãƒ—ã—ã¦ãƒãƒ†ãƒªã‚¢ãƒ«ãƒ‡ãƒ¼ã‚¿ã‚’ç”Ÿæˆ
 	for (int i = 0; i < materials.size(); i++)
 	{
-		// ƒ}ƒeƒŠƒAƒ‹ƒIƒuƒWƒFƒNƒg¶¬
+		// ãƒãƒ†ãƒªã‚¢ãƒ«ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆç”Ÿæˆ
 		std::unique_ptr<CMaterial> m = std::make_unique<CMaterial>();
 
-		// ƒ}ƒeƒŠƒAƒ‹î•ñ‚ğƒZƒbƒg
+		// ãƒãƒ†ãƒªã‚¢ãƒ«æƒ…å ±ã‚’ã‚»ãƒƒãƒˆ
 		m->Create(materials[i]);
 
-		// ƒ}ƒeƒŠƒAƒ‹ƒIƒuƒWƒFƒNƒg‚ğ”z—ñ‚É’Ç‰Á
+		// ãƒãƒ†ãƒªã‚¢ãƒ«ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆã‚’é…åˆ—ã«è¿½åŠ 
 		m_Materiales.push_back(std::move(m));
 	}
 }
 
 void CStaticMeshRenderer::Draw()
 {
-	// ƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@E’¸“_ƒoƒbƒtƒ@‚ğƒZƒbƒg
+	// ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ãƒ»é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ã‚’ã‚»ãƒƒãƒˆ
 	BeforeDraw();
 
-	// ƒ}ƒeƒŠƒAƒ‹”•ªƒ‹[ƒv 
+	// ãƒãƒ†ãƒªã‚¢ãƒ«æ•°åˆ†ãƒ«ãƒ¼ãƒ—
+	bool drewSubset = false;
 	for (int i = 0; i < m_Subsets.size(); i++)
 	{
-		// ƒ}ƒeƒŠƒAƒ‹‚ğƒZƒbƒg(ƒTƒuƒZƒbƒgî•ñ‚Ì’†‚É‚ ‚éƒ}ƒeƒŠƒAƒ‹ƒCƒ“ƒfƒbƒN‚ğg—p‚·‚é)
-		m_Materiales[m_Subsets[i].MaterialIdx]->SetGPU();
+		// ãƒãƒ†ãƒªã‚¢ãƒ«ã‚’ã‚»ãƒƒãƒˆ(ã‚µãƒ–ã‚»ãƒƒãƒˆæƒ…å ±ã®ä¸­ã«ã‚ã‚‹ãƒãƒ†ãƒªã‚¢ãƒ«ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚’ä½¿ç”¨ã™ã‚‹)
+		if (m_Materiales.empty())
+			continue;
+		// FBXå´ã®ãƒãƒ†ãƒªã‚¢ãƒ«ç•ªå·ãŒæ¬ è½/ä¸æ•´åˆã§ã‚‚ã€æ—¢å®šãƒãƒ†ãƒªã‚¢ãƒ«ã§æç”»ã‚’ç¶™ç¶šã™ã‚‹ã€‚
+		const unsigned int materialIndex =
+			m_Subsets[i].MaterialIdx < m_Materiales.size()
+			? m_Subsets[i].MaterialIdx
+			: 0;
+		if (!m_Materiales[materialIndex])
+			continue;
+		m_Materiales[materialIndex]->SetGPU();
 
-		if (m_Materiales[m_Subsets[i].MaterialIdx]->isDiffuseTextureEnable())
+		if (m_Materiales[materialIndex]->isDiffuseTextureEnable() &&
+			materialIndex < m_DiffuseTextures.size() &&
+			m_DiffuseTextures[materialIndex])
 		{
-			m_DiffuseTextures[m_Subsets[i].MaterialIdx]->SetGPU();
+			m_DiffuseTextures[materialIndex]->SetGPU();
 		}
+		if (m_Subsets[i].IndexNum == 0)
+			continue;
 
-		// ƒTƒuƒZƒbƒg‚Ì•`‰æ
+		// ã‚µãƒ–ã‚»ãƒƒãƒˆã®æç”»
 		DrawSubset(
-			m_Subsets[i].IndexNum,							// •`‰æ‚·‚éƒCƒ“ƒfƒbƒNƒX”
-			m_Subsets[i].IndexBase,							// Å‰‚ÌƒCƒ“ƒfƒbƒNƒXƒoƒbƒtƒ@‚ÌˆÊ’u	
-			m_Subsets[i].VertexBase);						// ’¸“_ƒoƒbƒtƒ@‚ÌÅ‰‚©‚çg—p
+			m_Subsets[i].IndexNum,							// æç”»ã™ã‚‹ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹æ•°
+			m_Subsets[i].IndexBase,							// æœ€åˆã®ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ãƒãƒƒãƒ•ã‚¡ã®ä½ç½®
+		m_Subsets[i].VertexBase);						// é ‚ç‚¹ãƒãƒƒãƒ•ã‚¡ã®æœ€åˆã‹ã‚‰ä½¿ç”¨
+		drewSubset = true;
+	}
+	if (!drewSubset && m_IndexNum > 0 && !m_Materiales.empty() && m_Materiales[0])
+	{
+		m_Materiales[0]->SetGPU();
+		DrawSubset(static_cast<unsigned int>(m_IndexNum), 0, 0);
 	}
 }

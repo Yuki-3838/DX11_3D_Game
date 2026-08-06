@@ -33,6 +33,7 @@ public:
 
 	void update(uint64_t delta) override;
 	void update(uint64_t delta, float cameraYaw);
+	void update(uint64_t delta, float cameraYaw, bool movementLocked);
 	void draw(uint64_t delta) override;
 	void init() override;
 	void dispose() override;

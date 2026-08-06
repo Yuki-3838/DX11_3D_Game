@@ -19,6 +19,10 @@ void player::update(uint64_t dt) {
 }
 
 void player::update(uint64_t dt, float cameraYaw) {
+	update(dt, cameraYaw, false);
+}
+
+void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 
 	auto& input = CInputManager::GetInstance();
 	const auto isMoveKeyPressed = [&input](int directInputKey, int virtualKey) {
@@ -26,13 +30,20 @@ void player::update(uint64_t dt, float cameraYaw) {
 			((GetAsyncKeyState(virtualKey) & 0x8000) != 0);
 	};
 
-	const bool moveForward = isMoveKeyPressed(DIK_W, 'W');
-	const bool moveBackward = isMoveKeyPressed(DIK_S, 'S');
-	const bool moveLeft = isMoveKeyPressed(DIK_A, 'A');
-	const bool moveRight = isMoveKeyPressed(DIK_D, 'D');
-	const bool jumpDown = isMoveKeyPressed(DIK_LSHIFT, VK_LSHIFT);
+	const bool moveForward = !movementLocked && isMoveKeyPressed(DIK_W, 'W');
+	const bool moveBackward = !movementLocked && isMoveKeyPressed(DIK_S, 'S');
+	const bool moveLeft = !movementLocked && isMoveKeyPressed(DIK_A, 'A');
+	const bool moveRight = !movementLocked && isMoveKeyPressed(DIK_D, 'D');
+	const bool jumpDown = !movementLocked && isMoveKeyPressed(DIK_LSHIFT, VK_LSHIFT);
 	const bool jumpTriggered = jumpDown && !m_jumpWasPressed;
 	m_jumpWasPressed = jumpDown;
+	if (movementLocked)
+	{
+		// Attack animation owns the root pose. Cancel locomotion inertia on the
+		// very first attack frame so the character cannot slide while swinging.
+		m_move.x = 0.0f;
+		m_move.z = 0.0f;
+	}
 
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
 	if (jumpTriggered && !m_isJumping)
@@ -99,7 +110,7 @@ void player::update(uint64_t dt, float cameraYaw) {
 		m_destrot.y = std::atan2(-moveX, -moveZ);
 	}
 
-	if (CInputManager::GetInstance().IsKeyPressed(DIK_RIGHT))
+	if (!movementLocked && CInputManager::GetInstance().IsKeyPressed(DIK_RIGHT))
 	{// 左回転
 		m_destrot.y = m_srt.rot.y - VALUE_ROTATE_MODEL;
 		if (m_destrot.y < -PI)
@@ -108,7 +119,7 @@ void player::update(uint64_t dt, float cameraYaw) {
 		}
 	}
 
-	if (CInputManager::GetInstance().IsKeyPressed(DIK_LEFT))
+	if (!movementLocked && CInputManager::GetInstance().IsKeyPressed(DIK_LEFT))
 	{// 右回転
 		m_destrot.y = m_srt.rot.y + VALUE_ROTATE_MODEL;
 		if (m_destrot.y > PI)

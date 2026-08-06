@@ -10,6 +10,7 @@
 #include	<initializer_list>
 #include	<cmath>
 #include	"GameScene.h"
+#include	"../system/LineDrawer.h"
 #include	"../system/CShader.h"
 #include	"../system/MeshManager.h"
 #include	"../system/CStaticMesh.h"
@@ -30,9 +31,11 @@
 #include	"../gameobject/wall.h"
 #include	"../gameobject/enemy.h"
 #include	"../system/SphereDrawer.h"
+#include	"../application.h"
 #include <algorithm>
+#include <DirectXMath.h>
 
-// 無名名前空間
+// 無名名前空閁E
 namespace {
 
 	struct Load3DInfo {
@@ -58,29 +61,135 @@ namespace {
 	{
 			Load3DInfo(
 				"furina_player",
-				"assets/model/Furina/Furina.pmx",			// ASCII名に変換したプレイヤーモデル
-				"assets/model/Furina/"),				// テクスチャのパス
+				"assets/model/Furina/Furina.pmx",			// ASCII名に変換したプレイヤーモチEΝ
+				"assets/model/Furina/"),				// チEけスチャのパス
 
 			Load3DInfo(
 				"car001.x",
-				"assets/model/car001.x",			// モデル名
-				"assets/model/"),					// テクスチャのパス
+				"assets/model/car001.x",			// モチEΝ吁E
+				"assets/model/"),					// チEけスチャのパス
 
 			Load3DInfo(
 				"car002.x",
-				"assets/model/car002.x",			// モデル名
-				"assets/model/"),					// テクスチャのパス
+				"assets/model/car002.x",			// モチEΝ吁E
+				"assets/model/"),					// チEけスチャのパス
 	};
 
 	constexpr float ENEMY_MODEL_SCALE = 0.7f;
+
+	std::array<Vector3, 8> GetAabbCorners(
+		const GM31::GE::Collision::BoundingBoxAABB& box)
+	{
+		return {
+			Vector3(box.min.x, box.min.y, box.min.z),
+			Vector3(box.max.x, box.min.y, box.min.z),
+			Vector3(box.max.x, box.max.y, box.min.z),
+			Vector3(box.min.x, box.max.y, box.min.z),
+			Vector3(box.min.x, box.min.y, box.max.z),
+			Vector3(box.max.x, box.min.y, box.max.z),
+			Vector3(box.max.x, box.max.y, box.max.z),
+			Vector3(box.min.x, box.max.y, box.max.z)
+		};
+	}
+
+	std::array<Vector3, 8> GetObbCorners(
+		const GM31::GE::Collision::BoundingBoxOBB& box)
+	{
+		const Vector3 x = box.axisX * (box.lengthx * 0.5f);
+		const Vector3 y = box.axisY * (box.lengthy * 0.5f);
+		const Vector3 z = box.axisZ * (box.lengthz * 0.5f);
+		return {
+			box.worldcenter - x - y - z,
+			box.worldcenter + x - y - z,
+			box.worldcenter + x + y - z,
+			box.worldcenter - x + y - z,
+			box.worldcenter - x - y + z,
+			box.worldcenter + x - y + z,
+			box.worldcenter + x + y + z,
+			box.worldcenter - x + y + z
+		};
+	}
+
+	void DrawBoxEdges(const std::array<Vector3, 8>& corners, const Color& color)
+	{
+		static constexpr int edges[12][2] = {
+			{0,1}, {1,2}, {2,3}, {3,0},
+			{4,5}, {5,6}, {6,7}, {7,4},
+			{0,4}, {1,5}, {2,6}, {3,7}
+		};
+		// About three pixels at 720p after GeometryShader's perspective correction.
+		SetLineWidth(0.0045f);
+		for (const auto& edge : edges)
+		{
+			const Vector3 direction = corners[edge[1]] - corners[edge[0]];
+			const float length = direction.Length();
+			if (length > 0.0001f)
+				LineDrawerDraw(length, corners[edge[0]], direction, color);
+		}
+	}
+
+	Vector3 GetAabbCenter(const GM31::GE::Collision::BoundingBoxAABB& box)
+	{
+		return (box.min + box.max) * 0.5f;
+	}
+
+	void DrawWorldCollisionLabel(
+		const Matrix4x4& view,
+		const Matrix4x4& projection,
+		const Vector3& worldPosition,
+		const ImVec2& screenOffset,
+		const char* text,
+		ImU32 color)
+	{
+		const float width = static_cast<float>(Application::GetWidth());
+		const float height = static_cast<float>(Application::GetHeight());
+		ImGuiViewport* viewport = ImGui::GetMainViewport();
+		const ImVec2 viewportOrigin = viewport->Pos;
+		const DirectX::XMVECTOR projected = DirectX::XMVector3Project(
+			DirectX::XMVectorSet(worldPosition.x, worldPosition.y, worldPosition.z, 1.0f),
+			0.0f, 0.0f, width, height, 0.0f, 1.0f,
+			projection, view, Matrix4x4::Identity);
+		const float depth = DirectX::XMVectorGetZ(projected);
+		if (depth < 0.0f || depth > 1.0f)
+			return;
+
+		const ImVec2 anchor(
+			viewportOrigin.x + DirectX::XMVectorGetX(projected),
+			viewportOrigin.y + DirectX::XMVectorGetY(projected));
+		const ImVec2 textSize = ImGui::CalcTextSize(text);
+		ImVec2 labelPosition(anchor.x + screenOffset.x, anchor.y + screenOffset.y);
+		labelPosition.x = std::clamp(
+			labelPosition.x,
+			viewportOrigin.x + 8.0f,
+			viewportOrigin.x + width - textSize.x - 20.0f);
+		labelPosition.y = std::clamp(
+			labelPosition.y,
+			viewportOrigin.y + 8.0f,
+			viewportOrigin.y + height - textSize.y - 16.0f);
+		const ImVec2 padding(7.0f, 4.0f);
+		const ImVec2 boxMin(labelPosition.x - padding.x, labelPosition.y - padding.y);
+		const ImVec2 boxMax(labelPosition.x + textSize.x + padding.x, labelPosition.y + textSize.y + padding.y);
+
+		ImDrawList* drawList = ImGui::GetForegroundDrawList(viewport);
+		const ImVec2 connector(
+			std::clamp(anchor.x, boxMin.x, boxMax.x),
+			std::clamp(anchor.y, boxMin.y, boxMax.y));
+		drawList->AddLine(anchor, connector, IM_COL32(0, 0, 0, 230), 5.0f);
+		drawList->AddLine(anchor, connector, color, 2.0f);
+		drawList->AddCircleFilled(anchor, 5.0f, IM_COL32(0, 0, 0, 255));
+		drawList->AddCircleFilled(anchor, 3.0f, color);
+		drawList->AddRectFilled(boxMin, boxMax, IM_COL32(5, 8, 12, 225), 4.0f);
+		drawList->AddRect(boxMin, boxMax, color, 4.0f, 0, 2.0f);
+		drawList->AddText(labelPosition, IM_COL32(255, 255, 255, 255), text);
+	}
 
 	// 壁データ
 	struct WallData {
 		Vector3 pos{0,0,0};				// 位置	
 		Vector3 rot{0,0,0};				// 姿勢
 		float height{0};				// 高さ
-		float width{0};					// 幅	
-		CPlane plane{};					// 平面方程式
+		float width{0};					// 幁E
+		CPlane plane{};					// 平面方程弁E
 		wall* pwallobj{nullptr};		// WALL obj
 		bool hitflag{ false };
 	};
@@ -89,58 +198,58 @@ namespace {
 	struct WallCollision {
 		WallData walldata;			// 壁データ	
 		Vector3 penetration;		// 侵入ベクトル
-		Vector3 sliding;			// 壁摺りベクトル
-		Vector3 intersectionPoint;	// 交点（最近接点）
+		Vector3 sliding;			// 壁摺り縺Eクトル
+		Vector3 intersectionPoint;	// 交点・域怙近接点・・
 	};
 
-	// 壁群と当たり判定を行う（壁と球のあたり判定を行う）
+	// 壁群と当たり判定を行う・亥｣√→琁E・あたり判定を行う・・
 	std::vector<WallCollision> checkWallCollision(
-		std::vector<WallData>& walldatas,		// 当たり判定の対象壁情報
-		float radius,				// 球の半径
+		std::vector<WallData>& walldatas,		// 当たり判定縺E対象壁情報
+		float radius,				// 琁E・半征E
 		Vector3 pos,				// 現在位置 	
 		Vector3 velocity)			// 速度ベクトル
 	{
-		// 衝突している壁
+		// 衝突してぁEｋ壁E
 		std::vector<WallCollision> hitwalls{};
 
-		// 次の場所を求める
+		// 次の場所を求めめE
 		Vector3 nextpos = pos + velocity;
 
-		// 平面と球の距離を求める
+		// 平面と琁E・距離を求めめE
 		for (auto& wall : walldatas)
 		{
 			wall.hitflag = false;
 
-			PLANEINFO pi = wall.plane.GetPlaneInfo();				// 壁の平面方程式を取得
-			// 壁と中心座標の距離を求める（法線ベクトルを正規化しているので可能）
+			PLANEINFO pi = wall.plane.GetPlaneInfo();				// 壁縺E平面方程式を取征E
+			// 壁と中忁Eｺｧ標縺E距離を求める（法線縺Eクトルを正規化してぁEｋので可能・・
 			float lng = pi.plane.a * nextpos.x + pi.plane.b * nextpos.y + pi.plane.c * nextpos.z + pi.plane.d;
 
 			if (fabs(lng) < radius)
-				// 半径以内なら衝突している可能性があるので　精密に判定する
+				// 半征Eｻ･冁E↑ら衝突してぁEｋ可能性がある縺Eで　精寁E↓判定すめE
 			{
-				// OOBと球の当たり判定を行う(奥行を持たせて考えるという事（今は Z=2.0 固定）)
+				// OOBと琁E・当たり判定を行う(奥行を持たせて老E∴るとぁE≧事（今縺E Z=2.0 固定！E
 				GM31::GE::Collision::BoundingBoxOBB obb;
 				obb = GM31::GE::Collision::SetOBB(wall.rot, wall.pos, wall.width, wall.height, 2.0f);
 
-				// 球の定義
+				// 琁E・定義
 				GM31::GE::Collision::BoundingSphere sphere(nextpos, radius);
 
-				// 球とOBBの当たり判定
+				// 琁E→OBBの当たり判宁E
 				bool sts = GM31::GE::Collision::CollisionSphereOBB(
 					sphere,
 					obb);
 
-				// 衝突したので壁衝突したデータを作成
+				// 衝突した縺Eで壁衝突したデータを作諱E
 				if (sts) {
 					wall.hitflag = true;
 
-					WallCollision wallcollision;					// 衝突した壁の詳細情報
+					WallCollision wallcollision;					// 衝突した壁縺E詳細惁Eｱ
 
 					wallcollision.walldata = wall;					// 壁データ
 					wallcollision.penetration = Vector3(0, 0, 0);	// 侵入ベクトル
-					wallcollision.sliding = Vector3(0, 0, 0);		// 壁擦りベクトル
+					wallcollision.sliding = Vector3(0, 0, 0);		// 壁擦り縺Eクトル
 
-					ClosestPtPointOBB(sphere.center, obb, wallcollision.intersectionPoint);		// 最近接点を求める
+					ClosestPtPointOBB(sphere.center, obb, wallcollision.intersectionPoint);		// 最近接点を求めめE
 					hitwalls.push_back(wallcollision);				// ヒットした壁を追加
 				}
 			}
@@ -155,10 +264,10 @@ namespace {
 	{
 		GM31::GE::Collision::BoundingSphere worldSphere;
 
-		// 中心座標を変換
+		// 中忁Eｺｧ標を変換
 		worldSphere.center = Vector3::Transform(localSphere.center, transform.GetMatrix());
 
-		// 半径をスケール（XYZのうち最も大きいスケール値を掛ける）
+		// 半征Eｒスケール・・YZのぁE■最も大きいスケール値を掛ける・・
 		float maxScale = std::max({ transform.scale.x, transform.scale.y, transform.scale.z });
 		worldSphere.radius = localSphere.radius * maxScale;
 
@@ -398,7 +507,8 @@ namespace {
 		player* playerObj,
 		std::vector<std::unique_ptr<enemy>>& enemies,
 		const GM31::GE::Collision::BoundingSphere& localPlayerSphere,
-		const GM31::GE::Collision::BoundingSphere& localEnemySphere)
+		const GM31::GE::Collision::BoundingSphere& localEnemySphere,
+		bool lockPlayerPosition)
 	{
 		if (playerObj == nullptr) {
 			return;
@@ -425,9 +535,19 @@ namespace {
 				pushDir = diff / distance;
 			}
 
-			float pushLength = (hitDistance - distance) * 0.5f;
-			playerSrt.pos -= pushDir * pushLength;
-			enemySrt.pos += pushDir * pushLength;
+			const float overlap = hitDistance - distance;
+			if (lockPlayerPosition)
+			{
+				// During an attack the player is the stable root of the animation.
+				// Resolve all penetration on the enemy to prevent visible sliding.
+				enemySrt.pos += pushDir * overlap;
+			}
+			else
+			{
+				const float pushLength = overlap * 0.5f;
+				playerSrt.pos -= pushDir * pushLength;
+				enemySrt.pos += pushDir * pushLength;
+			}
 
 			playerObj->setSRT(playerSrt);
 			playerObj->setVel(Vector3(0, 0, 0));
@@ -466,13 +586,20 @@ void GameScene::update(uint64_t deltatime)
             m_enemies.front()->setVel(Vector3(0, 0, 0));
         }
     }
+	const bool attackTriggered = !ImGui::GetIO().WantCaptureMouse &&
+		input.IsMouseTriggered(CInputManager::MOUSE_LEFT);
+	const bool attackStarted = attackTriggered && m_combat.CanStartPlayerAttack();
+	if (attackStarted)
+		m_playerAnimator.PlayAttackMotion();
+	const bool lockPlayerMovement = m_combat.IsPlayerAttacking() || attackStarted;
+
 	auto walldatas = createWallData(m_walls);
 	m_hitWallObjects.clear();
 
 	SRT prevPlayerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere prevPlayerSphere = transformBSphere(m_localbsplayer, prevPlayerSrt);
 
-	m_player->update(deltatime, m_camera.GetYaw());
+	m_player->update(deltatime, m_camera.GetYaw(), lockPlayerMovement);
 
 	SRT playerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere nextPlayerSphere = transformBSphere(m_localbsplayer, playerSrt);
@@ -544,14 +671,47 @@ void GameScene::update(uint64_t deltatime)
 	}
 
 	resolveEnemyCollisions(m_enemies, m_localbsenemy);
-	resolvePlayerEnemyCollisions(m_player.get(), m_enemies, m_localbsplayer, m_localbsenemy);
+	resolvePlayerEnemyCollisions(
+		m_player.get(),
+		m_enemies,
+		m_localbsplayer,
+		m_localbsenemy,
+		lockPlayerMovement);
+	if (m_playerAnimationMesh && m_player)
+	{
+		// Finalize the sword once after every movement/collision correction.
+		// Rendering and hit detection must consume this exact same world matrix.
+		const Matrix4x4 playerWorld = m_player->getRenderSRT().GetMatrix();
+		m_playerAnimationMesh->UpdateSwordWorldTransform(playerWorld);
+	}
     if (!m_enemies.empty())
     {
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
-        const bool attackTriggered = input.IsKeyTriggered(DIK_SPACE) || input.IsKeyTriggered(DIK_J);
-        const bool guardPressed = input.IsKeyPressed(DIK_K) ||
-            (input.IsMousePressed(CInputManager::MOUSE_RIGHT) && !m_camera.IsOrbiting());
-        m_combat.Update(deltatime, m_player->getSRT().pos, enemyPosition, attackTriggered, guardPressed);
+		Vector3 swordBase{};
+		Vector3 swordTip{};
+		Vector3 previousSwordTip{};
+		const bool swordTransformValid = m_playerAnimationMesh &&
+			m_playerAnimationMesh->GetSwordWorldSweep(swordBase, swordTip, previousSwordTip);
+		// Hurtboxes use the exact same SRT as model rendering. Their dimensions
+		// come from imported mesh vertices, so changing model scale or rotation
+		// cannot desynchronize the visible model and its OBB.
+		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+			m_localPlayerMeshBounds,
+			m_player->getRenderSRT());
+		const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+			m_localEnemyMeshBounds,
+			m_enemies.front()->getSRT());
+		m_combat.Update(
+			deltatime,
+			m_player->getSRT().pos,
+			enemyPosition,
+			attackStarted,
+			swordBase,
+			swordTip,
+			previousSwordTip,
+			swordTransformValid,
+			playerObb,
+			enemyObb);
     }
 }
 
@@ -566,30 +726,33 @@ void GameScene::draw(uint64_t deltatime)
 		Color(0, 1, 1, 1)
 	};
 
-	// 3本のworld軸を描画
-	for (int cnt = 0; cnt < m_segments.size(); cnt++)
+	if (m_drawLegacyPhysicsDebug)
 	{
-		Matrix4x4 worldmtx = Matrix4x4::Identity;
-		m_segments[cnt]->SetWidth(3);
-		m_segments[cnt]->Draw(worldmtx, Color(0,0,0,1));
-	}
+		// 3本のworld軸を描画
+		for (int cnt = 0; cnt < m_segments.size(); cnt++)
+		{
+			Matrix4x4 worldmtx = Matrix4x4::Identity;
+			m_segments[cnt]->SetWidth(3);
+			m_segments[cnt]->Draw(worldmtx, Color(0,0,0,1));
+		}
 
-	// 3本のローカル軸を描画
-	for (int cnt=0;cnt<m_segments.size();cnt++)
-	{
-		SRT srt = m_player->getSRT();
-		Matrix4x4 localmtx{};
-		srt.scale = Vector3(1, 1, 1);
-		localmtx = srt.GetMatrix();
-		m_segments[cnt]->SetWidth(3);
-		m_segments[cnt]->Draw(localmtx, axiscol[cnt]);
+		// 3本のローカル軸を描画
+		for (int cnt=0;cnt<m_segments.size();cnt++)
+		{
+			SRT srt = m_player->getSRT();
+			Matrix4x4 localmtx{};
+			srt.scale = Vector3(1, 1, 1);
+			localmtx = srt.GetMatrix();
+			m_segments[cnt]->SetWidth(3);
+			m_segments[cnt]->Draw(localmtx, axiscol[cnt]);
+		}
 	}
 
 	m_field->draw(deltatime);
 
-	// モデルを描画
+	// モチEΝを描画
 	{
-	// プレイヤモデルの姿勢情報を取得
+	// プレイヤモチEΝの姿勢惁Eｱを取征E
 		SRT srt = m_player->getRenderSRT();
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
@@ -614,23 +777,72 @@ void GameScene::draw(uint64_t deltatime)
 			enemyRenderer->Draw();
 		}
 	}
+    if (m_drawAttackCollisionDebug)
+	{
+		const auto& collision = m_combat.GetCollisionDebugState();
+		if (m_drawAttackCollisionXray)
+			Renderer::SetDepthEnable(false);
 
-	std::vector<wall*> hitWallObjects = m_hitWallObjects;
+		if (m_drawAttackBroadPhase)
+		{
+			DrawBoxEdges(GetAabbCorners(collision.enemyBroadPhase),
+				collision.broadPhaseOverlap
+					? Color(1.0f, 0.85f, 0.05f, 1.0f)
+					: Color(0.10f, 0.55f, 1.0f, 1.0f));
+		}
+		if (m_drawAttackNarrowPhase)
+		{
+			DrawBoxEdges(GetObbCorners(collision.playerObb),
+				Color(0.15f, 0.75f, 1.0f, 1.0f));
+			DrawBoxEdges(GetObbCorners(collision.enemyObb),
+				collision.narrowPhaseHit
+					? Color(1.0f, 0.05f, 0.02f, 1.0f)
+					: Color(0.15f, 1.0f, 0.30f, 1.0f));
+		}
+
+		if (collision.swordTransformValid)
+		{
+			if (m_drawAttackBroadPhase)
+			{
+				DrawBoxEdges(GetAabbCorners(collision.attackBroadPhase),
+					collision.broadPhaseOverlap
+						? Color(1.0f, 0.85f, 0.05f, 1.0f)
+						: Color(0.10f, 0.90f, 1.0f, 1.0f));
+			}
+			if (m_drawAttackNarrowPhase)
+			{
+				DrawBoxEdges(GetObbCorners(collision.bladeObb),
+					collision.narrowPhaseHit
+						? Color(1.0f, 0.05f, 0.02f, 1.0f)
+						: Color(1.0f, 0.35f, 0.02f, 1.0f));
+				DrawBoxEdges(GetObbCorners(collision.tipSweepObb),
+					collision.narrowPhaseHit
+						? Color(1.0f, 0.05f, 0.02f, 1.0f)
+						: Color(0.85f, 0.15f, 1.0f, 1.0f));
+			}
+		}
+
+		if (m_drawAttackCollisionXray)
+			Renderer::SetDepthEnable(true);
+    }
+    std::vector<wall*> hitWallObjects = m_hitWallObjects;
 
 	SRT playersrt = m_player->getSRT();
 	m_worldbsplayer = transformBSphere(m_localbsplayer, playersrt);
-	SphereDrawerDraw(m_worldbsplayer.radius, Color(1, 1, 1, 0.5f),
-		m_worldbsplayer.center.x,
-		m_worldbsplayer.center.y,
-		m_worldbsplayer.center.z);
+	if (m_drawLegacyPhysicsDebug)
+		SphereDrawerDraw(m_worldbsplayer.radius, Color(1, 1, 1, 0.5f),
+			m_worldbsplayer.center.x,
+			m_worldbsplayer.center.y,
+			m_worldbsplayer.center.z);
 	collectHitWalls(hitWallObjects, m_walls, m_worldbsplayer.radius, m_worldbsplayer.center);
 
 	for (auto& e : m_enemies) {
 		GM31::GE::Collision::BoundingSphere enemySphere = transformBSphere(m_localbsenemy, e->getSRT());
-		SphereDrawerDraw(enemySphere.radius, Color(1, 0, 0, 0.25f),
-			enemySphere.center.x,
-			enemySphere.center.y,
-			enemySphere.center.z);
+		if (m_drawLegacyPhysicsDebug)
+			SphereDrawerDraw(enemySphere.radius, Color(1, 0, 0, 0.25f),
+				enemySphere.center.x,
+				enemySphere.center.y,
+				enemySphere.center.z);
 		collectHitWalls(hitWallObjects, m_walls, enemySphere.radius, enemySphere.center);
 	}
 
@@ -649,15 +861,15 @@ void GameScene::draw(uint64_t deltatime)
 void GameScene::init()
 {
 	m_combat.Reset();
-	// カメラ(3D)の初期化
+	// カメラ(3D)の初期匁E
 	m_camera.Init();
 
-	// ローカル軸表示用線分の初期化
+	// ローカル軸表示用線蛛Eの初期匁E
 	m_segments[0] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(100, 0, 0));
 	m_segments[1] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(0, 100, 0));
 	m_segments[2] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(0, 0, 100));
 
-	// シェーダを生成
+	// シェーダを生戁E
 	std::unique_ptr<CShader> shader{};
 	shader = std::make_unique<CShader>();
 	shader->Create(
@@ -673,13 +885,13 @@ void GameScene::init()
 	);
 	ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 
-	// メッシュを生成
+	// メチEすュを生戁E
 	for (int cnt = 0; cnt < g_loadmodel.size(); cnt++) {
 		std::unique_ptr<CStaticMesh> mesh{};
 		mesh = std::make_unique<CStaticMesh>();
 		mesh->Load(g_loadmodel[cnt].filename, g_loadmodel[cnt].texdirectoryname);
 
-		// メッシュレンダラを生成
+		// メチEすュレンダラを生戁E
 		std::unique_ptr<CStaticMeshRenderer> meshrenderer{};
 		meshrenderer = std::make_unique<CStaticMeshRenderer>();
 		meshrenderer->Init(*mesh.get());
@@ -709,7 +921,7 @@ void GameScene::init()
 
 	m_enemies.reserve(INITIAL_ENEMYNUM);
 	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos(0, 0, -120); 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, ENEMY_MODEL_SCALE)); 	}
-	// PLAYER BS作成
+	// PLAYER BS作諱E
 	{
 	CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[0].meshid);
 		const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
@@ -721,14 +933,19 @@ void GameScene::init()
 
 		SRT srt{};
 		m_localbsplayer = GM31::GE::Collision::calcBSphere(vs, srt);
+		m_localPlayerMeshBounds =
+			GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
 	}
 
-	// ENEMY BS作成
+	// ENEMY BS作諱E
 	{
 		CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[1].meshid);
 		if (mesh == nullptr || mesh->GetVertices().empty())
 		{
 			m_localbsenemy = { Vector3(0, 0, 0), 0.0f };
+			m_localEnemyMeshBounds = {
+				Vector3(0.0f, 0.0f, 0.0f),
+				Vector3(0.0f, 0.0f, 0.0f) };
 		}
 		else
 		{
@@ -742,14 +959,16 @@ void GameScene::init()
 
 			SRT srt{};
 			m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
+			m_localEnemyMeshBounds =
+				GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
 		}
 	}
-	// 敵のパラメータを設定
+	// 敵のパラメータを設宁E
 	DebugUI::RedistDebugFunction([this]() {
 		DebugEnemies();
 		});
 
-	// プレイヤのパラメータを設定
+	// プレイヤのパラメータを設宁E
 	DebugUI::RedistDebugFunction([this]() {
 		DebugPlayerSRT();
 		});
@@ -801,36 +1020,36 @@ void GameScene::DebugWalls()
 
 	selected_model = std::clamp(selected_model, 0, static_cast<int>(m_walls.size()) - 1);
 
-	// 1. ドロップダウンのプレビュー名を現在の selected_model から作成
+	// 1. ドロチE・ダウンのプレビュー名を現在の selected_model から作諱E
 	std::string preview_str = std::to_string(selected_model);
 	if (preview_str.length() < 3) {
 		preview_str.insert(0, 3 - preview_str.length(), '0');
 	}
 	std::string preview_name = "Wall_" + preview_str;
 
-	// BeginComboを使ってドロップダウンを作成
+	// BeginComboを使ってドロチE・ダウンを作諱E
 	if (ImGui::BeginCombo("Wall", preview_name.c_str()))
 	{
 		for (int i = 0; i < static_cast<int>(m_walls.size()); ++i)
 		{
 			const bool is_selected = (selected_model == i);
 
-			// 【修正】リストの項目名は selected_model ではなく i を使う
+			// 【修正】リスト縺E頁E岼名縺E selected_model ではなぁEi を使ぁE
 			std::string str = std::to_string(i);
 			if (str.length() < 3) {
-				// 3桁に足りない分だけ、先頭に '0' を挿入する
+				// 3桁に足りなぁE・だけ、蛛E頭に '0' を挿入する
 				str.insert(0, 3 - str.length(), '0');
 			}
 
 			std::string item_name = std::string("Wall_") + str;
 
-			// リストの各アイテムを描画し、クリックされたか判定
+			// リスト縺E吁EいイチEΒを描画し、クリチEけされたか判宁E
 			if (ImGui::Selectable(item_name.c_str(), is_selected))
 			{
 				selected_model = i;
 			}
 
-			// ドロップダウンを開いた時、現在選択されているアイテムにフォーカスを合わせる
+			// ドロチE・ダウンを開ぁE◆時、現在選択されてぁEｋアイチEΒにフォーカスを合わせめE
 			if (is_selected)
 			{
 				ImGui::SetItemDefaultFocus();
@@ -859,8 +1078,8 @@ void GameScene::DebugWalls()
 
 	selected_model = std::clamp(selected_model, 0, static_cast<int>(m_walls.size()) - 1);
 
-	// 2. 選択されている壁のインスタンスを取得
-	// ※ m_walls は壁を管理している配列や std::vector を想定しています。実際の変数名に合わせてください。
+	// 2. 選択されてぁEｋ壁縺Eインスタンスを取征E
+	// ※ m_walls は壁を管琁E＠てぁEｋ配蛛EめEstd::vector を想定してぁE∪す。実際の変数名に合わせてください、E
 	auto& currentWall = m_walls[selected_model];
 	if (!currentWall)
 	{
@@ -868,22 +1087,22 @@ void GameScene::DebugWalls()
 		return;
 	}
 
-	// 3. 選択中の壁から【現在の値】を取得し、スライダー用の変数にセット
+	// 3. 選択中の壁から【現在の値】を取得し、スライダー用の変数にセチEヨ
 	SRT srt = currentWall->getSRT();
-	float wallheight = currentWall->getheight();	// ※getterが存在すると仮定
-	float wallwidth = currentWall->getwidth();		// ※getterが存在すると仮定
+	float wallheight = currentWall->getheight();	// ※getterが存在すると仮宁E
+	float wallwidth = currentWall->getwidth();		// ※getterが存在すると仮宁E
 	float wallrotationy = srt.rot.y;
 	Vector3 wallposition = srt.pos;
 
 	bool isChanged = false;
 
-	// スライダーが操作されて値が変わった場合、isChanged が true になる
+	// スライダーが操作されて値が変わった場合、isChanged ぁEtrue になめE
 	isChanged |= ImGui::SliderFloat("height", &wallheight, 1.0f, 500.0f);
 	isChanged |= ImGui::SliderFloat("width", &wallwidth, 1.0f, 1000.0f);
 	isChanged |= ImGui::SliderFloat("rotation Y", &wallrotationy, -PI, PI);
 	isChanged |= ImGui::SliderFloat3("position", &wallposition.x, -1000.0f, 1000.0f);
 
-	// 4. パラメータに変更があった場合のみ、選択中の壁に変更を反映
+	// 4. パラメータに変更があった場合縺Eみ、E∈択中の壁に変更を反映
 	if (isChanged)
 	{
 		// 【修正】g_wall... ではなく、ImGuiで操作したローカル変数を使用する
@@ -894,7 +1113,7 @@ void GameScene::DebugWalls()
 		currentWall->setwidth(wallwidth);
 		currentWall->setheight(wallheight);
 
-		currentWall->calcEqation();	// 変更があったので平面の方程式を再計算する
+		currentWall->calcEqation();	// 変更があった縺Eで平面の方程式を再計算すめE
 	}
 
 	ImGui::End();
@@ -1006,7 +1225,7 @@ void GameScene::DebugPlayerSRT()
 
 	bool isChanged = false;
 
-	// スライダーが操作されて値が変わった場合、isChanged が true になる
+	// スライダーが操作されて値が変わった場合、isChanged ぁEtrue になめE
 	isChanged |= ImGui::SliderFloat3("rotation", &rot.x, -PI, PI);
 	isChanged |= ImGui::SliderFloat3("scale", &scale.x, 0.01f, 10.0f);
 	isChanged |= ImGui::SliderFloat3("position", &position.x, -1000.0f, 1000.0f);
@@ -1069,8 +1288,7 @@ void GameScene::DebugCombat()
     ImGui::Text("State: %s", m_combat.GetStateName().data());
     ImGui::Text("Player Motion: %s", m_player->getMotionStateName());
     ImGui::Text("Left Shift: Jump");
-    ImGui::Text("Space / J: Attack");
-    ImGui::Text("K / Right Mouse: Guard");
+    ImGui::Text("Left click: Attack");
     ImGui::Text("R: Reset Match");
     ImGui::Separator();
     ImGui::Text("Player HP");
@@ -1078,4 +1296,92 @@ void GameScene::DebugCombat()
     ImGui::Text("Enemy HP");
     ImGui::ProgressBar(m_combat.GetEnemyHp() / 100.0f, ImVec2(-1.0f, 0.0f));
     ImGui::End();
+
+	ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 320.0f), ImVec2(900.0f, 900.0f));
+    ImGui::Begin("Attack Collision Debug");
+    ImGui::Checkbox("Draw collision volumes", &m_drawAttackCollisionDebug);
+	if (m_drawAttackCollisionDebug)
+	{
+		ImGui::Indent();
+		ImGui::Checkbox("X-ray (ignore depth)", &m_drawAttackCollisionXray);
+		ImGui::Checkbox("AABB broad phase", &m_drawAttackBroadPhase);
+		ImGui::SameLine();
+		ImGui::Checkbox("OBB narrow phase", &m_drawAttackNarrowPhase);
+		ImGui::Checkbox("World labels", &m_drawAttackCollisionLabels);
+		ImGui::Unindent();
+	}
+	ImGui::Checkbox("Draw legacy spheres / axes", &m_drawLegacyPhysicsDebug);
+    ImGui::Separator();
+	const auto& collision = m_combat.GetCollisionDebugState();
+	ImGui::Text("Pipeline: AABB broad phase -> OBB narrow phase");
+    ImGui::Text("Attack window: %s", m_combat.IsPlayerAttackActive() ? "ACTIVE" : "INACTIVE");
+	ImGui::Text("Sword transform: %s", collision.swordTransformValid ? "VALID" : "INVALID");
+	ImGui::Text("Player auto OBB: %.1f x %.1f x %.1f",
+		collision.playerObb.lengthx,
+		collision.playerObb.lengthy,
+		collision.playerObb.lengthz);
+	ImGui::Text("Enemy auto OBB: %.1f x %.1f x %.1f",
+		collision.enemyObb.lengthx,
+		collision.enemyObb.lengthy,
+		collision.enemyObb.lengthz);
+	ImGui::Separator();
+	ImGui::TextColored(
+		collision.broadPhaseOverlap
+			? ImVec4(1.0f, 0.85f, 0.10f, 1.0f)
+			: ImVec4(0.25f, 0.80f, 1.0f, 1.0f),
+		"1. Broad phase (AABB): %s",
+		collision.broadPhaseOverlap ? "PASS" : "REJECT");
+	ImGui::TextColored(
+		collision.narrowPhaseHit
+			? ImVec4(1.0f, 0.15f, 0.05f, 1.0f)
+			: ImVec4(0.75f, 0.45f, 1.0f, 1.0f),
+		"2. Narrow phase (OBB): %s",
+		collision.narrowPhaseHit
+			? "HIT"
+			: (collision.narrowPhaseTested ? "MISS" : "SKIPPED"));
+	ImGui::Text("Damage: %.1f", 25.0f);
+    ImGui::Separator();
+	ImGui::TextColored(ImVec4(0.15f, 0.85f, 1.0f, 1.0f), "CYAN/BLUE: AABB (broad phase)");
+	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.10f, 1.0f), "YELLOW: AABB candidate overlap");
+	ImGui::TextColored(ImVec4(0.20f, 0.75f, 1.0f, 1.0f), "LIGHT BLUE: player auto OBB");
+	ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "GREEN: enemy auto OBB");
+	ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.05f, 1.0f), "ORANGE/PURPLE: sword OBBs");
+	ImGui::TextColored(ImVec4(1.0f, 0.08f, 0.04f, 1.0f), "RED: narrow-phase hit");
+    ImGui::End();
+
+	if (!m_drawAttackCollisionDebug || !m_drawAttackCollisionLabels)
+		return;
+
+	const Matrix4x4 view = m_camera.GetViewMatrix();
+	const Matrix4x4 projection = m_camera.GetProjMatrix();
+	if (m_drawAttackBroadPhase)
+	{
+		DrawWorldCollisionLabel(
+			view, projection, GetAabbCenter(collision.enemyBroadPhase),
+			ImVec2(-135.0f, -72.0f), "ENEMY AABB [BROAD]", IM_COL32(30, 145, 255, 255));
+		if (collision.swordTransformValid)
+		{
+			DrawWorldCollisionLabel(
+				view, projection, GetAabbCenter(collision.attackBroadPhase),
+				ImVec2(-150.0f, 45.0f), "ATTACK AABB [BROAD]", IM_COL32(30, 230, 255, 255));
+		}
+	}
+	if (m_drawAttackNarrowPhase)
+	{
+		DrawWorldCollisionLabel(
+			view, projection, collision.playerObb.worldcenter,
+			ImVec2(-180.0f, 4.0f), "PLAYER OBB [AUTO]", IM_COL32(40, 190, 255, 255));
+		DrawWorldCollisionLabel(
+			view, projection, collision.enemyObb.worldcenter,
+			ImVec2(-180.0f, -34.0f), "ENEMY OBB [NARROW]", IM_COL32(45, 255, 75, 255));
+		if (collision.swordTransformValid)
+		{
+			DrawWorldCollisionLabel(
+				view, projection, collision.bladeObb.worldcenter,
+				ImVec2(45.0f, -10.0f), "BLADE OBB", IM_COL32(255, 95, 10, 255));
+			DrawWorldCollisionLabel(
+				view, projection, collision.tipSweepObb.worldcenter,
+				ImVec2(45.0f, 28.0f), "SWEEP OBB", IM_COL32(220, 45, 255, 255));
+		}
+	}
 }

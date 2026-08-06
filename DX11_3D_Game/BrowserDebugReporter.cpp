@@ -41,8 +41,10 @@ void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot, const Comb
     file << "    \"playerStamina\": " << combatState.playerStamina << ",\n";
     file << "    \"enemyHp\": " << combatState.enemyHp << ",\n";
     file << "    \"distanceMeters\": " << combatState.distanceMeters << ",\n";
-    file << "    \"playerGuarding\": " << (combatState.playerGuarding ? "true" : "false") << ",\n";
-    file << "    \"enemyInRecovery\": " << (combatState.enemyInRecovery ? "true" : "false") << "\n";
+    file << "    \"enemyInRecovery\": " << (combatState.enemyInRecovery ? "true" : "false") << ",\n";
+    file << "    \"narrowPhaseHit\": " << (combatState.narrowPhaseHit ? "true" : "false") << ",\n";
+    file << "    \"broadPhaseRadius\": " << combatState.broadPhaseRadius << ",\n";
+    file << "    \"attackHitboxLength\": " << combatState.attackHitboxLength << "\n";
     file << "  }\n";
     file << "}\n";
 
@@ -73,8 +75,10 @@ void BrowserDebugReporter::Write(const PerformanceSnapshot& snapshot, const Comb
     script << "    playerStamina: " << combatState.playerStamina << ",\n";
     script << "    enemyHp: " << combatState.enemyHp << ",\n";
     script << "    distanceMeters: " << combatState.distanceMeters << ",\n";
-    script << "    playerGuarding: " << (combatState.playerGuarding ? "true" : "false") << ",\n";
-    script << "    enemyInRecovery: " << (combatState.enemyInRecovery ? "true" : "false") << "\n";
+    script << "    enemyInRecovery: " << (combatState.enemyInRecovery ? "true" : "false") << ",\n";
+    script << "    narrowPhaseHit: " << (combatState.narrowPhaseHit ? "true" : "false") << ",\n";
+    script << "    broadPhaseRadius: " << combatState.broadPhaseRadius << ",\n";
+    script << "    attackHitboxLength: " << combatState.attackHitboxLength << "\n";
     script << "  }\n";
     script << "};\n";
 }
@@ -118,7 +122,7 @@ void BrowserDebugReporter::WriteHtml() const
         "    const grid=document.getElementById('grid');\n"
         "    const status=document.getElementById('status');\n"
         "    function render(data,source){\n"
-        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds],['Attack',data.combat.currentAttackId],['Phase',data.combat.currentPhase],['Player HP',data.combat.playerHp],['Player Stamina',data.combat.playerStamina],['Enemy HP',data.combat.enemyHp],['Distance m',data.combat.distanceMeters],['Guarding',data.combat.playerGuarding],['Enemy Recovery',data.combat.enemyInRecovery],['Broad Candidates',data.combat.broadPhaseCandidateCount],['Collisions',data.combat.confirmedCollisionCount]];\n"
+        "      const items=[['frameMilliseconds',data.frameMilliseconds],['estimatedFps',data.estimatedFps],['fixedUpdateCount',data.fixedUpdateCount],['CPU Budget',data.budget.cpuMilliseconds],['GPU Budget',data.budget.gpuMilliseconds],['Attack',data.combat.currentAttackId],['Phase',data.combat.currentPhase],['Player HP',data.combat.playerHp],['Player Stamina',data.combat.playerStamina],['Enemy HP',data.combat.enemyHp],['Distance m',data.combat.distanceMeters],['Enemy Recovery',data.combat.enemyInRecovery],['Broad Candidates',data.combat.broadPhaseCandidateCount],['Narrow Hit',data.combat.narrowPhaseHit],['Collisions',data.combat.confirmedCollisionCount]];\n"
         "      grid.innerHTML=items.map(([k,v])=>`<section class=\"tile\"><div class=\"label\">${labels[k]||k}</div><div class=\"value\">${v}</div></section>`).join('');\n"
         "      status.textContent=`Debug data loaded from ${source}. Keep the game running to update values.`;\n"
         "    }\n"

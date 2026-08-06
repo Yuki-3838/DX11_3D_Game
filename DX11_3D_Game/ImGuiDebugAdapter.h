@@ -13,5 +13,5 @@ class ImGuiDebugAdapter
 {
 public:
     /** @brief パフォーマンスと戦闘状態のデバッグウィンドウを構築する。 */
-    void Render(const DebugOverlay& overlay);
+    void Render(DebugOverlay& overlay);
 };

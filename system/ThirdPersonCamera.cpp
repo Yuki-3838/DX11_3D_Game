@@ -15,47 +15,11 @@ void ThirdPersonCamera::Init()
 
 void ThirdPersonCamera::Update(const Vector3& playerPosition, float playerYaw, bool viewportHovered)
 {
-	auto& input = CInputManager::GetInstance();
+	(void)viewportHovered;
 	m_playerYaw = playerYaw;
-	const bool rightMouse = input.IsMousePressed(CInputManager::MOUSE_RIGHT);
-	const bool canUseMouse = viewportHovered || !ImGui::GetIO().WantCaptureMouse;
-	const bool mouseLook = m_mouseLookEnabled && canUseMouse;
-	const bool rotating = rightMouse && canUseMouse;
-	m_orbiting = rotating;
-
-	const int mouseX = input.GetMouseX();
-	const int mouseY = input.GetMouseY();
-	if (!m_mouseInitialized)
-	{
-		m_lastMouseX = mouseX;
-		m_lastMouseY = mouseY;
-		m_mouseInitialized = true;
-	}
-
-	const ImVec2 imguiMouseDelta = ImGui::GetIO().MouseDelta;
-	float mouseDeltaX = imguiMouseDelta.x;
-	float mouseDeltaY = imguiMouseDelta.y;
-	if (std::abs(mouseDeltaX) < 0.001f && std::abs(mouseDeltaY) < 0.001f)
-	{
-		mouseDeltaX = static_cast<float>(mouseX - m_lastMouseX);
-		mouseDeltaY = static_cast<float>(mouseY - m_lastMouseY);
-	}
-	m_lastMouseX = mouseX;
-	m_lastMouseY = mouseY;
-
-	if (mouseLook || rotating)
-	{
-		m_yaw += mouseDeltaX * m_mouseSensitivity;
-		m_pitch -= mouseDeltaY * m_mouseSensitivity;
-		m_pitch = std::clamp(m_pitch, -1.5f, 1.5f);
-	}
-
-	const float wheel = static_cast<float>(input.GetMouseWheelDelta());
-	if (canUseMouse && wheel != 0.0f)
-	{
-		SetLookDistance(m_lookDistance - wheel * 0.02f);
-	}
-
+	// Keep the camera directly behind the player's facing direction.
+	m_yaw = 0.0f;
+	m_orbiting = false;
 	ApplyTransform(playerPosition);
 }
 
@@ -68,10 +32,13 @@ void ThirdPersonCamera::Reset(const Vector3& playerPosition, float playerYaw)
 {
 	m_yaw = 0.0f;
 	m_playerYaw = playerYaw;
-	m_pitch = 0.2f;
+	// Keep the initial rear direction, but never rotate the camera when the
+	// player turns or moves. The player position is still followed for framing.
+	m_cameraYaw = playerYaw + PI;
+	m_pitch = 0.30f;
 	m_mouseSensitivity = 0.004f;
-	m_lookDistance = 50.0f;
-	m_targetHeight = 12.0f;
+	m_lookDistance = 70.0f;
+	m_targetHeight = 25.0f;
 	m_orbiting = false;
 	ApplyTransform(playerPosition);
 }
@@ -85,7 +52,7 @@ void ThirdPersonCamera::ApplyTransform(const Vector3& playerPosition)
 {
 	const Vector3 target = playerPosition + Vector3(0.0f, m_targetHeight, 0.0f);
 	// プレイヤーの正面とは反対側をカメラの初期位置にする。
-	const float cameraYaw = m_playerYaw + PI + m_yaw;
+	const float cameraYaw = m_cameraYaw + m_yaw;
 	const float cosPitch = std::cos(m_pitch);
 	const Vector3 offset(
 		std::sin(cameraYaw) * cosPitch * m_lookDistance,
