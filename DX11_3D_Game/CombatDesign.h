@@ -16,7 +16,7 @@ namespace Combat
 enum class AttackPhase
 {
     Idle,          ///< 攻撃していない。
-    Anticipation,  ///< 前兆。プレイヤーが回避、ガード、間合い調整を判断する時間。
+    Anticipation,  ///< 前兆。プレイヤーが回避や間合い調整を判断する時間。
     Active,        ///< 攻撃判定が有効な時間。
     Recovery,      ///< 攻撃後の硬直。プレイヤーが反撃する主なすき。
     Cooldown,      ///< 次行動までの制限時間。
@@ -31,17 +31,6 @@ enum class NarrowPhaseType
     Sphere,  ///< 軽量な球判定。
     Capsule, ///< 武器や腕、尻尾に使いやすいカプセル判定。
     Obb,     ///< 角度付き箱判定。武器の刃や範囲攻撃向け。
-};
-
-/**
- * @enum GuardType
- * @brief 攻撃がガードにどう扱われるか。
- */
-enum class GuardType
-{
-    Blockable,     ///< 通常ガード可能。
-    GuardBreak,    ///< ガードはできるが姿勢値を大きく削る。
-    Unblockable,   ///< ガード不可。前兆を大きくして公平性を担保する。
 };
 
 /**
@@ -68,7 +57,6 @@ struct BroadPhaseFilter
 {
     float maxDistance = 3.0f;      ///< 攻撃者から対象までの最大距離。
     float maxAngleDegrees = 70.0f; ///< 攻撃者の正面から許容する角度。
-    bool acceptsGuardingTarget = true;
     bool acceptsDownedTarget = false;
 };
 
@@ -82,6 +70,14 @@ struct HitboxDefinition
     NarrowPhaseType narrowPhase = NarrowPhaseType::Capsule;
     float radius = 0.25f;
     float length = 0.8f;
+};
+
+/** A simple target volume used by the combat collision pass. */
+struct HurtboxDefinition
+{
+    NarrowPhaseType narrowPhase = NarrowPhaseType::Capsule;
+    float radius = 0.35f;
+    float height = 1.8f;
 };
 
 /**
@@ -98,7 +94,6 @@ struct AttackData
     AttackFrameDefinition frames;
     BroadPhaseFilter broadPhaseFilter;
     std::vector<HitboxDefinition> hitboxes;
-    GuardType guardType = GuardType::Blockable;
     int damage = 10;
     int staminaDamage = 8;
     int postureDamage = 5;
@@ -138,8 +133,12 @@ struct CombatDebugState
     int playerStamina = 100;
     int enemyHp = 160;
     float distanceMeters = 3.0f;
-    bool playerGuarding = false;
     bool enemyInRecovery = false;
+    bool debugDrawCollision = true;
+    bool attackHitboxActive = false;
+    bool narrowPhaseHit = false;
+    float broadPhaseRadius = 0.0f;
+    float attackHitboxLength = 0.0f;
 };
 
 /**

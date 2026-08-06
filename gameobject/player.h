@@ -21,12 +21,19 @@ public:
 	inline static float RATE_MOVE_MODEL = 0.2f;					// 移動減衰割合
 
 public:
+	enum class MotionState
+	{
+		Idle,
+		Walk,
+		Jump,
+	};
 	
 	// ISceneのポインタを受け取るコンストラクタを追加
 	player(IScene* scene) :gameobject(scene) {}
 
 	void update(uint64_t delta) override;
 	void update(uint64_t delta, float cameraYaw);
+	void update(uint64_t delta, float cameraYaw, bool movementLocked);
 	void draw(uint64_t delta) override;
 	void init() override;
 	void dispose() override;
@@ -39,6 +46,12 @@ public:
 		return m_srt.pos;
 	}
 
+	SRT getRenderSRT() const;
+	MotionState getMotionState() const { return m_motionState; }
+	const char* getMotionStateName() const;
+	float getMotionTime() const { return m_motionTime; }
+	void resetMotion();
+
 	void setVel(const Vector3& vel) {
 		m_move = vel;
 	}
@@ -46,5 +59,10 @@ public:
 private:
 	Vector3 m_move{0,0,0};				// 移動量
 	Vector3 m_destrot{0,0,0};			// 目標姿勢
+	MotionState m_motionState = MotionState::Idle;
+	float m_motionTime = 0.0f;
+	float m_jumpVelocity = 0.0f;
+	bool m_jumpWasPressed = false;
+	bool m_isJumping = false;
 
 };

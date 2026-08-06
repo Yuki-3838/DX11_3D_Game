@@ -8,22 +8,22 @@
 
 void gameinit() 
 {
-	// ƒŒƒ“ƒ_ƒ‰‚Ì‰Šú‰»    
+	// ãƒ¬ãƒ³ãƒ€ãƒ©ã®åˆæœŸåŒ–
 	Renderer::Init();
 
-	// DirectInput‚Ì‰Šú‰»
+	// DirectInputã®åˆæœŸåŒ–
 	CDirectInput::GetInstance().Init(Application::GetHInstance(), 
 		Application::GetWindow(),
 		Application::GetWidth(),
 		Application::GetHeight());
 
-	// ƒfƒoƒbƒOUI‚Ì‰Šú‰»
+	// ãƒ‡ãƒãƒƒã‚°UIã®åˆæœŸåŒ–
 	DebugUI::Init(Renderer::GetDevice(), Renderer::GetDeviceContext());
 
-	// ƒV[ƒ“ƒ}ƒl[ƒWƒƒ‚Ì‰Šú‰»
+	// ã‚·ãƒ¼ãƒ³ãƒãƒãƒ¼ã‚¸ãƒ£ã®åˆæœŸåŒ–
 	SceneManager::Init();
 
-	//@ƒV[ƒ“‘I‘ğ
+	//ã€€ã‚·ãƒ¼ãƒ³é¸æŠ
 	SceneManager::SetCurrentScene("GameScene");
 
 }
@@ -33,7 +33,7 @@ void gameupdate(uint64_t deltatime)
     auto& input = CInputManager::GetInstance();
     input.Update();
 
-    // F1: •ÇEÕ“ËƒfƒoƒbƒOƒV[ƒ“AF2: Ôƒ‚ƒfƒ‹Šm”FƒV[ƒ“
+    // F1: GameScene, F2: car model scene, F3: motion editor
     if (input.IsKeyTriggered(DIK_F1))
     {
         SceneManager::SetCurrentScene("GameScene");
@@ -42,34 +42,38 @@ void gameupdate(uint64_t deltatime)
     {
         SceneManager::SetCurrentScene("CarScene");
     }
+    else if (input.IsKeyTriggered(DIK_F3))
+    {
+        SceneManager::SetCurrentScene("MotionEditorScene");
+    }
 
     SceneManager::Update(deltatime);
 }
 
 void gamedraw(uint64_t deltatime) 
 {
-	// ƒŒƒ“ƒ_ƒŠƒ“ƒO‘Oˆ—
+	// ãƒ¬ãƒ³ãƒ€ãƒªãƒ³ã‚°å‰å‡¦ç†
 	Renderer::Begin();
 
-	// ƒV[ƒ“ƒ}ƒl[ƒWƒƒ‚Ì•`‰æ
+	// ã‚·ãƒ¼ãƒ³ãƒãƒãƒ¼ã‚¸ãƒ£ã®æç”»
 	SceneManager::Draw(deltatime);
 
-	// ƒfƒoƒbƒOUI‚Ì•`‰æ
+	// ãƒ‡ãƒãƒƒã‚°UIã®æç”»
 	DebugUI::Render();
 
-	// ƒŒƒ“ƒ_ƒŠƒ“ƒOŒãˆ—
+	// ãƒ¬ãƒ³ãƒ€ãƒªãƒ³ã‚°å¾Œå‡¦ç†
 	Renderer::End();
 }
 
 void gamedispose() 
 {
-	// ƒfƒoƒbƒOUI‚ÌI—¹ˆ—
+	// ãƒ‡ãƒãƒƒã‚°UIã®çµ‚äº†å‡¦ç†
 	DebugUI::DisposeUI();
 
-	// ƒV[ƒ“ƒ}ƒl[ƒWƒƒ‚ÌI—¹ˆ—
+	// ã‚·ãƒ¼ãƒ³ãƒãƒãƒ¼ã‚¸ãƒ£ã®çµ‚äº†å‡¦ç†
 	SceneManager::Dispose();
 
-	// ƒŒƒ“ƒ_ƒ‰‚ÌI—¹ˆ—
+	// ãƒ¬ãƒ³ãƒ€ãƒ©ã®çµ‚äº†å‡¦ç†
 	Renderer::Dispose();
 
 }
@@ -78,17 +82,17 @@ void gameloop()
 {
 	uint64_t delta_time = 0;
 
-	// ƒtƒŒ[ƒ€‚Ì‘Ò‚¿ŠÔ‚ğŒvZ‚·‚é
+	// ãƒ•ãƒ¬ãƒ¼ãƒ ã®å¾…ã¡æ™‚é–“ã‚’è¨ˆç®—ã™ã‚‹
 	static FPS fpsrate(65);
 
-	// ‘O‰ñÀs‚³‚ê‚Ä‚©‚ç‚ÌŒo‰ßŠÔ‚ğŒvZ‚·‚é
+	// å‰å›å®Ÿè¡Œã•ã‚Œã¦ã‹ã‚‰ã®çµŒéæ™‚é–“ã‚’è¨ˆç®—ã™ã‚‹
 	delta_time = fpsrate.BeginFrame();
 
-	// XVˆ—A•`‰æˆ—‚ğŒÄ‚Ño‚·
+	// æ›´æ–°å‡¦ç†ã€æç”»å‡¦ç†ã‚’å‘¼ã³å‡ºã™
 	gameupdate(delta_time);
 	gamedraw(delta_time);
 
-	// ‹K’èŠÔ‚Ü‚ÅWAIT
+	// è¦å®šæ™‚é–“ã¾ã§WAIT
 	fpsrate.EndFrame();
 
 }

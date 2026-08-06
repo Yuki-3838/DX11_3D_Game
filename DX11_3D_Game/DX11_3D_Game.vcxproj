@@ -21,9 +21,9 @@
   <ItemGroup>
     <ClInclude Include="BrowserDebugReporter.h" />
     <ClInclude Include="CombatDesign.h" />
+    <ClInclude Include="CombatCollision.h" />
     <ClInclude Include="DebugOverlay.h" />
     <ClInclude Include="FrameTimer.h" />
-    <ClInclude Include="GameApp.h" />
     <ClInclude Include="ImGuiDebugAdapter.h" />
     <ClInclude Include="PerformanceProfiler.h" />
     <ClInclude Include="Renderer.h" />
@@ -47,6 +47,7 @@
     <ClInclude Include="..\gameobject\wall.h" />
     <ClInclude Include="..\scene\CarScene.h" />
     <ClInclude Include="..\scene\GameScene.h" />
+    <ClInclude Include="..\scene\MotionEditorScene.h" />
     <ClInclude Include="..\scene\WallScene.h" />
     <ClInclude Include="..\system\AimOrientation.h" />
     <ClInclude Include="..\system\AssimpPerse.h" />
@@ -57,6 +58,7 @@
     <ClInclude Include="..\system\ThirdPersonCamera.h" />
     <ClInclude Include="..\system\CAnimationData.h" />
     <ClInclude Include="..\system\CAnimationMesh.h" />
+	<ClInclude Include="..\system\CCharacterAnimator.h" />
     <ClInclude Include="..\system\CAnimationMeshBlender.h" />
     <ClInclude Include="..\system\CAnimationObject.h" />
     <ClInclude Include="..\system\CapsuleDrawer.h" />
@@ -109,9 +111,9 @@
   <ItemGroup>
     <ClCompile Include="BrowserDebugReporter.cpp" />
     <ClCompile Include="CombatDesign.cpp" />
+    <ClCompile Include="CombatCollision.cpp" />
     <ClCompile Include="DebugOverlay.cpp" />
     <ClCompile Include="FrameTimer.cpp" />
-    <ClCompile Include="GameApp.cpp" />
     <ClCompile Include="ImGuiDebugAdapter.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="PerformanceProfiler.cpp" />
@@ -134,6 +136,7 @@
     <ClCompile Include="..\gameobject\wall.cpp" />
     <ClCompile Include="..\scene\CarScene.cpp" />
     <ClCompile Include="..\scene\GameScene.cpp" />
+    <ClCompile Include="..\scene\MotionEditorScene.cpp" />
     <ClCompile Include="..\scene\WallScene.cpp" />
     <ClCompile Include="..\system\AssimpPerse.cpp" />
     <ClCompile Include="..\system\BoneCombMatrix.cpp" />
@@ -143,6 +146,7 @@
     <ClCompile Include="..\system\ThirdPersonCamera.cpp" />
     <ClCompile Include="..\system\CAnimationData.cpp" />
     <ClCompile Include="..\system\CAnimationMesh.cpp" />
+	<ClCompile Include="..\system\CCharacterAnimator.cpp" />
     <ClCompile Include="..\system\CAnimationMeshBlender.cpp" />
     <ClCompile Include="..\system\CAnimationObject.cpp" />
     <ClCompile Include="..\system\CapsuleDrawer.cpp" />
@@ -150,6 +154,7 @@
     <ClCompile Include="..\system\CCylinderMesh.cpp" />
     <ClCompile Include="..\system\CLineMesh.cpp" />
     <ClCompile Include="..\system\collision.cpp" />
+	<ClCompile Include="..\system\ModelCollisionBounds.cpp" />
     <ClCompile Include="..\system\ConeDrawer.cpp" />
     <ClCompile Include="..\system\CPlane.cpp" />
     <ClCompile Include="..\system\CPlaneMesh.cpp" />

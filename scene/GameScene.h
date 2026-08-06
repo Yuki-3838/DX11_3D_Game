@@ -7,6 +7,9 @@
 #include "../system/IScene.h"
 #include "../system/C3DShape.h"
 #include "../system/ThirdPersonCamera.h"
+#include "../system/CAnimationMesh.h"
+#include "../system/CCharacterAnimator.h"
+#include "../system/BoneCombMatrix.h"
 #include "../system/collision.h"
 #include "../system/OneVsOneCombat.h"
 #include "../gameobject/player.h"
@@ -38,6 +41,9 @@ public:
 
 private:
 	ThirdPersonCamera m_camera;
+	std::unique_ptr<CAnimationMesh> m_playerAnimationMesh;
+	CCharacterAnimator m_playerAnimator;
+	BoneCombMatrix m_playerBoneComb;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ
@@ -45,10 +51,18 @@ private:
 	std::vector<std::unique_ptr<wall>>	m_walls;			//	ｗａｌｌ
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	OneVsOneCombat m_combat;
+	bool m_drawAttackCollisionDebug = true;
+	bool m_drawAttackBroadPhase = true;
+	bool m_drawAttackNarrowPhase = true;
+	bool m_drawAttackCollisionLabels = true;
+	bool m_drawAttackCollisionXray = true;
+	bool m_drawLegacyPhysicsDebug = false;
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系
 	GM31::GE::Collision::BoundingSphere m_localbsenemy;		//  敵BS（）ローカル座標系
+	GM31::GE::Collision::BoundingBoxAABB m_localPlayerMeshBounds{};
+	GM31::GE::Collision::BoundingBoxAABB m_localEnemyMeshBounds{};
 	std::vector<wall*> m_hitWallObjects;						//  今フレーム衝突した壁
 };
 

@@ -4,21 +4,29 @@
 void main(line PS_IN input[2], inout TriangleStream<PS_IN> OutputStream)
 {
     PS_IN output;
-    float thickness = LineWidth; // ü‚Ì‘¾‚³A“K‹X’²®
+    // Old callers use 2-3 as a pixel-like width. New callers pass an NDC width.
+    float thickness = LineWidth > 0.1f ? LineWidth * 0.0015f : LineWidth;
 
-    // ü‚Ì•ûŒü‚ğŒvZ
-    float2 dir = normalize(input[1].Position.xy - input[0].Position.xy);
+    // Work in NDC. Offsetting raw clip coordinates made distant lines collapse
+    // into dots and nearby lines grow into giant bars.
+    float w0 = max(abs(input[0].Position.w), 0.00001f);
+    float w1 = max(abs(input[1].Position.w), 0.00001f);
+    float2 p0 = input[0].Position.xy / w0;
+    float2 p1 = input[1].Position.xy / w1;
+    float2 delta = p1 - p0;
+    float deltaLength = max(length(delta), 0.00001f);
+    float2 dir = delta / deltaLength;
 
-    // ³‹K‰»‚³‚ê‚½•ûŒü‚É’¼Œğ‚·‚éƒxƒNƒgƒ‹‚ğŒvZiü‚Ì•‚Ì‚½‚ßj
+    // æ­£è¦åŒ–ã•ã‚ŒãŸæ–¹å‘ã«ç›´äº¤ã™ã‚‹ãƒ™ã‚¯ãƒˆãƒ«ã‚’è¨ˆç®—ï¼ˆç·šã®å¹…ã®ãŸã‚ï¼‰
     float2 normal = float2(-dir.y, dir.x) * thickness;
 
-    // lŠpŒ`‚Ì’¸“_‚ğŒvZi2‚Â‚ÌOŠpŒ`‚ğŒ`¬j
-    float4 pos1 = input[0].Position + float4(normal, 0.0, 0.0);
-    float4 pos2 = input[0].Position - float4(normal, 0.0, 0.0);
-    float4 pos3 = input[1].Position + float4(normal, 0.0, 0.0);
-    float4 pos4 = input[1].Position - float4(normal, 0.0, 0.0);
+    // å››è§’å½¢ã®é ‚ç‚¹ã‚’è¨ˆç®—ï¼ˆ2ã¤ã®ä¸‰è§’å½¢ã‚’å½¢æˆï¼‰
+    float4 pos1 = input[0].Position + float4(normal * w0, 0.0, 0.0);
+    float4 pos2 = input[0].Position - float4(normal * w0, 0.0, 0.0);
+    float4 pos3 = input[1].Position + float4(normal * w1, 0.0, 0.0);
+    float4 pos4 = input[1].Position - float4(normal * w1, 0.0, 0.0);
 
-    // Å‰‚ÌOŠpŒ`
+    // æœ€åˆã®ä¸‰è§’å½¢
     output.Position = pos1;
     output.Diffuse = input[0].Diffuse;
     output.TexCoord.xy = 0.0f;
@@ -34,7 +42,7 @@ void main(line PS_IN input[2], inout TriangleStream<PS_IN> OutputStream)
     output.TexCoord.xy = 0.0f;
     OutputStream.Append(output);
 
-    // “ñ”Ô–Ú‚ÌOŠpŒ`
+    // äºŒç•ªç›®ã®ä¸‰è§’å½¢
     output.Position = pos2;
     output.Diffuse = input[1].Diffuse;
     output.TexCoord.xy = 0.0f;

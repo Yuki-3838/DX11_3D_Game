@@ -1,5 +1,6 @@
 #include	<cstdint>
 #include	<cmath>
+#include	<algorithm>
 #include	<Windows.h>
 #include	<dinput.h>
 #include	"player.h"	
@@ -11,12 +12,17 @@ void player::init() {
 	m_srt.pos = Vector3(0, 0, 0);
 	m_srt.scale = Vector3(1.0f, 1.0f, 1.0f);
 	m_srt.rot = Vector3(0, 0, 0);
+	resetMotion();
 }
 void player::update(uint64_t dt) {
 	update(dt, m_srt.rot.y);
 }
 
 void player::update(uint64_t dt, float cameraYaw) {
+	update(dt, cameraYaw, false);
+}
+
+void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 
 	auto& input = CInputManager::GetInstance();
 	const auto isMoveKeyPressed = [&input](int directInputKey, int virtualKey) {
@@ -24,16 +30,66 @@ void player::update(uint64_t dt, float cameraYaw) {
 			((GetAsyncKeyState(virtualKey) & 0x8000) != 0);
 	};
 
-	const bool moveForward = isMoveKeyPressed(DIK_W, 'W');
-	const bool moveBackward = isMoveKeyPressed(DIK_S, 'S');
-	const bool moveLeft = isMoveKeyPressed(DIK_A, 'A');
-	const bool moveRight = isMoveKeyPressed(DIK_D, 'D');
+	const bool moveForward = !movementLocked && isMoveKeyPressed(DIK_W, 'W');
+	const bool moveBackward = !movementLocked && isMoveKeyPressed(DIK_S, 'S');
+	const bool moveLeft = !movementLocked && isMoveKeyPressed(DIK_A, 'A');
+	const bool moveRight = !movementLocked && isMoveKeyPressed(DIK_D, 'D');
+	const bool jumpDown = !movementLocked && isMoveKeyPressed(DIK_LSHIFT, VK_LSHIFT);
+	const bool jumpTriggered = jumpDown && !m_jumpWasPressed;
+	m_jumpWasPressed = jumpDown;
+	if (movementLocked)
+	{
+		// Attack animation owns the root pose. Cancel locomotion inertia on the
+		// very first attack frame so the character cannot slide while swinging.
+		m_move.x = 0.0f;
+		m_move.z = 0.0f;
+	}
+
+	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
+	if (jumpTriggered && !m_isJumping)
+	{
+		m_jumpVelocity = 8.5f;
+		m_isJumping = true;
+	}
+	if (m_isJumping)
+	{
+		m_srt.pos.y += m_jumpVelocity * deltaSec;
+		m_jumpVelocity -= 24.0f * deltaSec;
+		if (m_srt.pos.y <= 0.0f)
+		{
+			m_srt.pos.y = 0.0f;
+			m_jumpVelocity = 0.0f;
+			m_isJumping = false;
+		}
+	}
 
 	// WASDはカメラの水平な向きを基準に移動する。
 	// Wは画面奥、A/Dは画面左右、Sは画面手前へ移動する。
 	const float forwardInput = static_cast<float>(moveForward) - static_cast<float>(moveBackward);
 	const float rightInput = static_cast<float>(moveRight) - static_cast<float>(moveLeft);
 	const float inputLength = std::sqrt(forwardInput * forwardInput + rightInput * rightInput);
+	const bool isMoving = inputLength > 0.0f;
+	if (m_isJumping)
+	{
+		m_motionState = MotionState::Jump;
+	}
+	else if (isMoving)
+	{
+		m_motionState = MotionState::Walk;
+	}
+	else
+	{
+		m_motionState = MotionState::Idle;
+	}
+	if (m_motionState == MotionState::Walk)
+	{
+		m_motionTime += deltaSec;
+	}
+	else if (m_motionState == MotionState::Idle)
+	{
+		m_motionTime = 0.0f;
+	}
+
 	if (inputLength > 0.0f)
 	{
 		const float normalizedForward = forwardInput / inputLength;
@@ -54,7 +110,7 @@ void player::update(uint64_t dt, float cameraYaw) {
 		m_destrot.y = std::atan2(-moveX, -moveZ);
 	}
 
-	if (CInputManager::GetInstance().IsKeyPressed(DIK_RIGHT))
+	if (!movementLocked && CInputManager::GetInstance().IsKeyPressed(DIK_RIGHT))
 	{// 左回転
 		m_destrot.y = m_srt.rot.y - VALUE_ROTATE_MODEL;
 		if (m_destrot.y < -PI)
@@ -63,7 +119,7 @@ void player::update(uint64_t dt, float cameraYaw) {
 		}
 	}
 
-	if (CInputManager::GetInstance().IsKeyPressed(DIK_LEFT))
+	if (!movementLocked && CInputManager::GetInstance().IsKeyPressed(DIK_LEFT))
 	{// 右回転
 		m_destrot.y = m_srt.rot.y + VALUE_ROTATE_MODEL;
 		if (m_destrot.y > PI)
@@ -125,6 +181,40 @@ void player::draw(uint64_t dt) {
 	// 行列
 	Matrix4x4 mtx = smtx * pivotmtx1 * rmtx * pivotmtx2 * tmtx;
 
+}
+
+SRT player::getRenderSRT() const
+{
+	SRT renderSrt = m_srt;
+	if (m_motionState == MotionState::Walk)
+	{
+		const float step = std::sinf(m_motionTime * 7.0f);
+		renderSrt.pos.y -= std::fabs(step) * 0.12f;
+	}
+	return renderSrt;
+}
+
+const char* player::getMotionStateName() const
+{
+	switch (m_motionState)
+	{
+	case MotionState::Walk:
+		return "Walk";
+	case MotionState::Jump:
+		return "Jump";
+	default:
+		return "Idle";
+	}
+}
+
+void player::resetMotion()
+{
+	m_move = Vector3(0, 0, 0);
+	m_motionState = MotionState::Idle;
+	m_motionTime = 0.0f;
+	m_jumpVelocity = 0.0f;
+	m_jumpWasPressed = false;
+	m_isJumping = false;
 }
 
 void player::dispose() {

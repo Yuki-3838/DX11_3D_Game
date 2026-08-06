@@ -2,7 +2,7 @@
 
 /**
  * @file Renderer.h
- * @brief DirectXƒŒƒ“ƒ_ƒŠƒ“ƒO‚Åg—p‚·‚éŠeí\‘¢‘Ì‚ÆRendererƒNƒ‰ƒX‚ÌéŒ¾
+ * @brief DirectXãƒ¬ãƒ³ãƒ€ãƒªãƒ³ã‚°ã§ä½¿ç”¨ã™ã‚‹å„ç¨®æ§‹é€ ä½“ã¨Rendererã‚¯ãƒ©ã‚¹ã®å®£è¨€
  */
 
 #include "CommonTypes.h"
@@ -13,124 +13,123 @@
 #include <vector>
 #include <wrl/client.h>
 
- // ƒŠƒ“ƒN‚·‚×‚«ŠO•”ƒ‰ƒCƒuƒ‰ƒŠ
+ // ãƒªãƒ³ã‚¯ã™ã¹ãå¤–éƒ¨ãƒ©ã‚¤ãƒ–ãƒ©ãƒª
 
 #pragma comment(lib,"d3d11.lib")
 
 /**
  * @struct WEIGHT
- * @brief ƒ{[ƒ“‚Ì‰e‹¿î•ñ‚ğ•Û‚·‚é\‘¢‘Ì
- * @date 20231225 ’Ç‰Á
+ * @brief ãƒœãƒ¼ãƒ³ã®å½±éŸ¿æƒ…å ±ã‚’ä¿æŒã™ã‚‹æ§‹é€ ä½“
+ * @date 20231225 è¿½åŠ 
  */
 struct WEIGHT {
-    std::string bonename;   ///< ƒ{[ƒ“–¼
-    std::string meshname;   ///< ƒƒbƒVƒ…–¼
-    float weight;           ///< ƒEƒFƒCƒg’l
-    int vertexindex;        ///< ’¸“_ƒCƒ“ƒfƒbƒNƒX
+    std::string bonename;   ///< ãƒœãƒ¼ãƒ³å
+    std::string meshname;   ///< ãƒ¡ãƒƒã‚·ãƒ¥å
+    float weight;           ///< ã‚¦ã‚§ã‚¤ãƒˆå€¤
+    int vertexindex;        ///< é ‚ç‚¹ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹
 };
 
 /**
  * @struct BONE
- * @brief ƒ{[ƒ“\‘¢‘ÌiDX‘Î‰”Åj
- * @date 20231231 C³iDX‰»j
+ * @brief ãƒœãƒ¼ãƒ³æ§‹é€ ä½“ï¼ˆDXå¯¾å¿œç‰ˆï¼‰
+ * @date 20231231 ä¿®æ­£ï¼ˆDXåŒ–ï¼‰
  */
 struct BONE
 {
-    std::string bonename;          ///< ƒ{[ƒ“–¼
-    std::string meshname;          ///< ƒƒbƒVƒ…–¼
-    std::string armaturename;      ///< ƒA[ƒ}ƒ`ƒ…ƒA–¼
-    Matrix4x4 Matrix{};            ///< eqŠÖŒW‚ğl—¶‚µ‚½s—ñ
-    Matrix4x4 AnimationMatrix{};   ///< ©•ª‚Ì•ÏŒ`‚Ì‚İ‚ğl—¶‚µ‚½s—ñ
-    Matrix4x4 OffsetMatrix{};      ///< ƒ{[ƒ“ƒIƒtƒZƒbƒgs—ñ
-    int idx=0;                     ///< ”z—ñ’†‚ÌƒCƒ“ƒfƒbƒNƒX
-    std::vector<WEIGHT> weights;   ///< ‚±‚Ìƒ{[ƒ“‚ª‰e‹¿‚ğ—^‚¦‚é’¸“_‚ÆƒEƒFƒCƒg’l‚ÌƒŠƒXƒg
+    std::string bonename;          ///< ãƒœãƒ¼ãƒ³å
+    std::string meshname;          ///< ãƒ¡ãƒƒã‚·ãƒ¥å
+    std::string armaturename;      ///< ã‚¢ãƒ¼ãƒãƒãƒ¥ã‚¢å
+    Matrix4x4 Matrix{};            ///< è¦ªå­é–¢ä¿‚ã‚’è€ƒæ…®ã—ãŸè¡Œåˆ—
+    Matrix4x4 AnimationMatrix{};   ///< è‡ªåˆ†ã®å¤‰å½¢ã®ã¿ã‚’è€ƒæ…®ã—ãŸè¡Œåˆ—
+    Matrix4x4 OffsetMatrix{};      ///< ãƒœãƒ¼ãƒ³ã‚ªãƒ•ã‚»ãƒƒãƒˆè¡Œåˆ—
+    int idx=0;                     ///< é…åˆ—ä¸­ã®ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹
+    std::vector<WEIGHT> weights;   ///< ã“ã®ãƒœãƒ¼ãƒ³ãŒå½±éŸ¿ã‚’ä¸ãˆã‚‹é ‚ç‚¹ã¨ã‚¦ã‚§ã‚¤ãƒˆå€¤ã®ãƒªã‚¹ãƒˆ
 };
 
 /**
  * @struct VERTEX_3D
- * @brief ‚RŸŒ³’¸“_ƒf[ƒ^‚ğŠi”[‚·‚é\‘¢‘Ì
+ * @brief ï¼“æ¬¡å…ƒé ‚ç‚¹ãƒ‡ãƒ¼ã‚¿ã‚’æ ¼ç´ã™ã‚‹æ§‹é€ ä½“
  */
 struct VERTEX_3D
 {
-    Vector3 Position;            ///< ’¸“_‚ÌÀ•W
-    Vector3 Normal;              ///< –@üƒxƒNƒgƒ‹
-    Color Diffuse;               ///< ŠgU”½ËF
-    Vector2 TexCoord;            ///< ƒeƒNƒXƒ`ƒƒÀ•W
-    int BoneIndex[4];            ///< ƒ{[ƒ“ƒCƒ“ƒfƒbƒNƒXiÅ‘å4‚Âj 20231225
-    float BoneWeight[4];         ///< Šeƒ{[ƒ“‚ÌƒEƒFƒCƒg’l 20231225
-    std::string BoneName[4];     ///< Šeƒ{[ƒ“‚Ì–¼‘O 20231226
-    int bonecnt = 0;             ///< ‰e‹¿‚ğ—^‚¦‚éƒ{[ƒ“” 20231226
+    Vector3 Position;            ///< é ‚ç‚¹ã®åº§æ¨™
+    Vector3 Normal;              ///< æ³•ç·šãƒ™ã‚¯ãƒˆãƒ«
+    Color Diffuse;               ///< æ‹¡æ•£åå°„è‰²
+    Vector2 TexCoord;            ///< ãƒ†ã‚¯ã‚¹ãƒãƒ£åº§æ¨™
+    int BoneIndex[4];            ///< ãƒœãƒ¼ãƒ³ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ï¼ˆæœ€å¤§4ã¤ï¼‰ 20231225
+    float BoneWeight[4];         ///< å„ãƒœãƒ¼ãƒ³ã®ã‚¦ã‚§ã‚¤ãƒˆå€¤ 20231225
 };
 
 /**
  * @struct MATERIAL
- * @brief ƒ}ƒeƒŠƒAƒ‹î•ñ‚ğ•Û‚·‚é\‘¢‘Ì
+ * @brief ãƒãƒ†ãƒªã‚¢ãƒ«æƒ…å ±ã‚’ä¿æŒã™ã‚‹æ§‹é€ ä½“
  */
 struct MATERIAL
 {
-    Color Ambient;         ///< ƒAƒ“ƒrƒGƒ“ƒgF
-    Color Diffuse;         ///< ŠgU”½ËF
-    Color Specular;        ///< ‹¾–Ê”½ËF
-    Color Emission;        ///< ©ŒÈ”­ŒõF
-    float Shiness=0.0f;    ///< Œõ‘ò“x
-    BOOL TextureEnable=FALSE;    ///< ƒeƒNƒXƒ`ƒƒg—pƒtƒ‰ƒO
-    float Dummy[2]{};      ///< —\”õ—Ìˆæ
+    Color Ambient;         ///< ã‚¢ãƒ³ãƒ“ã‚¨ãƒ³ãƒˆè‰²
+    Color Diffuse;         ///< æ‹¡æ•£åå°„è‰²
+    Color Specular;        ///< é¡é¢åå°„è‰²
+    Color Emission;        ///< è‡ªå·±ç™ºå…‰è‰²
+    float Shiness=0.0f;    ///< å…‰æ²¢åº¦
+    BOOL TextureEnable=FALSE;    ///< ãƒ†ã‚¯ã‚¹ãƒãƒ£ä½¿ç”¨ãƒ•ãƒ©ã‚°
+    float Dummy[2]{};      ///< äºˆå‚™é ˜åŸŸ
 };
 
 /**
  * @struct LIGHT
- * @brief •½sŒõŒ¹‚Ìî•ñ‚ğ•Û‚·‚é\‘¢‘Ì
+ * @brief å¹³è¡Œå…‰æºã®æƒ…å ±ã‚’ä¿æŒã™ã‚‹æ§‹é€ ä½“
  */
 struct LIGHT
 {
-    BOOL Enable;           ///< ƒ‰ƒCƒg‚Ì—LŒø/–³Œøƒtƒ‰ƒO
-    BOOL Dummy[3];         ///< ƒpƒfƒBƒ“ƒO—piƒ_ƒ~[j
-    Vector4 Direction;     ///< Œõ‚Ì•ûŒü
-    Color Diffuse;         ///< ŠgUŒõ‚ÌF
-    Color Ambient;         ///< ŠÂ‹«Œõ‚ÌF
+    BOOL Enable;           ///< ãƒ©ã‚¤ãƒˆã®æœ‰åŠ¹/ç„¡åŠ¹ãƒ•ãƒ©ã‚°
+    BOOL Dummy[3];         ///< ãƒ‘ãƒ‡ã‚£ãƒ³ã‚°ç”¨ï¼ˆãƒ€ãƒŸãƒ¼ï¼‰
+    Vector4 Direction;     ///< å…‰ã®æ–¹å‘
+    Color Diffuse;         ///< æ‹¡æ•£å…‰ã®è‰²
+    Color Ambient;         ///< ç’°å¢ƒå…‰ã®è‰²
 };
 
 /**
  * @struct SUBSET
- * @brief ƒƒbƒVƒ…‚ÌƒTƒuƒZƒbƒgiƒ}ƒeƒŠƒAƒ‹–ˆjî•ñ‚ğ•Û‚·‚é\‘¢‘Ì
+ * @brief ãƒ¡ãƒƒã‚·ãƒ¥ã®ã‚µãƒ–ã‚»ãƒƒãƒˆï¼ˆãƒãƒ†ãƒªã‚¢ãƒ«æ¯ï¼‰æƒ…å ±ã‚’ä¿æŒã™ã‚‹æ§‹é€ ä½“
  */
 struct SUBSET {
-    std::string MtrlName;      ///< ƒ}ƒeƒŠƒAƒ‹–¼
-    unsigned int IndexNum = 0; ///< ƒCƒ“ƒfƒbƒNƒX”
-    unsigned int VertexNum = 0;///< ’¸“_”
-    unsigned int IndexBase = 0;///< ŠJnƒCƒ“ƒfƒbƒNƒX
-    unsigned int VertexBase = 0;///< ’¸“_ƒx[ƒX
-    unsigned int MaterialIdx = 0;///< ƒ}ƒeƒŠƒAƒ‹ƒCƒ“ƒfƒbƒNƒX
+    std::string MtrlName;      ///< ãƒãƒ†ãƒªã‚¢ãƒ«å
+    unsigned int IndexNum = 0; ///< ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹æ•°
+    unsigned int VertexNum = 0;///< é ‚ç‚¹æ•°
+    unsigned int IndexBase = 0;///< é–‹å§‹ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹
+    unsigned int VertexBase = 0;///< é ‚ç‚¹ãƒ™ãƒ¼ã‚¹
+    unsigned int MaterialIdx = 0;///< ãƒãƒ†ãƒªã‚¢ãƒ«ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹
 };
 
 /**
  * @enum EBlendState
- * @brief ƒuƒŒƒ“ƒhƒXƒe[ƒg‚Ìí—Ş
+ * @brief ãƒ–ãƒ¬ãƒ³ãƒ‰ã‚¹ãƒ†ãƒ¼ãƒˆã®ç¨®é¡
  */
 enum EBlendState {
-    BS_NONE = 0,      ///< ”¼“§–¾‡¬–³‚µ
-    BS_ALPHABLEND,    ///< ”¼“§–¾‡¬
-    BS_ADDITIVE,      ///< ‰ÁZ‡¬
-    BS_SUBTRACTION,   ///< Œ¸Z‡¬
-    MAX_BLENDSTATE    ///< ƒuƒŒƒ“ƒhƒXƒe[ƒg‚ÌÅ‘å’l
+    BS_NONE = 0,      ///< åŠé€æ˜åˆæˆç„¡ã—
+    BS_ALPHABLEND,    ///< åŠé€æ˜åˆæˆ
+    BS_ADDITIVE,      ///< åŠ ç®—åˆæˆ
+    BS_SUBTRACTION,   ///< æ¸›ç®—åˆæˆ
+    MAX_BLENDSTATE    ///< ãƒ–ãƒ¬ãƒ³ãƒ‰ã‚¹ãƒ†ãƒ¼ãƒˆã®æœ€å¤§å€¤
 };
 
 /**
  * @struct CBBoneCombMatrix
- * @brief ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚ğ•Û‚·‚é\‘¢‘Ì
+ * @brief ãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã‚’ä¿æŒã™ã‚‹æ§‹é€ ä½“
  * @date 20240713
  */
-constexpr int MAX_BONE = 400;
+// ç‰©ç†ãƒ»è¡£è£…ãƒœãƒ¼ãƒ³ã‚’å«ã‚€PMXãƒ¢ãƒ‡ãƒ«ç”¨ã€‚400æœ¬ã§ã¯è„šãƒœãƒ¼ãƒ³ãŒç¯„å›²å¤–ã«ãªã‚‹å ´åˆãŒã‚ã‚‹ã€‚
+constexpr int MAX_BONE = 800;
 struct CBBoneCombMatrix {
-    DirectX::XMFLOAT4X4 BoneCombMtx[MAX_BONE];  ///< ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚Ì”z—ñ
+    DirectX::XMFLOAT4X4 BoneCombMtx[MAX_BONE];  ///< ãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã®é…åˆ—
 };
 
 /**
  * @class Renderer
- * @brief DirectXƒŒƒ“ƒ_ƒŠƒ“ƒOˆ—‚ğŠÇ—‚·‚éƒŒƒ“ƒ_ƒ‰ƒNƒ‰ƒX
+ * @brief DirectXãƒ¬ãƒ³ãƒ€ãƒªãƒ³ã‚°å‡¦ç†ã‚’ç®¡ç†ã™ã‚‹ãƒ¬ãƒ³ãƒ€ãƒ©ã‚¯ãƒ©ã‚¹
  *
- * ‚±‚ÌƒNƒ‰ƒX‚ÍADirect3DƒfƒoƒCƒXAƒRƒ“ƒeƒLƒXƒgAƒXƒƒbƒvƒ`ƒF[ƒ“‚È‚Ç‚ÌŠÇ—‚ÆA
- * ƒŒƒ“ƒ_ƒŠƒ“ƒOˆ—‚Ì‰Šú‰»AŠJnAI—¹‚È‚Ç‚Ì‹@”\‚ğ’ñ‹Ÿ‚µ‚Ü‚·B
+ * ã“ã®ã‚¯ãƒ©ã‚¹ã¯ã€Direct3Dãƒ‡ãƒã‚¤ã‚¹ã€ã‚³ãƒ³ãƒ†ã‚­ã‚¹ãƒˆã€ã‚¹ãƒ¯ãƒƒãƒ—ãƒã‚§ãƒ¼ãƒ³ãªã©ã®ç®¡ç†ã¨ã€
+ * ãƒ¬ãƒ³ãƒ€ãƒªãƒ³ã‚°å‡¦ç†ã®åˆæœŸåŒ–ã€é–‹å§‹ã€çµ‚äº†ãªã©ã®æ©Ÿèƒ½ã‚’æä¾›ã—ã¾ã™ã€‚
  */
 class Renderer : NonCopyable
 {
@@ -144,6 +143,7 @@ private:
     static ComPtr<ID3D11DepthStencilView> m_DepthStencilView;
 
     static ComPtr<ID3D11Buffer> m_WorldBuffer;
+    static Matrix4x4 m_currentWorldMatrix;
     static ComPtr<ID3D11Buffer> m_ViewBuffer;
     static ComPtr<ID3D11Buffer> m_ProjectionBuffer;
     static ComPtr<ID3D11Buffer> m_MaterialBuffer;
@@ -161,11 +161,13 @@ public:
     static void Dispose();
     static void Begin();
     static void End();
+    static void RestoreMainRenderTarget();
     static void SetDepthEnable(bool Enable);
     static void SetDepthAllwaysWrite();
     static void SetATCEnable(bool Enable);
     static void SetWorldViewProjection2D();
     static void SetWorldMatrix(Matrix4x4* WorldMatrix);
+    static Matrix4x4 GetWorldMatrix() { return m_currentWorldMatrix; }
     static void SetViewMatrix(Matrix4x4* ViewMatrix);
     static void SetProjectionMatrix(Matrix4x4* ProjectionMatrix);
     static void SetMaterial(MATERIAL Material);

@@ -1,12 +1,110 @@
 #include	<iostream>
+#include <filesystem>
+#include <algorithm>
+#include <cctype>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
+#include	"meshmanager.h"
+#include	"DebugUI.h"
+#include	"imgui/imgui.h"
+
+namespace
+{
+	class CGuaranteedSwordMesh final : public CMesh
+	{
+		void AddFace(
+			const Vector3& a, const Vector3& b, const Vector3& c, const Vector3& d,
+			const Vector3& normal, const Color& color)
+		{
+			const unsigned int base = static_cast<unsigned int>(m_vertices.size());
+			const Vector3 positions[4] = { a, b, c, d };
+			const Vector2 texcoords[4] = {
+				Vector2(0.0f, 1.0f), Vector2(0.0f, 0.0f),
+				Vector2(1.0f, 0.0f), Vector2(1.0f, 1.0f)
+			};
+			for (int i = 0; i < 4; ++i)
+			{
+				VERTEX_3D vertex{};
+				vertex.Position = positions[i];
+				vertex.Normal = normal;
+				vertex.Diffuse = color;
+				vertex.TexCoord = texcoords[i];
+				m_vertices.push_back(vertex);
+			}
+			m_indices.insert(m_indices.end(), {
+				base + 0, base + 1, base + 2,
+				base + 0, base + 2, base + 3
+			});
+		}
+
+		void AddBox(const Vector3& center, const Vector3& size, const Color& color)
+		{
+			const Vector3 h = size * 0.5f;
+			const float l = center.x - h.x;
+			const float r = center.x + h.x;
+			const float b = center.y - h.y;
+			const float t = center.y + h.y;
+			const float n = center.z - h.z;
+			const float f = center.z + h.z;
+
+			AddFace(Vector3(l,b,f), Vector3(l,t,f), Vector3(r,t,f), Vector3(r,b,f), Vector3(0,0,1), color);
+			AddFace(Vector3(r,b,n), Vector3(r,t,n), Vector3(l,t,n), Vector3(l,b,n), Vector3(0,0,-1), color);
+			AddFace(Vector3(l,b,n), Vector3(l,t,n), Vector3(l,t,f), Vector3(l,b,f), Vector3(-1,0,0), color);
+			AddFace(Vector3(r,b,f), Vector3(r,t,f), Vector3(r,t,n), Vector3(r,b,n), Vector3(1,0,0), color);
+			AddFace(Vector3(l,t,f), Vector3(l,t,n), Vector3(r,t,n), Vector3(r,t,f), Vector3(0,1,0), color);
+			AddFace(Vector3(l,b,n), Vector3(l,b,f), Vector3(r,b,f), Vector3(r,b,n), Vector3(0,-1,0), color);
+		}
+
+	public:
+		CGuaranteedSwordMesh()
+		{
+			// å…¨é•·1.0ã€æŸ„ã®åº•ã‚’åŸç‚¹ã«ã—ãŸç°¡æ˜“å‰£ã€‚FBXã‚„ãƒ†ã‚¯ã‚¹ãƒãƒ£ã«ä¾å­˜ã—ãªã„ã€‚
+			AddBox(Vector3(0.0f, 0.09f, 0.0f), Vector3(0.055f, 0.18f, 0.045f), Color(0.22f, 0.10f, 0.04f, 1.0f));
+			AddBox(Vector3(0.0f, 0.195f, 0.0f), Vector3(0.25f, 0.035f, 0.055f), Color(0.95f, 0.68f, 0.12f, 1.0f));
+			AddBox(Vector3(0.0f, 0.60f, 0.0f), Vector3(0.075f, 0.78f, 0.025f), Color(0.88f, 0.94f, 1.0f, 1.0f));
+		}
+	};
+
+	std::string NormalizeBoneName(std::string value)
+	{
+		value.erase(std::remove_if(value.begin(), value.end(), [](char c) {
+			return c == '_' || c == '-' || c == ' ';
+		}), value.end());
+		for (char& c : value)
+			if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+		return value;
+	}
+
+	int SwordBonePriority(const std::string& name)
+	{
+		const std::string normalized = NormalizeBoneName(name);
+		int score = 0;
+
+		// ã“ã®ã‚­ãƒ£ãƒ©ã‚¯ã‚¿ãƒ¼ã§ã¯å®Ÿéš›ã«å¤‰å½¢ã¸ä½¿ã‚ã‚Œã‚‹å³æ‰‹é¦–ãƒœãƒ¼ãƒ³ãŒ
+		// ã€Œå³æ‰‹é¦–Dã€ã€‚è…•ãƒ»è…•æ©ã‚ˆã‚Šå¿…ãšã“ã¡ã‚‰ã‚’å„ªå…ˆã™ã‚‹ã€‚
+		if (name == "å³æ‰‹é¦–D") score = 10000;
+		else if (name.find("å³æ‰‹é¦–") != std::string::npos) score = 9500;
+		else if (normalized == "rightwrist" || normalized == "righthand") score = 9000;
+		else if (normalized.find("rightwrist") != std::string::npos) score = 8500;
+		else if (normalized.find("righthand") != std::string::npos) score = 8000;
+		else if (name.find("å³æ‰‹") != std::string::npos) score = 7500;
+		else if (normalized.find("hand") != std::string::npos) score = 6000;
+		else if (name == "å³è…•D") score = 2500;
+		else if (name.find("å³è…•") != std::string::npos) score = 1500;
+		else if (normalized.find("rightarm") != std::string::npos) score = 1000;
+
+		if (name.find("æ©") != std::string::npos ||
+			normalized.find("twist") != std::string::npos)
+			score -= 5000;
+		return score;
+	}
+}
 
 void CAnimationMesh::SetCurentAnimation(aiAnimation * currentanimation) {
 	m_CurrentAnimation = currentanimation;
 }
 
-// ƒm[ƒhƒcƒŠ[•\¦(debug—p)
+// ãƒãƒ¼ãƒ‰ãƒ„ãƒªãƒ¼è¡¨ç¤º(debugç”¨)
 static void DispNodeTree(CTreeNode<std::string>* ptree) 
 {
 	std::cout << ptree->m_nodedata << std::endl;
@@ -17,113 +115,327 @@ static void DispNodeTree(CTreeNode<std::string>* ptree)
 	}
 }
 
+void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
+{
+	const bool drawProxy = m_swordUseGuaranteedProxy && m_swordProxyMesh;
+	const bool drawFbx = !m_swordUseGuaranteedProxy && m_swordMesh;
+	if (!m_swordEnabled || (!drawProxy && !drawFbx))
+	{
+		m_swordWorldSegmentValid = false;
+		return;
+	}
+
+	const auto boneIt = m_DebugBoneMatrices.find(m_swordBoneName);
+	const bool useBoneAttachment = !m_swordForceTestPlacement &&
+		boneIt != m_DebugBoneMatrices.end();
+	const Matrix4x4 boneMatrix = useBoneAttachment
+		? boneIt->second
+		: Matrix4x4::Identity;
+	const Vector3 rotationRadians(
+		m_swordRotationDegrees.x * PI / 180.0f,
+		m_swordRotationDegrees.y * PI / 180.0f,
+		m_swordRotationDegrees.z * PI / 180.0f);
+	const Matrix4x4 centerCorrection = drawProxy
+		? Matrix4x4::Identity
+		: Matrix4x4::CreateTranslation(-m_swordModelCenter);
+	const Matrix4x4 sizeMatrix = drawProxy
+		? Matrix4x4::CreateScale(m_swordProxyLength)
+		: Matrix4x4::CreateScale(m_swordScale);
+	const Vector3 placement = useBoneAttachment
+		? m_swordHandOffset
+		: m_swordTestPosition;
+	const Matrix4x4 swordLocal = centerCorrection *
+		sizeMatrix *
+		Matrix4x4::CreateFromYawPitchRoll(
+			rotationRadians.y, rotationRadians.x, rotationRadians.z) *
+		Matrix4x4::CreateTranslation(placement.x, placement.y, placement.z);
+
+	m_swordWorldMatrix = swordLocal * boneMatrix * parentWorld;
+	const Vector3 nextBase = Vector3::Transform(
+		Vector3(0.0f, 0.0f, 0.0f), m_swordWorldMatrix);
+	const Vector3 nextTip = Vector3::Transform(
+		drawProxy ? Vector3(0.0f, 1.0f, 0.0f) : Vector3(0.0f, 0.5f, 0.0f),
+		m_swordWorldMatrix);
+	m_swordPreviousWorldTip = m_swordWorldSegmentValid ? m_swordWorldTip : nextTip;
+	m_swordWorldBase = nextBase;
+	m_swordWorldTip = nextTip;
+	m_swordWorldSegmentValid = true;
+}
+
 void CAnimationMesh::Draw()
 {
-	// ƒƒbƒVƒ…•`‰æ
+	// ãƒ¡ãƒƒã‚·ãƒ¥æç”»
 	m_StaticMeshRenderer.Draw();
+	const bool drawProxy = m_swordUseGuaranteedProxy && m_swordProxyMesh;
+	const bool drawFbx = !m_swordUseGuaranteedProxy && m_swordMesh;
+	if (m_swordEnabled && m_swordWorldSegmentValid && (drawProxy || drawFbx))
+	{
+		Matrix4x4 parentWorld = Renderer::GetWorldMatrix();
+		Renderer::SetWorldMatrix(&m_swordWorldMatrix);
+		if (auto* swordShader = ShaderManager::Get<CShader>("Shader3D"))
+		{
+			swordShader->SetGPU();
+			if (drawProxy)
+			{
+				m_swordProxyMaterial.SetGPU();
+				m_swordProxyRenderer.Draw();
+			}
+			else
+			{
+				m_swordRenderer.Draw();
+			}
+		}
+		Renderer::SetWorldMatrix(&parentWorld);
+	}
 }
 
 
 void CAnimationMesh::Load(std::string filename, std::string texturedirectory) 
 {
-	// ƒƒbƒVƒ…“Ç‚İ‚İ
-	CStaticMesh::Load(filename, texturedirectory);
+	// ãƒ¡ãƒƒã‚·ãƒ¥èª­ã¿è¾¼ã¿
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ç”¨ãƒ¡ãƒƒã‚·ãƒ¥ã¯ãƒœãƒ¼ãƒ³å¤‰æ›ã‚’å¾Œæ®µã§é©ç”¨ã™ã‚‹ãŸã‚ã€
+	// Assimp ã®é™çš„é ‚ç‚¹å¤‰æ›ã¯è¡Œã‚ãªã„ã€‚
+	CStaticMesh::Load(filename, texturedirectory, false);
+	m_BoneDictionary.clear();
+	m_RestLocalMatrices.clear();
 
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^(ASSIMP—pj
-	std::unordered_map<std::string, GM31::GE::myAssimp::BONE> assimp_BoneDictionary{};	// 20240714 DX‰»
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿(ASSIMPç”¨ï¼‰
+	std::unordered_map<std::string, GM31::GE::myAssimp::BONE> assimp_BoneDictionary{};	// 20240714 DXåŒ–
 
-	// ƒ{[ƒ“«‘æ“¾iƒ{[ƒ“–¼‚ğƒL[‚É‚µ‚Äƒ{[ƒ“î•ñ‚ªæ‚ê‚éj
-	assimp_BoneDictionary = GM31::GE::myAssimp::GetBoneDictionary();					// 20240714 DX‰»
+	// ãƒœãƒ¼ãƒ³è¾æ›¸å–å¾—ï¼ˆãƒœãƒ¼ãƒ³åã‚’ã‚­ãƒ¼ã«ã—ã¦ãƒœãƒ¼ãƒ³æƒ…å ±ãŒå–ã‚Œã‚‹ï¼‰
+	assimp_BoneDictionary = GM31::GE::myAssimp::GetBoneDictionary();					// 20240714 DXåŒ–
 
-	for (auto& asimpbone : assimp_BoneDictionary) {										// 20240714 DX‰»
-		BONE dxbone;																	// 20240714 DX‰»	
+	for (auto& asimpbone : assimp_BoneDictionary) {										// 20240714 DXåŒ–
+		BONE dxbone;																	// 20240714 DXåŒ–	
 
-		dxbone.meshname = asimpbone.second.meshname;									// 20240714 DX‰»
-		dxbone.armaturename = asimpbone.second.armaturename;							// 20240714 DX‰»
-		dxbone.bonename = asimpbone.second.bonename;									// 20240714 DX‰»
-		dxbone.idx = asimpbone.second.idx;												// 20240714 DX‰»
+		dxbone.meshname = asimpbone.second.meshname;									// 20240714 DXåŒ–
+		dxbone.armaturename = asimpbone.second.armaturename;							// 20240714 DXåŒ–
+		dxbone.bonename = asimpbone.second.bonename;									// 20240714 DXåŒ–
+		dxbone.idx = asimpbone.second.idx;												// 20240714 DXåŒ–
 
 		dxbone.OffsetMatrix = utility::aiMtxToDxMtx(asimpbone.second.OffsetMatrix);
-		dxbone.AnimationMatrix = Matrix4x4::Identity;										// 20240714 DX‰»
-		dxbone.Matrix = Matrix4x4::Identity;												// 20240714 DX‰»
+		dxbone.AnimationMatrix = Matrix4x4::Identity;										// 20240714 DXåŒ–
+		dxbone.Matrix = Matrix4x4::Identity;												// 20240714 DXåŒ–
 
-		dxbone.weights.clear();															// 20240714 DX‰»
-		for (auto& asimpweight : asimpbone.second.weights)								// 20240714 DX‰»	
+		dxbone.weights.clear();															// 20240714 DXåŒ–
+		for (auto& asimpweight : asimpbone.second.weights)								// 20240714 DXåŒ–	
 		{
-			WEIGHT dxweight;															// 20240714 DX‰»			
-			dxweight.bonename = asimpweight.bonename;									// 20240714 DX‰»
-			dxweight.meshname = asimpweight.meshname;									// 20240714 DX‰»
-			dxweight.vertexindex = asimpweight.vertexindex;								// 20240714 DX‰»
-			dxweight.weight = asimpweight.weight;										// 20240714 DX‰»
-			dxbone.weights.push_back(dxweight);											// 20240714 DX‰»		
-		}																				// 20240714 DX‰»
+			WEIGHT dxweight;															// 20240714 DXåŒ–			
+			dxweight.bonename = asimpweight.bonename;									// 20240714 DXåŒ–
+			dxweight.meshname = asimpweight.meshname;									// 20240714 DXåŒ–
+			dxweight.vertexindex = asimpweight.vertexindex;								// 20240714 DXåŒ–
+			dxweight.weight = asimpweight.weight;										// 20240714 DXåŒ–
+			dxbone.weights.push_back(dxweight);											// 20240714 DXåŒ–		
+		}																				// 20240714 DXåŒ–
 
-		m_BoneDictionary[asimpbone.first] = dxbone;										// 20240714 DX‰»
+		m_BoneDictionary[asimpbone.first] = dxbone;										// 20240714 DXåŒ–
 	}																	
 
-	// ƒ{[ƒ“–¼ƒcƒŠ[æ“¾
+	// ãƒœãƒ¼ãƒ³åãƒ„ãƒªãƒ¼å–å¾—
 	m_AssimpNodeNameTree = GM31::GE::myAssimp::GetBoneNameTree();
+	for (const auto& [name, matrix] : GM31::GE::myAssimp::GetNodeLocalMatrices())
+	{
+		m_RestLocalMatrices[name] = utility::aiMtxToDxMtx(matrix);
+	}
 
-	// ƒŒƒ“ƒ_ƒ‰‰Šú‰»
+	// ãƒ¬ãƒ³ãƒ€ãƒ©åˆæœŸåŒ–
 	m_StaticMeshRenderer.Init(*this);
 
+	float playerExtent = 100.0f;
+	if (!m_vertices.empty())
+	{
+		Vector3 minPosition = m_vertices.front().Position;
+		Vector3 maxPosition = minPosition;
+		for (const auto& vertex : m_vertices)
+		{
+			minPosition = Vector3::Min(minPosition, vertex.Position);
+			maxPosition = Vector3::Max(maxPosition, vertex.Position);
+		}
+		playerExtent = std::max(maxPosition.y - minPosition.y, 1.0f);
+	}
+
+	// FBXã®çŠ¶æ…‹ã«é–¢ä¿‚ãªãã€å‰£ã‚’æŒ¯ã‚‹æ©Ÿèƒ½ã‚’ç¢ºèªã§ãã‚‹æç”»ç”¨ãƒ¡ãƒƒã‚·ãƒ¥ã€‚
+	m_swordProxyLength = playerExtent * 0.75f;
+	m_swordProxyMesh = std::make_unique<CGuaranteedSwordMesh>();
+	m_swordProxyRenderer.Init(*m_swordProxyMesh);
+	MATERIAL proxyMaterial{};
+	proxyMaterial.Ambient = Color(0.55f, 0.55f, 0.60f, 1.0f);
+	proxyMaterial.Diffuse = Color(1.0f, 1.0f, 1.0f, 1.0f);
+	proxyMaterial.Specular = Color(0.8f, 0.8f, 0.9f, 1.0f);
+	proxyMaterial.Emission = Color(0.12f, 0.12f, 0.16f, 1.0f);
+	proxyMaterial.Shiness = 32.0f;
+	proxyMaterial.TextureEnable = FALSE;
+	m_swordProxyMaterial.Create(proxyMaterial);
+
+	// Optional player weapon attachment. The asset is intentionally discovered
+	// here so the existing GameScene does not need another scene-specific draw call.
+	std::filesystem::path swordPath("assets/model/Sword.fbx");
+	if (!std::filesystem::exists(swordPath))
+		swordPath = "../assets/model/Sword.fbx";
+	if (std::filesystem::exists(swordPath))
+	{
+		m_swordMesh = std::make_unique<CStaticMesh>();
+		// Sword.fbx is a static attachment. Apply its FBX node transforms so
+		// the mesh is not left at an importer-local offset.
+		m_swordMesh->Load(swordPath.string(), "assets/model/", true);
+		m_swordRenderer.Init(*m_swordMesh);
+		if (!m_swordMesh->GetVertices().empty())
+		{
+			Vector3 minPosition = m_swordMesh->GetVertices().front().Position;
+			Vector3 maxPosition = minPosition;
+			for (const auto& vertex : m_swordMesh->GetVertices())
+			{
+				minPosition = Vector3::Min(minPosition, vertex.Position);
+				maxPosition = Vector3::Max(maxPosition, vertex.Position);
+			}
+			const Vector3 extent = maxPosition - minPosition;
+			m_swordModelCenter = (minPosition + maxPosition) * 0.5f;
+			const float swordLength = std::max({ extent.x, extent.y, extent.z, 0.001f });
+			m_swordScale = playerExtent * 0.75f / swordLength;
+		}
+		int bestBoneScore = 0;
+		for (const auto& [name, bone] : m_BoneDictionary)
+		{
+			const int score = SwordBonePriority(name);
+			if (score > bestBoneScore)
+			{
+				bestBoneScore = score;
+				m_swordBoneName = name;
+			}
+		}
+		std::cout << "[Sword] vertices=" << m_swordMesh->GetVertices().size()
+			<< " subsets=" << m_swordMesh->GetSubsets().size()
+			<< " attachBone=" << m_swordBoneName
+			<< " scale=" << m_swordScale << std::endl;
+	}
+	if (!m_swordDebugRegistered)
+	{
+		DebugUI::RedistDebugFunction([this]() { RenderSwordDebug(); });
+		m_swordDebugRegistered = true;
+	}
+
 }
 
-// ŠK‘w\‘¢‚ğl—¶‚µ‚½ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚ğXV
+void CAnimationMesh::RenderSwordDebug()
+{
+	ImGui::SetNextWindowPos(ImVec2(900.0f, 80.0f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(370.0f, 330.0f), ImGuiCond_FirstUseEver);
+	ImGui::Begin("Sword Attachment Debug");
+	ImGui::Checkbox("Draw sword", &m_swordEnabled);
+	ImGui::Checkbox("Use guaranteed sword", &m_swordUseGuaranteedProxy);
+	ImGui::Checkbox("Force test placement", &m_swordForceTestPlacement);
+	ImGui::TextColored(
+		m_swordProxyMesh ? ImVec4(0.25f, 1.0f, 0.35f, 1.0f) : ImVec4(1.0f, 0.25f, 0.25f, 1.0f),
+		m_swordProxyMesh ? "GUARANTEED SWORD: READY" : "GUARANTEED SWORD: FAILED");
+	ImGui::DragFloat("Sword length", &m_swordProxyLength, 0.5f, 1.0f, 500.0f, "%.1f");
+	ImGui::DragFloat3("Rotation XYZ", &m_swordRotationDegrees.x, 1.0f, -180.0f, 180.0f, "%.1f");
+	if (m_swordForceTestPlacement)
+		ImGui::DragFloat3("Test position", &m_swordTestPosition.x, 1.0f, -1000.0f, 1000.0f, "%.1f");
+	else
+		ImGui::DragFloat3("Hand offset", &m_swordHandOffset.x, 0.5f, -100.0f, 100.0f, "%.1f");
+	ImGui::Text("Attach bone: %s", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str());
+	if (ImGui::BeginCombo("Right hand bone", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str()))
+	{
+		std::vector<std::string> candidates;
+		for (const auto& [name, bone] : m_BoneDictionary)
+			if (SwordBonePriority(name) > 0) candidates.push_back(name);
+		std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
+			return SwordBonePriority(a) > SwordBonePriority(b);
+		});
+		for (const std::string& name : candidates)
+		{
+			const bool selected = name == m_swordBoneName;
+			if (ImGui::Selectable(name.c_str(), selected)) m_swordBoneName = name;
+			if (selected) ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::Button("Show beside player"))
+	{
+		m_swordUseGuaranteedProxy = true;
+		m_swordForceTestPlacement = true;
+		m_swordTestPosition = Vector3(30.0f, 55.0f, 0.0f);
+		m_swordRotationDegrees = Vector3(0.0f, 0.0f, -90.0f);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Attach to right hand"))
+	{
+		m_swordUseGuaranteedProxy = true;
+		m_swordForceTestPlacement = false;
+	}
+	if (!m_swordMesh)
+	{
+		ImGui::TextColored(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "NOT LOADED");
+		ImGui::Text("Expected: assets/model/Sword.fbx");
+	}
+	else
+	{
+		ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "LOADED");
+		ImGui::Text("Vertices: %zu", m_swordMesh->GetVertices().size());
+		ImGui::Text("Subsets: %zu", m_swordMesh->GetSubsets().size());
+		ImGui::DragFloat("FBX scale", &m_swordScale, 0.01f, 0.001f, 1000.0f, "%.3f");
+		ImGui::Text("Model center: %.1f, %.1f, %.1f",
+			m_swordModelCenter.x, m_swordModelCenter.y, m_swordModelCenter.z);
+	}
+	ImGui::End();
+}
+
+// éšå±¤æ§‹é€ ã‚’è€ƒæ…®ã—ãŸãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã‚’æ›´æ–°
 void CAnimationMesh::UpdateBoneMatrix(
 	CTreeNode<std::string>* ptree, 
-	Matrix4x4 matrix)														// 20240714 DX‰»	
+	Matrix4x4 matrix)														// 20240714 DXåŒ–	
 {
-	// ƒm[ƒh–¼‚©‚çƒ{[ƒ“«‘‚ğg‚Á‚Äƒ{[ƒ“î•ñ‚ğæ“¾
-	BONE* bone = &m_BoneDictionary[ptree->m_nodedata];						// 20240714 DX‰»		
+	// ãƒãƒ¼ãƒ‰åã‹ã‚‰ãƒœãƒ¼ãƒ³è¾æ›¸ã‚’ä½¿ã£ã¦ãƒœãƒ¼ãƒ³æƒ…å ±ã‚’å–å¾—
+	BONE* bone = &m_BoneDictionary[ptree->m_nodedata];						// 20240714 DXåŒ–		
 
-	Matrix4x4 bonecombination;												// 20240714 DX‰»G
+	Matrix4x4 bonecombination;												// 20240714 DXåŒ–ï¼›
 
-	// ƒ{[ƒ“ƒIƒtƒZƒbƒgs—ñ~ƒ{[ƒ“ƒAƒjƒƒ[ƒVƒ‡ƒ“s—ñ~‹tƒ{[ƒ“ƒIƒtƒZƒbƒgs—ñ
-	bonecombination = bone->OffsetMatrix * bone->AnimationMatrix * matrix;	// 20240714 DX‰»
-	bone->Matrix = bonecombination;											// 20240714 DX‰»
+	// ãƒœãƒ¼ãƒ³ã‚ªãƒ•ã‚»ãƒƒãƒˆè¡Œåˆ—Ã—ãƒœãƒ¼ãƒ³ã‚¢ãƒ‹ãƒ¡ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—Ã—é€†ãƒœãƒ¼ãƒ³ã‚ªãƒ•ã‚»ãƒƒãƒˆè¡Œåˆ—
+	bonecombination = bone->OffsetMatrix * bone->AnimationMatrix * matrix;	// 20240714 DXåŒ–
+	bone->Matrix = bonecombination;											// 20240714 DXåŒ–
 
-	// ©•ª‚Ìp¨‚ğ•\‚·s—ñ‚ğì¬
-	Matrix4x4 mybonemtx;													// 20240714 DX‰»
-	mybonemtx = bone->AnimationMatrix * matrix;								// 20240714 DX‰»
-	// qƒm[ƒh‚É‘Î‚µ‚ÄÄ‹A“I‚Éˆ—											// 20240714 DX‰»
-	for (unsigned int n = 0; n < ptree->m_children.size(); n++)				// 20240714 DX‰»
-	{																		// 20240714 DX‰»
-		UpdateBoneMatrix(ptree->m_children[n].get(), mybonemtx);			// 20240714 DX‰»
-	}																		// 20240714 DX‰»
+	// è‡ªåˆ†ã®å§¿å‹¢ã‚’è¡¨ã™è¡Œåˆ—ã‚’ä½œæˆ
+	Matrix4x4 mybonemtx;													// 20240714 DXåŒ–
+	mybonemtx = bone->AnimationMatrix * matrix;								// 20240714 DXåŒ–
+	m_DebugBoneMatrices[ptree->m_nodedata] = mybonemtx;
+	// å­ãƒãƒ¼ãƒ‰ã«å¯¾ã—ã¦å†å¸°çš„ã«å‡¦ç†											// 20240714 DXåŒ–
+	for (unsigned int n = 0; n < ptree->m_children.size(); n++)				// 20240714 DXåŒ–
+	{																		// 20240714 DXåŒ–
+		UpdateBoneMatrix(ptree->m_children[n].get(), mybonemtx);			// 20240714 DXåŒ–
+	}																		// 20240714 DXåŒ–
 }
 
-// ƒ[ƒJƒ‹ƒ|[ƒY¶¬
+// ãƒ­ãƒ¼ã‚«ãƒ«ãƒãƒ¼ã‚ºç”Ÿæˆ
 void CAnimationMesh::BuildLocalPoseMap(
 	const aiAnimation* animationdata,
 	int& CurrentFrame,
 	std::unordered_map<std::string, SRTQ>& localposemap)
 {
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^æ“¾
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿å–å¾—
 	const aiAnimation* animation = animationdata;
 
-	// ƒ{[ƒ“”•ªƒ‹[ƒv‚µ‚Äƒ{[ƒ“s—ñ‚ğì¬
+	// ãƒœãƒ¼ãƒ³æ•°åˆ†ãƒ«ãƒ¼ãƒ—ã—ã¦ãƒœãƒ¼ãƒ³è¡Œåˆ—ã‚’ä½œæˆ
 	for (unsigned int c = 0; c < animation->mNumChannels; c++)
 	{
 		aiNodeAnim* nodeAnim = animation->mChannels[c];
 
 		int f;
 
-		f = CurrentFrame % nodeAnim->mNumRotationKeys;				//ŠÈˆÕÀ‘•
+		f = CurrentFrame % nodeAnim->mNumRotationKeys;				//ç°¡æ˜“å®Ÿè£…
 		aiQuaternion rot = nodeAnim->mRotationKeys[f].mValue;
 
-		f = CurrentFrame % nodeAnim->mNumPositionKeys;				//ŠÈˆÕÀ‘•
+		f = CurrentFrame % nodeAnim->mNumPositionKeys;				//ç°¡æ˜“å®Ÿè£…
 		aiVector3D pos = nodeAnim->mPositionKeys[f].mValue;
 
-		// assimp SRT=>DX”Å@SRT
-		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DX‰»
-		Vector3 t = { pos.x,pos.y,pos.z };	// 20240714 DX‰»
-		Quaternion r{};						// 20240714 DX‰»
+		// assimp SRT=>DXç‰ˆã€€SRT
+		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DXåŒ–
+		Vector3 t = { pos.x,pos.y,pos.z };	// 20240714 DXåŒ–
+		Quaternion r{};						// 20240714 DXåŒ–
 
-		r.x = rot.x;						// 20240714 DX‰»
-		r.y = rot.y;						// 20240714 DX‰»
-		r.z = rot.z;						// 20240714 DX‰»
-		r.w = rot.w;						// 20240714 DX‰»
+		r.x = rot.x;						// 20240714 DXåŒ–
+		r.y = rot.y;						// 20240714 DXåŒ–
+		r.z = rot.z;						// 20240714 DXåŒ–
+		r.w = rot.w;						// 20240714 DXåŒ–
 
 		SRTQ srtq;
 		srtq.scale = s;
@@ -135,42 +447,91 @@ void CAnimationMesh::BuildLocalPoseMap(
 	}
 }
 
-// ƒAƒjƒ[ƒVƒ‡ƒ“‚ÌXV
+// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ã®æ›´æ–°
 void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame)
 {
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^æ“¾
+	m_DebugBoneMatrices.clear();
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿å–å¾—
 	aiAnimation* animation = m_CurrentAnimation;
 
-	// ƒ[ƒJƒ‹ƒ|[ƒY‚ğ¶¬
+	// ãƒ­ãƒ¼ã‚«ãƒ«ãƒãƒ¼ã‚ºã‚’ç”Ÿæˆ
 	std::unordered_map<std::string, SRTQ> localpose;
 	BuildLocalPoseMap(
 		m_CurrentAnimation,
 		CurrentFrame,
 		localpose);
 
-	// localpose ‚Ì’†g‚ğ 1 Œ‚¸‚Âæ‚èo‚·
+	// localpose ã®ä¸­èº«ã‚’ 1 ä»¶ãšã¤å–ã‚Šå‡ºã™
 	for (auto& pair : localpose) {
-		// map ‚ÌuƒL[iƒ{[ƒ“–¼jv‚Æu’liSRTQƒf[ƒ^jv‚ğ–¾¦“I‚Éæ‚èo‚·
-		const std::string& bonename = pair.first;   // ƒ{[ƒ“‚Ì–¼‘O
-		SRTQ& srtq = pair.second;                   // ˆÊ’uE‰ñ“]EƒXƒP[ƒ‹‚Ìî•ñ
+		// map ã®ã€Œã‚­ãƒ¼ï¼ˆãƒœãƒ¼ãƒ³åï¼‰ã€ã¨ã€Œå€¤ï¼ˆSRTQãƒ‡ãƒ¼ã‚¿ï¼‰ã€ã‚’æ˜ç¤ºçš„ã«å–ã‚Šå‡ºã™
+		const std::string& bonename = pair.first;   // ãƒœãƒ¼ãƒ³ã®åå‰
+		SRTQ& srtq = pair.second;                   // ä½ç½®ãƒ»å›è»¢ãƒ»ã‚¹ã‚±ãƒ¼ãƒ«ã®æƒ…å ±
 
-		// ƒm[ƒh–¼‚©‚çƒ{[ƒ“«‘‚ğg‚Á‚Äassimp‚Ìƒ{[ƒ“î•ñ‚ğæ“¾
+		// ãƒãƒ¼ãƒ‰åã‹ã‚‰ãƒœãƒ¼ãƒ³è¾æ›¸ã‚’ä½¿ã£ã¦assimpã®ãƒœãƒ¼ãƒ³æƒ…å ±ã‚’å–å¾—
 		BONE* bone = &m_BoneDictionary[bonename];
 
 		Matrix4x4 scalemtx = Matrix4x4::CreateScale(srtq.scale);
 		Matrix4x4 rotmtx = Matrix4x4::CreateFromQuaternion(srtq.quat);
 		Matrix4x4 transmtx = Matrix4x4::CreateTranslation(srtq.pos);
 
-		// ƒ[ƒJƒ‹À•W‚©‚çƒ{[ƒ“‚ÌƒAƒjƒ[ƒVƒ‡ƒ“s—ñ‚ğì¬
+		// ãƒ­ãƒ¼ã‚«ãƒ«åº§æ¨™ã‹ã‚‰ãƒœãƒ¼ãƒ³ã®ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã‚’ä½œæˆ
 		bone->AnimationMatrix = scalemtx * rotmtx * transmtx;
 	}
 
 
-	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);		// 20240714 DX‰»	
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);		// 20240714 DXåŒ–	
 
-	// ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚Ì”z—ñ‚ğƒZƒbƒg
+	// ãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã®é…åˆ—ã‚’ã‚»ãƒƒãƒˆ
 	for (const auto& bone : m_BoneDictionary)
 	{
-		bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] = bone.second.Matrix.Transpose();	// 20240714 DX‰»
+		bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] = bone.second.Matrix.Transpose();	// 20240714 DXåŒ–
 	}
+}
+
+void CAnimationMesh::UpdateManualPose(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, Matrix4x4>& localRotations)
+{
+	m_DebugBoneMatrices.clear();
+	for (auto& [name, bone] : m_BoneDictionary)
+	{
+		auto rest = m_RestLocalMatrices.find(name);
+		bone.AnimationMatrix = (rest != m_RestLocalMatrices.end())
+			? rest->second
+			: Matrix4x4::Identity;
+	}
+
+	for (const auto& [name, rotation] : localRotations)
+	{
+		auto bone = m_BoneDictionary.find(name);
+		auto rest = m_RestLocalMatrices.find(name);
+		if (bone != m_BoneDictionary.end() && rest != m_RestLocalMatrices.end())
+		{
+			// é ‚ç‚¹ã‚’ãƒœãƒ¼ãƒ³ã®ãƒ­ãƒ¼ã‚«ãƒ«å›è»¢ã§å‹•ã‹ã—ã¦ã‹ã‚‰ã€Restå§¿å‹¢ã¨è¦ªéšå±¤ã¸æˆ»ã™ã€‚
+			bone->second.AnimationMatrix = rotation * rest->second;
+		}
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+		{
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.idx] = bone.Matrix.Transpose();
+		}
+	}
+}
+
+std::vector<std::string> CAnimationMesh::GetBoneNames() const
+{
+	std::vector<std::string> names;
+	names.reserve(m_BoneDictionary.size());
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (!name.empty() && bone.idx >= 0 && bone.idx < MAX_BONE)
+		{
+			names.push_back(name);
+		}
+	}
+	return names;
 }

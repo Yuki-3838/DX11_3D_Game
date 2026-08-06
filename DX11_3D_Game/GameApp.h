@@ -2,6 +2,7 @@
 
 #include "BrowserDebugReporter.h"
 #include "CombatDesign.h"
+#include "CombatCollision.h"
 #include "DebugOverlay.h"
 #include "FrameTimer.h"
 #include "ImGuiDebugAdapter.h"
@@ -78,4 +79,6 @@ private:
     float m_combatPhaseSeconds = 0.0f;
     float m_playerX = -0.45f;
     float m_enemyX = 0.45f;
+    Combat::AttackCollisionResult m_collisionResult;
+    bool m_attackHitRegistered = false;
 };

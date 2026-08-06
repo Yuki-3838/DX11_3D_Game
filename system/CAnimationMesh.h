@@ -7,24 +7,50 @@
 #include "CTreeNode.h"	
 #include "renderer.h"
 #include "BoneCombMatrix.h"
+#include "CMeshRenderer.h"
+#include "CMaterial.h"
 #include "CStaticMeshRenderer.h"
+#include <vector>
 
 class CAnimationMesh : public CStaticMesh
 {
 protected:
-	// ƒ{[ƒ“«‘
-	std::unordered_map<std::string, BONE> m_BoneDictionary{};	// 20240714 DX‰»
+	// ãƒœãƒ¼ãƒ³è¾æ›¸
+	std::unordered_map<std::string, BONE> m_BoneDictionary{};	// 20240714 DXåŒ–
 
-	// ƒJƒŒƒ“ƒg‚ÌƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^
+	// ã‚«ãƒ¬ãƒ³ãƒˆã®ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿
 	aiAnimation* m_CurrentAnimation{};
 
-	// assimp ƒm[ƒh–¼ƒcƒŠ[ieqŠÖŒW‚ª‚í‚©‚éj
+	// assimp ãƒãƒ¼ãƒ‰åãƒ„ãƒªãƒ¼ï¼ˆè¦ªå­é–¢ä¿‚ãŒã‚ã‹ã‚‹ï¼‰
 	CTreeNode<std::string>	m_AssimpNodeNameTree{};
+	std::unordered_map<std::string, Matrix4x4> m_RestLocalMatrices{};
+	std::unordered_map<std::string, Matrix4x4> m_DebugBoneMatrices{};
 
-	// ƒŒƒ“ƒ_ƒ‰
+	// ãƒ¬ãƒ³ãƒ€ãƒ©
 	CStaticMeshRenderer m_StaticMeshRenderer{};
+	std::unique_ptr<CStaticMesh> m_swordMesh{};
+	CStaticMeshRenderer m_swordRenderer{};
+	std::unique_ptr<CMesh> m_swordProxyMesh{};
+	CMeshRenderer m_swordProxyRenderer{};
+	CMaterial m_swordProxyMaterial{};
+	std::string m_swordBoneName{};
+	float m_swordScale = 1.0f;
+	float m_swordProxyLength = 75.0f;
+	Vector3 m_swordModelCenter{};
+	Vector3 m_swordTestPosition{ 30.0f, 55.0f, 0.0f };
+	Vector3 m_swordRotationDegrees{ 0.0f, 0.0f, 0.0f };
+	Vector3 m_swordHandOffset{ 0.0f, 0.0f, 0.0f };
+	Vector3 m_swordWorldBase{};
+	Vector3 m_swordWorldTip{};
+	Vector3 m_swordPreviousWorldTip{};
+	Matrix4x4 m_swordWorldMatrix = Matrix4x4::Identity;
+	bool m_swordWorldSegmentValid = false;
+	bool m_swordDebugRegistered = false;
+	bool m_swordEnabled = true;
+	bool m_swordUseGuaranteedProxy = true;
+	bool m_swordForceTestPlacement = false;
 
-	// ƒ[ƒJƒ‹ƒ|[ƒY¶¬
+	// ãƒ­ãƒ¼ã‚«ãƒ«ãƒãƒ¼ã‚ºç”Ÿæˆ
 	void BuildLocalPoseMap(
 		const aiAnimation* animationdata,
 		int& CurrentFrame,
@@ -35,12 +61,34 @@ public:
 
 	void Load(std::string filename, std::string texturedirectory = "");
 
-	// ŠK‘w\‘¢‚ğl—¶‚µ‚½ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚ğXV
-	void UpdateBoneMatrix(CTreeNode<std::string>* ptree, Matrix4x4 matrix);		// 20240714 DX‰»	
+	// éšå±¤æ§‹é€ ã‚’è€ƒæ…®ã—ãŸãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã‚’æ›´æ–°
+	void UpdateBoneMatrix(CTreeNode<std::string>* ptree, Matrix4x4 matrix);		// 20240714 DXåŒ–	
 
-	// ƒAƒjƒ[ƒVƒ‡ƒ“‚ÌXV
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ã®æ›´æ–°
 	void Update(BoneCombMatrix& bonecombarray, int& CurrentFrame);
 
-	// •`‰æ
+	// ãƒ¬ã‚¹ãƒˆå§¿å‹¢ã«å¯¾ã—ã¦æŒ‡å®šãƒœãƒ¼ãƒ³ã®ãƒ­ãƒ¼ã‚«ãƒ«å›è»¢ã‚’åŠ ãˆãŸãƒãƒ¼ã‚ºã‚’æ›´æ–°
+	void UpdateManualPose(
+		BoneCombMatrix& bonecombarray,
+		const std::unordered_map<std::string, Matrix4x4>& localRotations);
+
+	std::vector<std::string> GetBoneNames() const;
+	const std::unordered_map<std::string, Matrix4x4>& GetDebugBoneMatrices() const
+	{
+		return m_DebugBoneMatrices;
+	}
+
+	// æç”»
+	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
 	void Draw();
+	void RenderSwordDebug();
+	bool IsSwordLoaded() const { return m_swordMesh != nullptr; }
+	bool GetSwordWorldSweep(Vector3& base, Vector3& tip, Vector3& previousTip) const
+	{
+		if (!m_swordWorldSegmentValid) return false;
+		base = m_swordWorldBase;
+		tip = m_swordWorldTip;
+		previousTip = m_swordPreviousWorldTip;
+		return true;
+	}
 };

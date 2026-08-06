@@ -120,6 +120,17 @@ namespace GM31 {namespace GE {namespace {}
 			float height,					// çÇÇ≥
 			float depth);					// âúçsÇ´
 
+		// Build collision bounds directly from a model's real vertex positions.
+		BoundingBoxAABB BuildLocalAABBFromVertices(const std::vector<Vector3>& vertices);
+
+		// Convert model-local bounds to a world OBB using the same SRT as rendering.
+		BoundingBoxOBB BuildWorldOBBFromLocalAABB(
+			const BoundingBoxAABB& localBounds,
+			const SRT& transform);
+
+		// Smallest world-axis-aligned box that contains the supplied OBB.
+		BoundingBoxAABB BuildWorldAABBFromOBB(const BoundingBoxOBB& obb);
+
 		// OBBÇ∆ãÖÇÃìñÇΩÇËîªíË
 		bool CollisionSphereOBB(
 			BoundingSphere sphere,
