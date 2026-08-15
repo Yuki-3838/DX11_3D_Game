@@ -47,6 +47,7 @@ public:
 	}
 
 	SRT getRenderSRT() const;
+	void setVisualGroundOffsetY(float offsetY) { m_visualGroundOffsetY = offsetY; }
 	MotionState getMotionState() const { return m_motionState; }
 	const char* getMotionStateName() const;
 	float getMotionTime() const { return m_motionTime; }
@@ -64,5 +65,8 @@ private:
 	float m_jumpVelocity = 0.0f;
 	bool m_jumpWasPressed = false;
 	bool m_isJumping = false;
+	// Render-only correction for imported models whose local origin is not at
+	// the feet. Gameplay movement and jump physics continue to use m_srt.
+	float m_visualGroundOffsetY = 0.0f;
 
 };

@@ -71,7 +71,8 @@ private:
     static constexpr float PLAYER_DAMAGE = 25.0f;
     static constexpr float ENEMY_DAMAGE = 15.0f;
 	static constexpr float FALLBACK_ATTACK_RANGE = 30.0f;
-	// Match the 0.90 second attack.motion: preparation 0.00-0.18,
+	// Match the 1.15 second reference-retargeted attack motion: preparation
+	// 0.00-0.30,
 	// damaging swing 0.18-0.62, recovery 0.62-0.90.
 	static constexpr float PLAYER_WINDUP = 0.18f;
 	static constexpr float PLAYER_ACTIVE = 0.44f;

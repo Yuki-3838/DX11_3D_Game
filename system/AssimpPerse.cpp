@@ -2,6 +2,7 @@
 #include	<utility>
 #include	<iostream>
 #include	<unordered_map>
+#include <filesystem>
 #include	<cassert>
 #include	"CTexture.h"
 #include	"AssimpPerse.h"
@@ -24,6 +25,7 @@ namespace myAssimp{
 
 	std::unordered_map<std::string, BONE> g_BoneDictionary;		// 繝懊・繝ｳ霎樊嶌・医く繝ｼ・壹・繝ｼ繝ｳ蜷搾ｼ・	
 	std::unordered_map<std::string, aiMatrix4x4> g_NodeLocalMatrices;
+	std::vector<aiMatrix4x4> g_MeshGlobalTransforms;
 	
 	std::vector<std::vector<BONE>>	g_BonesPerMeshes;			// 繝｡繝・す繝･蜊倅ｽ阪〒繝懊・繝ｳ諠・ｱ繧帝寔繧√◆繧ゅ・
 
@@ -48,6 +50,22 @@ namespace myAssimp{
 			ptree->Addchild(std::move(pchild));
 			CreateNodeTree(node->mChildren[n], ptree->m_children[n].get());
 		}
+	}
+
+	// glTF accessory meshes keep their transforms on scene nodes. Cache the
+	// complete transform so non-skinned parts are not rendered at the origin.
+	void CreateMeshGlobalTransforms(aiNode* node, const aiMatrix4x4& parentTransform)
+	{
+		const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+		for (unsigned int i = 0; i < node->mNumMeshes; ++i)
+		{
+			const unsigned int meshIndex = node->mMeshes[i];
+			if (meshIndex >= g_MeshGlobalTransforms.size())
+				g_MeshGlobalTransforms.resize(meshIndex + 1);
+			g_MeshGlobalTransforms[meshIndex] = globalTransform;
+		}
+		for (unsigned int i = 0; i < node->mNumChildren; ++i)
+			CreateMeshGlobalTransforms(node->mChildren[i], globalTransform);
 	}
 
 	CTreeNode<std::string> GetBoneNameTree() 
@@ -372,6 +390,10 @@ namespace myAssimp{
 		g_BoneDictionary.clear();		//20240908
 		g_BonesPerMeshes.clear();		//20240908
 		g_NodeLocalMatrices.clear();
+		g_MeshGlobalTransforms.clear();
+		CreateMeshGlobalTransforms(pScene->mRootNode, aiMatrix4x4());
+		const std::string extension = std::filesystem::path(filename).extension().string();
+		const bool isGltf = extension == ".gltf" || extension == ".glb";
 
 		// 繝槭ユ繝ｪ繧｢繝ｫ諠・ｱ蜿門ｾ・
 		GetMaterialData(pScene,texturedirectory);
@@ -393,6 +415,16 @@ namespace myAssimp{
 
 				// 蠎ｧ讓・	
 				v.pos = mesh->mVertices[vidx];
+				if (isGltf && !mesh->HasBones() && m < g_MeshGlobalTransforms.size())
+				{
+					// The renderer receives raw vertices, so apply the node transform
+					// once for non-skinned glTF accessory meshes.
+					const Matrix4x4 nodeTransform =
+						utility::aiMtxToDxMtx(g_MeshGlobalTransforms[m]);
+					const Vector3 transformed = Vector3::Transform(
+						Vector3(v.pos.x, v.pos.y, v.pos.z), nodeTransform);
+					v.pos = aiVector3D(transformed.x, transformed.y, transformed.z);
+				}
 
 				// 縺薙・鬆らせ縺御ｽｿ逕ｨ縺励※縺・ｋ繝槭ユ繝ｪ繧｢繝ｫ縺ｮ繧､繝ｳ繝・ャ繧ｯ繧ｹ逡ｪ蜿ｷ・医Γ繝・す繝･蜀・・・・
 				// 繧剃ｽｿ逕ｨ縺励※繝槭ユ繝ｪ繧｢繝ｫ蜷阪ｒ繧ｻ繝・ヨ
@@ -405,6 +437,14 @@ namespace myAssimp{
 				else
 				{
 					v.normal = aiVector3D(0.0f, 0.0f, 0.0f);
+				}
+				if (isGltf && !mesh->HasBones() && m < g_MeshGlobalTransforms.size() && mesh->HasNormals())
+				{
+					const Matrix4x4 nodeTransform =
+						utility::aiMtxToDxMtx(g_MeshGlobalTransforms[m]);
+					const Vector3 transformed = Vector3::TransformNormal(
+						Vector3(v.normal.x, v.normal.y, v.normal.z), nodeTransform);
+					v.normal = aiVector3D(transformed.x, transformed.y, transformed.z);
 				}
 
 				// 鬆らせ繧ｫ繝ｩ繝ｼ・滂ｼ茨ｼ千分逶ｮ・・

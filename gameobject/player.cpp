@@ -186,6 +186,7 @@ void player::draw(uint64_t dt) {
 SRT player::getRenderSRT() const
 {
 	SRT renderSrt = m_srt;
+	renderSrt.pos.y += m_visualGroundOffsetY;
 	if (m_motionState == MotionState::Walk)
 	{
 		const float step = std::sinf(m_motionTime * 7.0f);

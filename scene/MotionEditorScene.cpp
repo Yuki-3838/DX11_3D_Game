@@ -23,18 +23,19 @@ void MotionEditorScene::init()
 
 	std::unique_ptr<CShader> skinShader = std::make_unique<CShader>();
 	skinShader->Create(
-		"shader/vertexLightingOneSkinVS.hlsl",
+		"shader/vertexLightingOneSkinVSSafe.hlsl",
 		"shader/vertexLightingPS.hlsl");
 	ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 
 	m_animationMesh = std::make_unique<CAnimationMesh>();
 	m_animationMesh->Load(
-		"assets/model/Furina/Furina.pmx",
-		"assets/model/Furina/");
+		"assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb",
+		"assets/model/SwordShieldPack/runtime/");
 	m_boneComb.Create();
 	m_animator.Initialize(*m_animationMesh);
 	m_animator.EnableMotionEditor();
-	m_animator.LoadMotionFile("assets/motion/attack.motion");
+	// CCharacterAnimator restores the last downloaded clip selected in the
+	// editor, so GameScene and MotionEditorScene use the same attack.
 
 	ApplyCamera();
 	DebugUI::RedistDebugFunction([this]() { RenderEditorCamera(); });
@@ -123,7 +124,7 @@ void MotionEditorScene::RenderEditorCamera()
 			-1.4f, 1.4f);
 	}
 	if (cameraWindowHovered && std::abs(ImGui::GetIO().MouseWheel) > 0.001f)
-		m_cameraDistance = std::clamp(m_cameraDistance - ImGui::GetIO().MouseWheel * 8.0f, 30.0f, 300.0f);
+		m_cameraDistance = std::clamp(m_cameraDistance - ImGui::GetIO().MouseWheel * 0.8f, 2.5f, 30.0f);
 
 	float yawDegrees = m_cameraYaw * 180.0f / 3.14159265f;
 	float pitchDegrees = m_cameraPitch * 180.0f / 3.14159265f;
@@ -131,15 +132,15 @@ void MotionEditorScene::RenderEditorCamera()
 		m_cameraYaw = yawDegrees * 3.14159265f / 180.0f;
 	if (ImGui::SliderFloat("Pitch", &pitchDegrees, -5.0f, 75.0f, "%.1f deg"))
 		m_cameraPitch = std::clamp(pitchDegrees * 3.14159265f / 180.0f, -1.4f, 1.4f);
-	ImGui::SliderFloat("Distance", &m_cameraDistance, 30.0f, 300.0f, "%.1f");
-	ImGui::SliderFloat("Target Height", &m_cameraTargetHeight, 0.0f, 150.0f, "%.1f");
+	ImGui::SliderFloat("Distance", &m_cameraDistance, 2.5f, 30.0f, "%.1f");
+	ImGui::SliderFloat("Target Height", &m_cameraTargetHeight, 0.0f, 3.0f, "%.2f");
 
 	if (ImGui::Button("Reset Preview Camera"))
 	{
 		m_cameraYaw = 0.0f;
 		m_cameraPitch = 0.08f;
-		m_cameraDistance = 42.0f;
-		m_cameraTargetHeight = 10.0f;
+		m_cameraDistance = 6.0f;
+		m_cameraTargetHeight = 1.45f;
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Front"))

@@ -52,10 +52,13 @@ private:
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	OneVsOneCombat m_combat;
 	bool m_drawAttackCollisionDebug = true;
-	bool m_drawAttackBroadPhase = true;
-	bool m_drawAttackNarrowPhase = true;
 	bool m_drawAttackCollisionLabels = true;
 	bool m_drawAttackCollisionXray = true;
+	bool m_drawPlayerObb = true;
+	bool m_drawEnemyObb = true;
+	bool m_drawEnemyAabb = true;
+	bool m_drawSwordObb = true;
+	bool m_drawAttackAabb = true;
 	bool m_drawLegacyPhysicsDebug = false;
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系

@@ -64,7 +64,10 @@ namespace
         result.axisY = axisY;
         result.axisZ = axisZ;
         result.lengthx = thickness;
-        result.lengthy = length + thickness;
+        // length is the exact hilt-to-tip span. Adding thickness here made the
+        // OBB extend past both endpoints, so the debug box no longer matched
+        // the visible sword even when the segment direction was correct.
+        result.lengthy = std::max(length, 0.001f);
         result.lengthz = thickness;
         return result;
     }
