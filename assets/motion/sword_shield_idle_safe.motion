@@ -1,0 +1,11 @@
+DX11_MOTION 1
+duration 0.0
+bone "mixamorig:LeftArm"
+key 0.0 -1.050000 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0
+endbone
+bone "mixamorig:RightArm"
+key 0.0 -1.050000 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0
+endbone
+bone "mixamorig:Shield_joint"
+key 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+endbone

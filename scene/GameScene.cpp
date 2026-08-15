@@ -60,9 +60,9 @@ namespace {
 	std::array<Load3DInfo, 3> g_loadmodel =
 	{
 			Load3DInfo(
-				"furina_player",
-				"assets/model/Furina/Furina.pmx",			// ASCII名に変換したプレイヤーモチEΝ
-				"assets/model/Furina/"),				// チEけスチャのパス
+				"warrior_player",
+				"assets/model/FallenPaladin/runtime/FallenPaladin_Player_clean.glb", // CC BY 4.0 / Pigcraft: 軽量化・リギング済み
+				"assets/model/FallenPaladin/runtime/"),
 
 			Load3DInfo(
 				"car001.x",
@@ -777,48 +777,59 @@ void GameScene::draw(uint64_t deltatime)
 			enemyRenderer->Draw();
 		}
 	}
-    if (m_drawAttackCollisionDebug)
+	if (m_drawAttackCollisionDebug)
 	{
 		const auto& collision = m_combat.GetCollisionDebugState();
+		const bool showSwordSweep = collision.swordTransformValid &&
+			m_combat.IsPlayerAttackActive();
 		if (m_drawAttackCollisionXray)
 			Renderer::SetDepthEnable(false);
 
-		if (m_drawAttackBroadPhase)
+		if (m_drawEnemyAabb)
 		{
 			DrawBoxEdges(GetAabbCorners(collision.enemyBroadPhase),
 				collision.broadPhaseOverlap
 					? Color(1.0f, 0.85f, 0.05f, 1.0f)
 					: Color(0.10f, 0.55f, 1.0f, 1.0f));
 		}
-		if (m_drawAttackNarrowPhase)
+		if (m_drawPlayerObb || m_drawEnemyObb)
 		{
-			DrawBoxEdges(GetObbCorners(collision.playerObb),
-				Color(0.15f, 0.75f, 1.0f, 1.0f));
-			DrawBoxEdges(GetObbCorners(collision.enemyObb),
-				collision.narrowPhaseHit
-					? Color(1.0f, 0.05f, 0.02f, 1.0f)
-					: Color(0.15f, 1.0f, 0.30f, 1.0f));
+			if (m_drawPlayerObb)
+			{
+				DrawBoxEdges(GetObbCorners(collision.playerObb),
+					Color(0.15f, 0.75f, 1.0f, 1.0f));
+			}
+			if (m_drawEnemyObb)
+			{
+				DrawBoxEdges(GetObbCorners(collision.enemyObb),
+					collision.narrowPhaseHit
+						? Color(1.0f, 0.05f, 0.02f, 1.0f)
+						: Color(0.15f, 1.0f, 0.30f, 1.0f));
+			}
 		}
 
 		if (collision.swordTransformValid)
 		{
-			if (m_drawAttackBroadPhase)
+			if (m_drawAttackAabb)
 			{
 				DrawBoxEdges(GetAabbCorners(collision.attackBroadPhase),
 					collision.broadPhaseOverlap
 						? Color(1.0f, 0.85f, 0.05f, 1.0f)
 						: Color(0.10f, 0.90f, 1.0f, 1.0f));
 			}
-			if (m_drawAttackNarrowPhase)
+			if (m_drawSwordObb)
 			{
 				DrawBoxEdges(GetObbCorners(collision.bladeObb),
 					collision.narrowPhaseHit
 						? Color(1.0f, 0.05f, 0.02f, 1.0f)
 						: Color(1.0f, 0.35f, 0.02f, 1.0f));
-				DrawBoxEdges(GetObbCorners(collision.tipSweepObb),
-					collision.narrowPhaseHit
-						? Color(1.0f, 0.05f, 0.02f, 1.0f)
-						: Color(0.85f, 0.15f, 1.0f, 1.0f));
+				if (showSwordSweep)
+				{
+					DrawBoxEdges(GetObbCorners(collision.tipSweepObb),
+						collision.narrowPhaseHit
+							? Color(1.0f, 0.05f, 0.02f, 1.0f)
+							: Color(0.85f, 0.15f, 1.0f, 1.0f));
+				}
 			}
 		}
 
@@ -860,6 +871,10 @@ void GameScene::draw(uint64_t deltatime)
 }
 void GameScene::init()
 {
+	// Sword and Shield Pack のモデルとモーションは同じ Mixamo リグを
+	// 使用するため、別キャラクターへのリターゲットを行わない。
+	g_loadmodel[0].filename = "assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb";
+	g_loadmodel[0].texdirectoryname = "assets/model/SwordShieldPack/runtime/";
 	m_combat.Reset();
 	// カメラ(3D)の初期匁E
 	m_camera.Init();
@@ -880,8 +895,8 @@ void GameScene::init()
 
 	std::unique_ptr<CShader> skinShader = std::make_unique<CShader>();
 	skinShader->Create(
-		"shader/vertexLightingOneSkinVS.hlsl",
-		"shader/vertexLightingPS.hlsl"
+		"shader/vertexLightingOneSkinVSSafe.hlsl",
+		"shader/vertexLightingSkinPS.hlsl"
 	);
 	ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 
@@ -908,12 +923,22 @@ void GameScene::init()
 	m_playerAnimationMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh);
 	m_playerBoneComb.Create();
-	m_playerAnimationMesh->UpdateManualPose(m_playerBoneComb, {});
+	// Apply the standing pose before the first draw.  Leaving this as an empty
+	// pose makes the skinned mesh render one frame (or indefinitely when the
+	// update loop is paused) in its authored T-pose.
+	m_playerAnimator.Update(
+		*m_playerAnimationMesh,
+		m_playerBoneComb,
+		CharacterAnimationState{ false, false, 0.0f });
 
 	m_player = std::make_unique<player>(this);
 	m_player->init();
 	SRT playerModelSrt = m_player->getSRT();
-	playerModelSrt.scale = Vector3(1.0f, 1.0f, 1.0f);
+	// Fallen Paladin is authored at a smaller runtime unit scale.  Use 10 as
+	// the gameplay/display baseline so the character is visible at startup.
+	// The auto OBB below is rebuilt from the same vertices and SRT, so collision
+	// dimensions stay synchronized with this larger presentation scale.
+	playerModelSrt.scale = Vector3(10.0f, 10.0f, 10.0f);
 	m_player->setSRT(playerModelSrt);
 
 	m_field = std::make_unique<field>(this);
@@ -935,6 +960,16 @@ void GameScene::init()
 		m_localbsplayer = GM31::GE::Collision::calcBSphere(vs, srt);
 		m_localPlayerMeshBounds =
 			GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
+
+		// The field is at y=-0.3.  The imported mesh origin is not guaranteed to
+		// be at the soles, so derive a render-only lift from the real vertex
+		// minimum.  Physics keeps the gameplay SRT at y=0; rendering, the sword
+		// attachment, and the visual OBB all use getRenderSRT(), so they remain
+		// aligned while the feet sit exactly on the field.
+		const float playerGroundY = -0.3f;
+		const float playerScaleY = m_player->getSRT().scale.y;
+		m_player->setVisualGroundOffsetY(
+			playerGroundY - m_localPlayerMeshBounds.min.y * playerScaleY);
 	}
 
 	// ENEMY BS作諱E
@@ -1304,9 +1339,12 @@ void GameScene::DebugCombat()
 	{
 		ImGui::Indent();
 		ImGui::Checkbox("X-ray (ignore depth)", &m_drawAttackCollisionXray);
-		ImGui::Checkbox("AABB broad phase", &m_drawAttackBroadPhase);
-		ImGui::SameLine();
-		ImGui::Checkbox("OBB narrow phase", &m_drawAttackNarrowPhase);
+		ImGui::SeparatorText("Collision volume visibility");
+		ImGui::Checkbox("Player OBB", &m_drawPlayerObb);
+		ImGui::Checkbox("Enemy OBB", &m_drawEnemyObb);
+		ImGui::Checkbox("Enemy AABB [broad]", &m_drawEnemyAabb);
+		ImGui::Checkbox("Sword OBB", &m_drawSwordObb);
+		ImGui::Checkbox("Attack AABB [broad]", &m_drawAttackAabb);
 		ImGui::Checkbox("World labels", &m_drawAttackCollisionLabels);
 		ImGui::Unindent();
 	}
@@ -1354,34 +1392,45 @@ void GameScene::DebugCombat()
 
 	const Matrix4x4 view = m_camera.GetViewMatrix();
 	const Matrix4x4 projection = m_camera.GetProjMatrix();
-	if (m_drawAttackBroadPhase)
+	const bool showSwordSweep = collision.swordTransformValid &&
+		m_combat.IsPlayerAttackActive();
+	if (m_drawEnemyAabb)
 	{
 		DrawWorldCollisionLabel(
 			view, projection, GetAabbCenter(collision.enemyBroadPhase),
 			ImVec2(-135.0f, -72.0f), "ENEMY AABB [BROAD]", IM_COL32(30, 145, 255, 255));
-		if (collision.swordTransformValid)
-		{
-			DrawWorldCollisionLabel(
-				view, projection, GetAabbCenter(collision.attackBroadPhase),
-				ImVec2(-150.0f, 45.0f), "ATTACK AABB [BROAD]", IM_COL32(30, 230, 255, 255));
-		}
 	}
-	if (m_drawAttackNarrowPhase)
+	if (collision.swordTransformValid && m_drawAttackAabb)
 	{
 		DrawWorldCollisionLabel(
-			view, projection, collision.playerObb.worldcenter,
-			ImVec2(-180.0f, 4.0f), "PLAYER OBB [AUTO]", IM_COL32(40, 190, 255, 255));
-		DrawWorldCollisionLabel(
-			view, projection, collision.enemyObb.worldcenter,
-			ImVec2(-180.0f, -34.0f), "ENEMY OBB [NARROW]", IM_COL32(45, 255, 75, 255));
-		if (collision.swordTransformValid)
+			view, projection, GetAabbCenter(collision.attackBroadPhase),
+			ImVec2(-150.0f, 45.0f), "ATTACK AABB [BROAD]", IM_COL32(30, 230, 255, 255));
+	}
+	if (m_drawPlayerObb || m_drawEnemyObb || m_drawSwordObb)
+	{
+		if (m_drawPlayerObb)
+		{
+			DrawWorldCollisionLabel(
+				view, projection, collision.playerObb.worldcenter,
+				ImVec2(-180.0f, 4.0f), "PLAYER OBB [AUTO]", IM_COL32(40, 190, 255, 255));
+		}
+		if (m_drawEnemyObb)
+		{
+			DrawWorldCollisionLabel(
+				view, projection, collision.enemyObb.worldcenter,
+				ImVec2(-180.0f, -34.0f), "ENEMY OBB [NARROW]", IM_COL32(45, 255, 75, 255));
+		}
+		if (collision.swordTransformValid && m_drawSwordObb)
 		{
 			DrawWorldCollisionLabel(
 				view, projection, collision.bladeObb.worldcenter,
 				ImVec2(45.0f, -10.0f), "BLADE OBB", IM_COL32(255, 95, 10, 255));
-			DrawWorldCollisionLabel(
-				view, projection, collision.tipSweepObb.worldcenter,
-				ImVec2(45.0f, 28.0f), "SWEEP OBB", IM_COL32(220, 45, 255, 255));
+			if (showSwordSweep)
+			{
+				DrawWorldCollisionLabel(
+					view, projection, collision.tipSweepObb.worldcenter,
+					ImVec2(45.0f, 28.0f), "SWEEP OBB", IM_COL32(220, 45, 255, 255));
+			}
 		}
 	}
 }

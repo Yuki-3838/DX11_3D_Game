@@ -84,6 +84,7 @@ void CStaticMesh::Load(std::string filename, std::string texturedirectory, bool 
 	for (const auto& sub : subsets)
 	{
 		SUBSET subset{};
+		subset.MeshName = sub.meshname;
 		subset.VertexBase = sub.VertexBase;
 		subset.VertexNum = sub.VertexNum;
 		subset.IndexBase = sub.IndexBase;

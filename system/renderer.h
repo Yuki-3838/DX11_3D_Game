@@ -93,6 +93,7 @@ struct LIGHT
  * @brief メッシュのサブセット（マテリアル毎）情報を保持する構造体
  */
 struct SUBSET {
+    std::string MeshName;
     std::string MtrlName;      ///< マテリアル名
     unsigned int IndexNum = 0; ///< インデックス数
     unsigned int VertexNum = 0;///< 頂点数
