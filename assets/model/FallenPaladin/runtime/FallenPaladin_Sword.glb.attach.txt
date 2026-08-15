@@ -1,0 +1,8 @@
+# Fallen Paladin sword attachment preset
+offset_x 0.650
+offset_y -0.070
+offset_z 0.646
+rotation_x 81.50
+rotation_y -46.50
+rotation_z 76.75
+scale 1.000
