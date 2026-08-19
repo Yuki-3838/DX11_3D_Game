@@ -4,23 +4,33 @@
 
 const aiScene* CAnimationData::LoadAnimation(const std::string filename, const std::string name)
 {
-	// ÉVÅ[ÉìèÓïÒÇç\íz
-	m_Animation[name] = m_importer.ReadFile(
+	// Assimp::Importer owns the returned aiScene. Keep one importer alive per
+	// animation so loading another clip cannot invalidate earlier clips.
+	auto importer = std::make_unique<Assimp::Importer>();
+	const aiScene* scene = importer->ReadFile(
 		filename.c_str(),
 		aiProcess_ConvertToLeftHanded);
+	m_Animation[name] = scene;
+	m_animationImporters.push_back(std::move(importer));
 	assert(m_Animation[name]);
 
 	if (m_Animation[name] == nullptr) {
-		std::cout << " animation load error " << filename  << " " << m_importer.GetErrorString();
+		std::cout << " animation load error " << filename  << " "
+			<< m_animationImporters.back()->GetErrorString();
 	}
 
 	return m_Animation[name];
 }
 
-// éwíËÇµÇΩñºëOÇÃÉAÉjÉÅÅ[ÉVÉáÉìÉfÅ[É^ÇéÊìæÇ∑ÇÈ
+// ÊåáÂÆö„Åó„ÅüÂêçÂâç„ÅÆ„Ç¢„Éã„É°„Éº„Ç∑„Éß„É≥„Éá„Éº„Çø„ÇíÂèñÂæó„Åô„Çã
 aiAnimation* CAnimationData::GetAnimation(const char* name, int idx) {
+	const auto it = m_Animation.find(name);
+	if (it == m_Animation.end() || it->second == nullptr ||
+		idx < 0 || static_cast<unsigned int>(idx) >= it->second->mNumAnimations)
+	{
+		std::cout << " animation not found " << name << " index " << idx << std::endl;
+		return nullptr;
+	}
 
-	aiAnimation* animation = m_Animation[name]->mAnimations[idx];
-
-	return animation;
+	return it->second->mAnimations[idx];
 }

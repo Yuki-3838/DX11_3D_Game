@@ -41,6 +41,7 @@ public:
         const DirectX::SimpleMath::Vector3& playerPosition,
         const DirectX::SimpleMath::Vector3& enemyPosition,
         bool playerAttackTriggered,
+		bool enemyAttackTriggered,
 		const DirectX::SimpleMath::Vector3& swordBase,
 		const DirectX::SimpleMath::Vector3& swordTip,
 		const DirectX::SimpleMath::Vector3& previousSwordTip,
@@ -65,22 +66,26 @@ private:
         Phase phase = Phase::Ready;
         float elapsed = 0.0f;
         bool hit = false;
+		int hitCount = 0;
     };
 
     static constexpr float MAX_HP = 100.0f;
     static constexpr float PLAYER_DAMAGE = 25.0f;
     static constexpr float ENEMY_DAMAGE = 15.0f;
-	static constexpr float FALLBACK_ATTACK_RANGE = 30.0f;
+	static constexpr float ENEMY_ATTACK_RANGE = 64.0f;
 	// Match the 1.15 second reference-retargeted attack motion: preparation
 	// 0.00-0.30,
 	// damaging swing 0.18-0.62, recovery 0.62-0.90.
 	static constexpr float PLAYER_WINDUP = 0.18f;
 	static constexpr float PLAYER_ACTIVE = 0.44f;
 	static constexpr float PLAYER_RECOVERY = 0.28f;
-    static constexpr float ENEMY_WINDUP = 0.38f;
-    static constexpr float ENEMY_ACTIVE = 0.12f;
-    static constexpr float ENEMY_RECOVERY = 0.35f;
+    // Match enemy movement: the windup is readable and the post-attack
+    // recovery is long enough for the player to punish the whiff or hit.
+    static constexpr float ENEMY_WINDUP = 0.72f;
+    static constexpr float ENEMY_ACTIVE = 0.90f;
+    static constexpr float ENEMY_RECOVERY = 1.35f;
     static constexpr float ENEMY_COOLDOWN = 1.15f;
+	static constexpr int ENEMY_MAX_HITS = 1;
 
     float m_playerHp = MAX_HP;
     float m_enemyHp = MAX_HP;

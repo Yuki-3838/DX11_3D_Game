@@ -1,0 +1,12 @@
+Cethiel's Dragon 3D
+
+Source: https://opengameart.org/content/cethiels-dragon-3d
+Authors: Drummyfish and Cethiel
+License: CC0 1.0 / Public Domain
+Attribution is not required, but is included here as a courtesy.
+
+Included animation files:
+- dragon_idle.dae
+- dragon_walk.dae
+- dragon_attack.dae
+- dragon_die.dae

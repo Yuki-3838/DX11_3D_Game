@@ -75,7 +75,9 @@ namespace {
 				"assets/model/"),					// チEけスチャのパス
 	};
 
-	constexpr float ENEMY_MODEL_SCALE = 0.7f;
+	// Cethiel's Dragon is authored close to unit size; enlarge it to read as a
+	// large hunting target beside the player's runtime scale.
+	constexpr float ENEMY_MODEL_SCALE = 60.0f;
 
 	std::array<Vector3, 8> GetAabbCorners(
 		const GM31::GE::Collision::BoundingBoxAABB& box)
@@ -474,6 +476,10 @@ namespace {
 			for (size_t j = i + 1; j < enemies.size(); j++) {
 				SRT srtA = enemies[i]->getSRT();
 				SRT srtB = enemies[j]->getSRT();
+				// Rendering is intentionally oversized, but crowd physics stays at a
+				// readable body radius so the monster does not stop several meters away.
+				srtA.scale = Vector3::Min(srtA.scale, Vector3(8.0f, 8.0f, 8.0f));
+				srtB.scale = Vector3::Min(srtB.scale, Vector3(8.0f, 8.0f, 8.0f));
 				GM31::GE::Collision::BoundingSphere sphereA = transformBSphere(localSphere, srtA);
 				GM31::GE::Collision::BoundingSphere sphereB = transformBSphere(localSphere, srtB);
 
@@ -519,7 +525,9 @@ namespace {
 
 		for (auto& enemyObj : enemies) {
 			SRT enemySrt = enemyObj->getSRT();
-			GM31::GE::Collision::BoundingSphere enemySphere = transformBSphere(localEnemySphere, enemySrt);
+			SRT enemyCollisionSrt = enemySrt;
+			enemyCollisionSrt.scale = Vector3::Min(enemyCollisionSrt.scale, Vector3(8.0f, 8.0f, 8.0f));
+			GM31::GE::Collision::BoundingSphere enemySphere = transformBSphere(localEnemySphere, enemyCollisionSrt);
 
 			Vector3 diff = enemySphere.center - playerSphere.center;
 			diff.y = 0.0f;
@@ -639,12 +647,20 @@ void GameScene::update(uint64_t deltatime)
 
 	for (auto& e : m_enemies) {
 		SRT prevEnemySrt = e->getSRT();
-		GM31::GE::Collision::BoundingSphere prevEnemySphere = transformBSphere(m_localbsenemy, prevEnemySrt);
+		SRT prevEnemyCollisionSrt = prevEnemySrt;
+		prevEnemyCollisionSrt.scale = Vector3::Min(
+			prevEnemyCollisionSrt.scale, Vector3(8.0f, 8.0f, 8.0f));
+		GM31::GE::Collision::BoundingSphere prevEnemySphere =
+			transformBSphere(m_localbsenemy, prevEnemyCollisionSrt);
 
 		e->update(deltatime);
 
 		SRT enemySrt = e->getSRT();
-		GM31::GE::Collision::BoundingSphere nextEnemySphere = transformBSphere(m_localbsenemy, enemySrt);
+		SRT nextEnemyCollisionSrt = enemySrt;
+		nextEnemyCollisionSrt.scale = Vector3::Min(
+			nextEnemyCollisionSrt.scale, Vector3(8.0f, 8.0f, 8.0f));
+		GM31::GE::Collision::BoundingSphere nextEnemySphere =
+			transformBSphere(m_localbsenemy, nextEnemyCollisionSrt);
 		Vector3 enemyMove = nextEnemySphere.center - prevEnemySphere.center;
 		Vector3 adjustedEnemyMove = calcWallAvoidMove(
 			walldatas,
@@ -663,12 +679,10 @@ void GameScene::update(uint64_t deltatime)
 		}
 
 		enemySrt.pos = prevEnemySrt.pos + adjustedEnemyMove;
-		if (adjustedEnemyMove.Length() > 0.0001f) {
-			enemySrt.rot.y = std::atan2(-adjustedEnemyMove.x, -adjustedEnemyMove.z);
-		}
 		e->setSRT(enemySrt);
 		e->setVel(adjustedEnemyMove);
 	}
+	UpdateEnemyAnimation();
 
 	resolveEnemyCollisions(m_enemies, m_localbsenemy);
 	resolvePlayerEnemyCollisions(
@@ -700,12 +714,13 @@ void GameScene::update(uint64_t deltatime)
 			m_player->getRenderSRT());
 		const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localEnemyMeshBounds,
-			m_enemies.front()->getSRT());
+			m_enemies.front()->getRenderSRT());
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
 			enemyPosition,
 			attackStarted,
+			m_enemies.front()->getMotionState() == enemy::MotionState::Windup,
 			swordBase,
 			swordTip,
 			previousSwordTip,
@@ -713,6 +728,67 @@ void GameScene::update(uint64_t deltatime)
 			playerObb,
 			enemyObb);
     }
+}
+
+void GameScene::UpdateEnemyAnimation()
+{
+	if (!m_enemyAnimationMesh || m_enemies.empty())
+		return;
+
+	const enemy::MotionState state = m_enemies.front()->getMotionState();
+	if (state != m_previousEnemyMotionState)
+	{
+		const bool wasAttackMotion =
+			m_previousEnemyMotionState == enemy::MotionState::Windup ||
+			m_previousEnemyMotionState == enemy::MotionState::Active;
+		const bool isAttackMotion =
+			state == enemy::MotionState::Windup ||
+			state == enemy::MotionState::Active;
+		if (!(wasAttackMotion && isAttackMotion))
+		{
+			m_enemyAnimationFrame = 0;
+			m_enemyAnimationTick = 0;
+		}
+		m_previousEnemyMotionState = state;
+	}
+	const bool attackMotion =
+		state == enemy::MotionState::Windup ||
+		state == enemy::MotionState::Active;
+	// The dragon walk clip has 9 keys over roughly 1.67 seconds. Advance one
+	// key about every 10 fixed updates so the feet do not slide against motion.
+	if ((m_enemyAnimationTick++ % 10) != 0)
+	{
+		return;
+	}
+
+	aiAnimation* animation = m_enemyIdleAnimation;
+	switch (state)
+	{
+	case enemy::MotionState::Approach:
+	case enemy::MotionState::Circle:
+	case enemy::MotionState::Retreat:
+		animation = m_enemyWalkAnimation;
+		break;
+	case enemy::MotionState::Windup:
+	case enemy::MotionState::Active:
+		animation = m_enemyAttackAnimation;
+		break;
+	case enemy::MotionState::Recovery:
+		animation = m_enemyIdleAnimation;
+		break;
+	}
+
+	if (animation != nullptr)
+	{
+		m_enemyAnimationMesh->SetCurentAnimation(animation);
+		m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame);
+	}
+	else
+	{
+		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
+	}
+	m_enemyBoneComb.Update();
+	++m_enemyAnimationFrame;
 }
 
 void GameScene::draw(uint64_t deltatime)
@@ -766,16 +842,14 @@ void GameScene::draw(uint64_t deltatime)
 
 	// 敵を描画
 	for (auto& e : m_enemies) {
-		SRT srt = e->getSRT();
+		SRT srt = e->getRenderSRT();
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
 		Renderer::SetWorldMatrix(&worldmtx);
 
-		ShaderManager::Get<CShader>("Shader3D")->SetGPU();
-		if (auto* enemyRenderer = MeshManager::getRenderer<CStaticMeshRenderer>(g_loadmodel[1].meshid))
-		{
-			enemyRenderer->Draw();
-		}
+		ShaderManager::Get<CShader>("Shader3DSkin")->SetGPU();
+		m_enemyBoneComb.SetGPU();
+		m_enemyAnimationMesh->Draw();
 	}
 	if (m_drawAttackCollisionDebug)
 	{
@@ -848,7 +922,11 @@ void GameScene::draw(uint64_t deltatime)
 	collectHitWalls(hitWallObjects, m_walls, m_worldbsplayer.radius, m_worldbsplayer.center);
 
 	for (auto& e : m_enemies) {
-		GM31::GE::Collision::BoundingSphere enemySphere = transformBSphere(m_localbsenemy, e->getSRT());
+		SRT enemyCollisionSrt = e->getSRT();
+		enemyCollisionSrt.scale = Vector3::Min(
+			enemyCollisionSrt.scale, Vector3(8.0f, 8.0f, 8.0f));
+		GM31::GE::Collision::BoundingSphere enemySphere =
+			transformBSphere(m_localbsenemy, enemyCollisionSrt);
 		if (m_drawLegacyPhysicsDebug)
 			SphereDrawerDraw(enemySphere.radius, Color(1, 0, 0, 0.25f),
 				enemySphere.center.x,
@@ -875,6 +953,9 @@ void GameScene::init()
 	// 使用するため、別キャラクターへのリターゲットを行わない。
 	g_loadmodel[0].filename = "assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb";
 	g_loadmodel[0].texdirectoryname = "assets/model/SwordShieldPack/runtime/";
+	g_loadmodel[1].meshid = "cethiel_dragon";
+	g_loadmodel[1].filename = "assets/model/CethielDragon/dragon.dae";
+	g_loadmodel[1].texdirectoryname = "assets/model/CethielDragon/";
 	m_combat.Reset();
 	// カメラ(3D)の初期匁E
 	m_camera.Init();
@@ -930,6 +1011,34 @@ void GameScene::init()
 		*m_playerAnimationMesh,
 		m_playerBoneComb,
 		CharacterAnimationState{ false, false, 0.0f });
+
+	m_enemyAnimationMesh = std::make_unique<CAnimationMesh>();
+	m_enemyAnimationMesh->Load(
+		"assets/model/CethielDragon/dragon.dae",
+		"assets/model/CethielDragon/");
+	m_enemyBoneComb.Create();
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_idle.dae", "idle");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_walk.dae", "walk");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_attack.dae", "attack");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_die.dae", "die");
+	m_enemyIdleAnimation = m_enemyAnimationData.GetAnimation("idle", 0);
+	m_enemyWalkAnimation = m_enemyAnimationData.GetAnimation("walk", 0);
+	m_enemyAttackAnimation = m_enemyAnimationData.GetAnimation("attack", 0);
+	m_enemyDieAnimation = m_enemyAnimationData.GetAnimation("die", 0);
+	if (m_enemyIdleAnimation != nullptr)
+	{
+		m_enemyAnimationMesh->SetCurentAnimation(m_enemyIdleAnimation);
+		m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame);
+	}
+	else
+	{
+		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
+	}
+	m_enemyBoneComb.Update();
 
 	m_player = std::make_unique<player>(this);
 	m_player->init();
@@ -994,8 +1103,11 @@ void GameScene::init()
 
 			SRT srt{};
 			m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
-			m_localEnemyMeshBounds =
+		m_localEnemyMeshBounds =
 				GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
+			const float enemyGroundY = -0.3f;
+			m_enemies.front()->setVisualGroundOffsetY(
+				enemyGroundY - m_localEnemyMeshBounds.min.y * ENEMY_MODEL_SCALE);
 		}
 	}
 	// 敵のパラメータを設宁E
@@ -1322,6 +1434,10 @@ void GameScene::DebugCombat()
     ImGui::Begin("1v1 Combat");
     ImGui::Text("State: %s", m_combat.GetStateName().data());
     ImGui::Text("Player Motion: %s", m_player->getMotionStateName());
+	if (!m_enemies.empty())
+		ImGui::Text("Enemy AI: %s (%.2fs)",
+			m_enemies.front()->getMotionStateName(),
+			m_enemies.front()->getStateTime());
     ImGui::Text("Left Shift: Jump");
     ImGui::Text("Left click: Attack");
     ImGui::Text("R: Reset Match");

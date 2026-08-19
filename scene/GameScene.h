@@ -8,6 +8,7 @@
 #include "../system/C3DShape.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
+#include "../system/CAnimationData.h"
 #include "../system/CCharacterAnimator.h"
 #include "../system/BoneCombMatrix.h"
 #include "../system/collision.h"
@@ -38,12 +39,23 @@ public:
 	void DebugPlayerSRT();
 	void DebugCamera();
 	void DebugCombat();
+	void UpdateEnemyAnimation();
 
 private:
 	ThirdPersonCamera m_camera;
 	std::unique_ptr<CAnimationMesh> m_playerAnimationMesh;
+	std::unique_ptr<CAnimationMesh> m_enemyAnimationMesh;
 	CCharacterAnimator m_playerAnimator;
 	BoneCombMatrix m_playerBoneComb;
+	BoneCombMatrix m_enemyBoneComb;
+	CAnimationData m_enemyAnimationData;
+	aiAnimation* m_enemyIdleAnimation = nullptr;
+	aiAnimation* m_enemyWalkAnimation = nullptr;
+	aiAnimation* m_enemyAttackAnimation = nullptr;
+	aiAnimation* m_enemyDieAnimation = nullptr;
+	int m_enemyAnimationFrame = 0;
+	int m_enemyAnimationTick = 0;
+	enemy::MotionState m_previousEnemyMotionState = enemy::MotionState::Approach;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ

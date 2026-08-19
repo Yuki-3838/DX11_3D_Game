@@ -46,6 +46,8 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	}
 
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
+	m_move.x = 0.0f;
+	m_move.z = 0.0f;
 	if (jumpTriggered && !m_isJumping)
 	{
 		m_jumpVelocity = 8.5f;
@@ -103,8 +105,8 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 		const float moveX = forwardX * normalizedForward + rightX * normalizedRight;
 		const float moveZ = forwardZ * normalizedForward + rightZ * normalizedRight;
 
-		m_move.x += moveX * VALUE_MOVE_MODEL;
-		m_move.z += moveZ * VALUE_MOVE_MODEL;
+		m_move.x = moveX * VALUE_MOVE_MODEL * deltaSec;
+		m_move.z = moveZ * VALUE_MOVE_MODEL * deltaSec;
 
 		// 移動方向へプレイヤーを滑らかに振り向かせる。
 		m_destrot.y = std::atan2(-moveX, -moveZ);
@@ -154,7 +156,6 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	m_srt.pos += m_move;
 
 	// 移動量に慣性をかける(減速率)
-	m_move += -m_move * RATE_MOVE_MODEL;
 
 }
 

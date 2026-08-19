@@ -170,6 +170,7 @@ void OneVsOneCombat::Update(
     const Vector3& playerPosition,
     const Vector3& enemyPosition,
     bool playerAttackTriggered,
+	bool enemyAttackTriggered,
     const Vector3& swordBase,
     const Vector3& swordTip,
     const Vector3& previousSwordTip,
@@ -215,8 +216,7 @@ void OneVsOneCombat::Update(
         if (playerAttackTriggered && m_playerAttack.phase == Phase::Ready)
             m_playerAttack = { Phase::Windup, 0.0f, false };
 
-        if (m_enemyAttack.phase == Phase::Ready &&
-            m_enemyCooldown <= 0.0f && distance <= FALLBACK_ATTACK_RANGE)
+		if (enemyAttackTriggered && m_enemyAttack.phase == Phase::Ready)
         {
             m_enemyAttack = { Phase::Windup, 0.0f, false };
             m_enemyCooldown = ENEMY_COOLDOWN;
@@ -259,11 +259,16 @@ void OneVsOneCombat::Update(
         }
         else if (m_enemyAttack.phase == Phase::Active)
         {
-            if (!m_enemyAttack.hit && distance <= FALLBACK_ATTACK_RANGE)
-            {
-                m_playerHp = std::max(0.0f, m_playerHp - ENEMY_DAMAGE);
-                m_enemyAttack.hit = true;
-            }
+			// Only the initial head slam deals damage. The later forward lunge is
+			// movement/animation only and must not create a second hit.
+			static constexpr float ENEMY_HIT_TIMES[ENEMY_MAX_HITS] = { 0.18f };
+			if (m_enemyAttack.hitCount < ENEMY_MAX_HITS &&
+				m_enemyAttack.elapsed >= ENEMY_HIT_TIMES[m_enemyAttack.hitCount])
+			{
+				if (distance <= ENEMY_ATTACK_RANGE)
+					m_playerHp = std::max(0.0f, m_playerHp - ENEMY_DAMAGE);
+				++m_enemyAttack.hitCount;
+			}
             if (m_enemyAttack.elapsed >= ENEMY_ACTIVE)
             {
                 m_enemyAttack.phase = Phase::Recovery;

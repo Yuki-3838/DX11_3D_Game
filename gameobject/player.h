@@ -7,18 +7,18 @@
 
 class player : public gameobject {
 	//	
-	/* 本来のコード
-	static constexpr float VALUE_MOVE_MODEL = 2.0f;				// 移動量
-	static constexpr float VALUE_ROTATE_MODEL = PI * 0.02f;		// 回転量
-	static constexpr float RATE_ROTATE_MODEL = 0.4f;			// 回転割合	
-	static constexpr float RATE_MOVE_MODEL = 0.2f;					// 移動減衰割合
+	/* 譛ｬ譚･縺ｮ繧ｳ繝ｼ繝・
+	static constexpr float VALUE_MOVE_MODEL = 2.0f;				// 遘ｻ蜍暮㍼
+	static constexpr float VALUE_ROTATE_MODEL = PI * 0.02f;		// 蝗櫁ｻ｢驥・
+	static constexpr float RATE_ROTATE_MODEL = 0.4f;			// 蝗櫁ｻ｢蜑ｲ蜷・
+	static constexpr float RATE_MOVE_MODEL = 0.2f;					// 遘ｻ蜍墓ｸ幄｡ｰ蜑ｲ蜷・
 	*/
-	// debug用
+	// debug逕ｨ
 public:
-	inline static float VALUE_MOVE_MODEL = 2.0f;				// 移動量
-	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// 回転量
-	inline static float RATE_ROTATE_MODEL = 0.4f;				// 回転割合	
-	inline static float RATE_MOVE_MODEL = 0.2f;					// 移動減衰割合
+	inline static float VALUE_MOVE_MODEL = 70.0f;				// 遘ｻ蜍暮㍼
+	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// 蝗櫁ｻ｢驥・
+	inline static float RATE_ROTATE_MODEL = 0.4f;				// 蝗櫁ｻ｢蜑ｲ蜷・
+	inline static float RATE_MOVE_MODEL = 0.2f;					// 遘ｻ蜍墓ｸ幄｡ｰ蜑ｲ蜷・
 
 public:
 	enum class MotionState
@@ -28,7 +28,7 @@ public:
 		Jump,
 	};
 	
-	// ISceneのポインタを受け取るコンストラクタを追加
+	// IScene縺ｮ繝昴う繝ｳ繧ｿ繧貞女縺大叙繧九さ繝ｳ繧ｹ繝医Λ繧ｯ繧ｿ繧定ｿｽ蜉
 	player(IScene* scene) :gameobject(scene) {}
 
 	void update(uint64_t delta) override;
@@ -58,8 +58,8 @@ public:
 	}
 
 private:
-	Vector3 m_move{0,0,0};				// 移動量
-	Vector3 m_destrot{0,0,0};			// 目標姿勢
+	Vector3 m_move{0,0,0};				// 遘ｻ蜍暮㍼
+	Vector3 m_destrot{0,0,0};			// 逶ｮ讓吝ｧｿ蜍｢
 	MotionState m_motionState = MotionState::Idle;
 	float m_motionTime = 0.0f;
 	float m_jumpVelocity = 0.0f;

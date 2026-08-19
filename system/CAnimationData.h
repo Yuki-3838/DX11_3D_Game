@@ -1,4 +1,6 @@
 #pragma once
+#include <memory>
+#include <vector>
 #include	<assimp\Importer.hpp>
 #include	<assimp\scene.h>
 #include	<assimp\postprocess.h>
@@ -7,22 +9,23 @@
 #include	"NonCopyable.h"
 
 class CAnimationData : NonCopyable{
-	// ‚±‚ÌƒAƒjƒ[ƒVƒ‡ƒ“‚ÌƒpƒX–¼
+	// ã“ã®ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ã®ãƒ‘ã‚¹å
 	std::string m_filename;
 
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^Ši”[«‘iƒL[‚Íƒ‚[ƒVƒ‡ƒ“–¼j
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿æ ¼ç´è¾æ›¸ï¼ˆã‚­ãƒ¼ã¯ãƒ¢ãƒ¼ã‚·ãƒ§ãƒ³åï¼‰
 	std::unordered_map<std::string, const aiScene*> m_Animation;
 
-	// importer‰ğ•ú‚³‚ê‚éÛ@ƒV[ƒ“‚à‰ğ•ú‚³‚ê‚é‚Ì‚Åƒƒ“ƒo•Ï”‚É‚µ‚Ä‚é
-	Assimp::Importer m_importer;	// ƒ{[ƒ“î•ñ
+	// importerè§£æ”¾ã•ã‚Œã‚‹éš›ã€€ã‚·ãƒ¼ãƒ³ã‚‚è§£æ”¾ã•ã‚Œã‚‹ã®ã§ãƒ¡ãƒ³ãƒå¤‰æ•°ã«ã—ã¦ã‚‹
+	Assimp::Importer m_importer;	// ãƒœãƒ¼ãƒ³æƒ…å ±
+	std::vector<std::unique_ptr<Assimp::Importer>> m_animationImporters;
 public:
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^“Ç‚İ‚İ
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿èª­ã¿è¾¼ã¿
 	const aiScene* LoadAnimation(const std::string filename, const std::string name);
 
-	// w’è‚µ‚½–¼‘O‚ÌƒAƒjƒ[ƒVƒ‡ƒ“‚ğæ“¾‚·‚é
+	// æŒ‡å®šã—ãŸåå‰ã®ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ã‚’å–å¾—ã™ã‚‹
 	aiAnimation* GetAnimation(const char* name, int idx);
 
-	// ƒAƒjƒ[ƒVƒ‡ƒ“ƒf[ƒ^‚ªŠi”[‚³‚ê‚Ä‚¢‚é‚‚‰‚r‚ƒ‚…‚‚…‚ğŠl“¾‚·‚é
+	// ã‚¢ãƒ‹ãƒ¡ãƒ¼ã‚·ãƒ§ãƒ³ãƒ‡ãƒ¼ã‚¿ãŒæ ¼ç´ã•ã‚Œã¦ã„ã‚‹ï½ï½‰ï¼³ï½ƒï½…ï½ï½…ã‚’ç²å¾—ã™ã‚‹
 	const aiScene* GetAiScene(std::string name) 
 	{ 
 		return m_Animation[name]; 
