@@ -44,6 +44,21 @@ public:
 		CAnimationMesh& mesh,
 		BoneCombMatrix& boneComb,
 		const CharacterAnimationState& state);
+	void UpdateSeatedPose(
+		CAnimationMesh& mesh,
+		BoneCombMatrix& boneComb,
+		float amount);
+	// Title-screen action pose: keep the sword arm controlled separately from
+	// the free hand so the contract handoff reads as an intentional motion.
+	void UpdateTitleContractPose(
+		CAnimationMesh& mesh,
+		BoneCombMatrix& boneComb,
+		float reachAmount,
+		float sheatheAmount,
+		float drawAmount,
+		float walkTime = 0.0f,
+		aiAnimation* walkAnimation = nullptr,
+		int walkFrame = 0);
 
 private:
 	using BoneKeys = std::vector<MotionKeyframe>;
@@ -55,6 +70,7 @@ private:
 	bool SaveMotion(const std::string& filename) const;
 	bool LoadMotion(const std::string& filename);
 	bool LoadIdlePose(const std::string& filename);
+	bool LoadSeatedPoseFile(const std::string& filename);
 	MotionKeyframe GetEditorKey() const;
 	void SortKeys(BoneKeys& keys);
 	void BuildFallbackAttackMotion();
@@ -81,6 +97,7 @@ private:
 	// The downloaded pack is authored in a T-pose.  This is the standing pose
 	// applied first; attack files contain deltas relative to this pose.
 	std::unordered_map<std::string, Matrix4x4> m_idlePose;
+	std::unordered_map<std::string, Matrix4x4> m_seatedPose;
 	// Reference-based attack exported from Sword and Shield Pack's
 	// "sword and shield slash (4).fbx" and retargeted to Fallen Paladin.
 	std::string m_motionFilename = "assets/motion/sword_shield_attack_safe.motion";

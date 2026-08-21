@@ -19,6 +19,10 @@ public:
 
     static void ClearDebugFunctions();
 
+    static void SetVisible(bool visible);
+
+    static void BeginFrame();
+
     static void Render();
 
     static void DisposeUI();

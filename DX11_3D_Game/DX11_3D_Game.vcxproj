@@ -48,6 +48,8 @@
     <ClInclude Include="..\scene\CarScene.h" />
     <ClInclude Include="..\scene\GameScene.h" />
     <ClInclude Include="..\scene\MotionEditorScene.h" />
+    <ClInclude Include="..\scene\ResultScene.h" />
+    <ClInclude Include="..\scene\TitleScene.h" />
     <ClInclude Include="..\scene\WallScene.h" />
     <ClInclude Include="..\system\AimOrientation.h" />
     <ClInclude Include="..\system\AssimpPerse.h" />
@@ -92,6 +94,7 @@
     <ClInclude Include="..\system\fpscontrol.h" />
     <ClInclude Include="..\system\Inputmanager.h" />
     <ClInclude Include="..\system\IScene.h" />
+    <ClInclude Include="..\system\GameFlow.h" />
     <ClInclude Include="..\system\LineDrawer.h" />
     <ClInclude Include="..\system\meshmanager.h" />
     <ClInclude Include="..\system\noncopyable.h" />
@@ -137,6 +140,8 @@
     <ClCompile Include="..\scene\CarScene.cpp" />
     <ClCompile Include="..\scene\GameScene.cpp" />
     <ClCompile Include="..\scene\MotionEditorScene.cpp" />
+    <ClCompile Include="..\scene\ResultScene.cpp" />
+    <ClCompile Include="..\scene\TitleScene.cpp" />
     <ClCompile Include="..\scene\WallScene.cpp" />
     <ClCompile Include="..\system\AssimpPerse.cpp" />
     <ClCompile Include="..\system\BoneCombMatrix.cpp" />

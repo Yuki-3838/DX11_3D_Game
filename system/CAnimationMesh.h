@@ -92,6 +92,15 @@ public:
 	// アニメーションの更新
 	void Update(BoneCombMatrix& bonecombarray, int& CurrentFrame);
 
+	// Imported locomotion can drive selected bones while the title pose keeps
+	// control of the weapon and contract hand.
+	void UpdateAnimationWithManualPose(
+		BoneCombMatrix& bonecombarray,
+		aiAnimation* animationdata,
+		int& CurrentFrame,
+		const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
+		const std::vector<std::string>& animatedBoneNames);
+
 	// レスト姿勢に対して指定ボーンのローカル回転を加えたポーズを更新
 	void UpdateManualPose(
 		BoneCombMatrix& bonecombarray,

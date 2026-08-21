@@ -1,10 +1,12 @@
 #include	<cstdint>
+#include    <string>
 #include	"system/renderer.h"
 #include    "system/DebugUI.h"
 #include    "system/CDirectInput.h"
 #include	"system/scenemanager.h"
 #include	"fpscontrol.h"
 #include	"system/Inputmanager.h"
+#include    "system/GameFlow.h"
 
 void gameinit() 
 {
@@ -24,7 +26,7 @@ void gameinit()
 	SceneManager::Init();
 
 	//　シーン選択
-	SceneManager::SetCurrentScene("GameScene");
+	SceneManager::SetCurrentScene("TitleScene");
 
 }
 
@@ -48,12 +50,19 @@ void gameupdate(uint64_t deltatime)
     }
 
     SceneManager::Update(deltatime);
+
+    const std::string requestedScene = GameFlow::ConsumeRequestedScene();
+    if (!requestedScene.empty())
+    {
+        SceneManager::SetCurrentScene(requestedScene);
+    }
 }
 
 void gamedraw(uint64_t deltatime) 
 {
 	// レンダリング前処理
 	Renderer::Begin();
+	DebugUI::BeginFrame();
 
 	// シーンマネージャの描画
 	SceneManager::Draw(deltatime);

@@ -1,0 +1,7 @@
+Source: KayKit Dungeon Remastered 1.0
+Author: Kay Lousberg
+Official repository: https://github.com/KayKit-Game-Assets/KayKit-Dungeon-Remastered-1.0
+License: CC0 1.0 Universal (see LICENSE.txt)
+
+The GLB files in this folder are unmodified selections from the official
+repository's addons/kaykit_dungeon_remastered/Assets/gltf directory.

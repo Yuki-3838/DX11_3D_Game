@@ -63,6 +63,7 @@ private:
 	std::vector<std::unique_ptr<wall>>	m_walls;			//	ｗａｌｌ
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	OneVsOneCombat m_combat;
+	bool m_resultRequested = false;
 	bool m_drawAttackCollisionDebug = true;
 	bool m_drawAttackCollisionLabels = true;
 	bool m_drawAttackCollisionXray = true;
