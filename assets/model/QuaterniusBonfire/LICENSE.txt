@@ -1,0 +1,9 @@
+Bonfire model
+
+Source: Quaternius, Bonfire
+Source page: https://poly.pizza/m/k1e0cOzi8A
+Download URL: https://static.poly.pizza/98f86943-7855-434a-a1b2-81a16f2e4b40.glb
+
+License: Public Domain (CC0)
+The source page identifies this model as Public Domain (CC0). It may be used
+and modified in personal and commercial projects without attribution.

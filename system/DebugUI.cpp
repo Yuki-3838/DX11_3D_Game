@@ -7,6 +7,7 @@ bool g_cursorHidden = false;
 }
 
 std::vector<std::function<void(void)>> DebugUI::m_debugfunction;
+namespace { bool g_debugVisible = true; }
 
 void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context) 
 {
@@ -63,8 +64,11 @@ void DebugUI::ClearDebugFunctions() {
     m_debugfunction.clear();
 }
 
-void DebugUI::Render() {
-    // Start a new ImGui frame
+void DebugUI::SetVisible(bool visible) {
+    g_debugVisible = visible;
+}
+
+void DebugUI::BeginFrame() {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -81,19 +85,23 @@ void DebugUI::Render() {
         ShowCursor(FALSE);
         g_cursorHidden = true;
     }
-    // Draw debug windows
-    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(260.0f, 82.0f), ImGuiCond_Always);
-    ImGui::Begin("Debug Information", nullptr, ImGuiWindowFlags_NoCollapse);
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui::Text("FPS: %.1f", io.Framerate);
-    ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
+}
 
-    ImGui::End();
-// Debug window registration
-    for (auto& f : m_debugfunction)
+void DebugUI::Render() {
+    if (g_debugVisible)
     {
-        f();
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(260.0f, 82.0f), ImGuiCond_Always);
+        ImGui::Begin("Debug Information", nullptr, ImGuiWindowFlags_NoCollapse);
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::Text("FPS: %.1f", io.Framerate);
+        ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
+        ImGui::End();
+
+        for (auto& f : m_debugfunction)
+        {
+            f();
+        }
     }
     // Finish and render the frame
     ImGui::Render();

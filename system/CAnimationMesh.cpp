@@ -917,6 +917,91 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame)
 	}
 }
 
+void CAnimationMesh::UpdateAnimationWithManualPose(
+	BoneCombMatrix& bonecombarray,
+	aiAnimation* animationdata,
+	int& CurrentFrame,
+	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
+	const std::vector<std::string>& animatedBoneNames)
+{
+	m_DebugBoneMatrices.clear();
+	const auto isAnimatedBone = [&animatedBoneNames](const std::string& name)
+	{
+		return std::find(animatedBoneNames.begin(), animatedBoneNames.end(), name) !=
+			animatedBoneNames.end();
+	};
+
+	// Start from the model rest pose.  Only the selected lower-body bones are
+	// replaced by the imported locomotion clip below.
+	for (auto& [name, bone] : m_BoneDictionary)
+	{
+		const auto rest = m_RestLocalMatrices.find(name);
+		bone.AnimationMatrix = rest != m_RestLocalMatrices.end()
+			? rest->second
+			: Matrix4x4::Identity;
+	}
+
+	if (animationdata != nullptr)
+	{
+		for (unsigned int c = 0; c < animationdata->mNumChannels; ++c)
+		{
+			aiNodeAnim* nodeAnim = animationdata->mChannels[c];
+			const std::string boneName = nodeAnim->mNodeName.C_Str();
+			if (!isAnimatedBone(boneName) || nodeAnim->mNumRotationKeys == 0)
+				continue;
+
+			auto boneIt = m_BoneDictionary.find(boneName);
+			if (boneIt == m_BoneDictionary.end())
+				continue;
+
+			const unsigned int rotationFrame =
+				static_cast<unsigned int>(CurrentFrame) % nodeAnim->mNumRotationKeys;
+			const aiQuaternion rotation = nodeAnim->mRotationKeys[rotationFrame].mValue;
+			Quaternion quaternion{};
+			quaternion.x = rotation.x;
+			quaternion.y = rotation.y;
+			quaternion.z = rotation.z;
+			quaternion.w = rotation.w;
+			const Matrix4x4 rotationMatrix = Matrix4x4::CreateFromQuaternion(quaternion);
+
+			// Keep the model's bind-pose translation.  The scene route owns world
+			// movement; importing root translation here would double-move the actor.
+			const auto rest = m_RestLocalMatrices.find(boneName);
+			if (rest != m_RestLocalMatrices.end())
+		{
+				const Vector3 restPosition(rest->second._41,
+					rest->second._42, rest->second._43);
+				boneIt->second.AnimationMatrix = rotationMatrix *
+					Matrix4x4::CreateTranslation(restPosition);
+			}
+			else
+			{
+				boneIt->second.AnimationMatrix = rotationMatrix;
+			}
+		}
+	}
+
+	// Apply the title pose to the upper body only.  This prevents the walk
+	// clip's weapon-hand keys from changing the sword grip or contract hand.
+	for (const auto& [boneName, localPose] : manualLocalRotations)
+	{
+		if (isAnimatedBone(boneName))
+			continue;
+		auto boneIt = m_BoneDictionary.find(boneName);
+		auto rest = m_RestLocalMatrices.find(boneName);
+		if (boneIt != m_BoneDictionary.end() && rest != m_RestLocalMatrices.end())
+			boneIt->second.AnimationMatrix = localPose * rest->second;
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& bone : m_BoneDictionary)
+	{
+		if (bone.second.idx >= 0 && bone.second.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
+				bone.second.Matrix.Transpose();
+	}
+}
+
 void CAnimationMesh::UpdateManualPose(
 	BoneCombMatrix& bonecombarray,
 	const std::unordered_map<std::string, Matrix4x4>& localRotations)

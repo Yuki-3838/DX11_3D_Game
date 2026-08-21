@@ -151,9 +151,12 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	// translations, so using it as a base makes the feet turn/sink and also
 	// corrupts every downloaded attack that is layered on top of it.
 	const bool idleLoaded = LoadIdlePose("assets/motion/sword_shield_idle_safe.motion");
+	const bool seatedLoaded = LoadSeatedPoseFile("assets/motion/sword_shield_idle.motion");
 	std::cout << "[Animator] attack bones=" << m_motionMappedBoneCount
 		<< " idle bones=" << m_idlePose.size()
-		<< " idle loaded=" << (idleLoaded ? "yes" : "no") << std::endl;
+		<< " seated bones=" << m_seatedPose.size()
+		<< " idle loaded=" << (idleLoaded ? "yes" : "no")
+		<< " seated loaded=" << (seatedLoaded ? "yes" : "no") << std::endl;
 }
 
 void CCharacterAnimator::PlayAttackMotion()
@@ -342,6 +345,193 @@ void CCharacterAnimator::Update(
 			: delta;
 	}
 	mesh.UpdateManualPose(boneComb, pose);
+}
+
+void CCharacterAnimator::UpdateSeatedPose(
+	CAnimationMesh& mesh,
+	BoneCombMatrix& boneComb,
+	float amount)
+{
+	amount = std::clamp(amount, 0.0f, 1.0f);
+	if (amount >= 0.999f && !m_seatedPose.empty())
+	{
+		std::unordered_map<std::string, Matrix4x4> pose = m_idlePose;
+		static constexpr const char* seatedBones[] = {
+			"mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine1", "mixamorig:Spine2",
+			"mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig:LeftFoot",
+			"mixamorig:RightUpLeg", "mixamorig:RightLeg", "mixamorig:RightFoot"
+		};
+		for (const char* boneName : seatedBones)
+		{
+			const auto seated = m_seatedPose.find(boneName);
+			if (seated != m_seatedPose.end())
+				pose[boneName] = seated->second;
+		}
+		mesh.UpdateManualPose(boneComb, pose);
+		return;
+	}
+	std::unordered_map<std::string, Matrix4x4> deltas;
+	SetRotation(deltas, m_pelvis,
+		Matrix4x4::CreateRotationX(0.62f * amount) *
+		Matrix4x4::CreateTranslation(0.0f, -0.72f * amount, 0.0f));
+	SetRotation(deltas, m_leftLeg,
+		Matrix4x4::CreateRotationZ(-0.18f * amount) * Matrix4x4::CreateRotationX(-1.62f * amount));
+	SetRotation(deltas, m_rightLeg,
+		Matrix4x4::CreateRotationZ(0.18f * amount) * Matrix4x4::CreateRotationX(-1.62f * amount));
+	SetRotation(deltas, m_leftKnee, Matrix4x4::CreateRotationX(2.55f * amount));
+	SetRotation(deltas, m_rightKnee, Matrix4x4::CreateRotationX(2.55f * amount));
+	SetRotation(deltas, m_leftFoot, Matrix4x4::CreateRotationX(-0.62f * amount));
+	SetRotation(deltas, m_rightFoot, Matrix4x4::CreateRotationX(-0.62f * amount));
+	SetRotation(deltas, m_spine, Matrix4x4::CreateRotationX(-0.34f * amount));
+	SetRotation(deltas, m_spine01, Matrix4x4::CreateRotationX(-0.22f * amount));
+	SetRotation(deltas, m_leftArm, Matrix4x4::CreateRotationZ(1.05f * amount));
+	SetRotation(deltas, m_rightArm, Matrix4x4::CreateRotationZ(-1.05f * amount));
+
+	std::unordered_map<std::string, Matrix4x4> pose = m_idlePose;
+	for (const auto& [boneName, delta] : deltas)
+	{
+		const auto idle = m_idlePose.find(boneName);
+		pose[boneName] = idle != m_idlePose.end()
+			? delta * idle->second
+			: delta;
+	}
+	mesh.UpdateManualPose(boneComb, pose);
+}
+
+void CCharacterAnimator::UpdateTitleContractPose(
+	CAnimationMesh& mesh,
+	BoneCombMatrix& boneComb,
+	float reachAmount,
+	float sheatheAmount,
+	float drawAmount,
+	float walkTime,
+	aiAnimation* walkAnimation,
+	int walkFrame)
+{
+	reachAmount = std::clamp(reachAmount, 0.0f, 1.0f);
+	sheatheAmount = std::clamp(sheatheAmount, 0.0f, 1.0f);
+	drawAmount = std::clamp(drawAmount, 0.0f, 1.0f);
+
+	// The left hand is the free hand on the title model.  It reaches toward the
+	// contract while the right arm lowers toward the sheath.  Once the sword
+	// starts coming free, pull the elbow back and carry the contract lower at
+	// the side instead of keeping it posed like a precious object at the chest.
+	// This keeps the handoff readable while making the departure feel like a
+	// hunter preparing to fight.
+	const float carryAmount = drawAmount;
+	const float reachPose = reachAmount * (1.0f - carryAmount);
+	std::unordered_map<std::string, Matrix4x4> deltas;
+	SetRotation(deltas, m_leftArm,
+		Matrix4x4::CreateRotationZ(0.72f * reachPose + 0.20f * carryAmount) *
+		Matrix4x4::CreateRotationX(-0.42f * reachPose + 0.10f * carryAmount) *
+		Matrix4x4::CreateRotationY(-0.22f * reachPose - 0.08f * carryAmount));
+	SetRotation(deltas, m_leftElbow,
+		Matrix4x4::CreateRotationX(-1.05f * reachPose - 0.48f * carryAmount));
+	SetRotation(deltas, m_leftHand,
+		Matrix4x4::CreateRotationZ(-0.28f * reachPose + 0.08f * carryAmount));
+
+	// First lower the sword hand to the hip, then reverse that pose into a
+	// readable draw/ready position after the contract is accepted.
+	SetRotation(deltas, m_rightArm,
+		Matrix4x4::CreateRotationZ(-0.82f * sheatheAmount) *
+		Matrix4x4::CreateRotationX(0.28f * sheatheAmount) *
+		Matrix4x4::CreateRotationZ(1.05f * drawAmount) *
+		Matrix4x4::CreateRotationX(-0.32f * drawAmount));
+	SetRotation(deltas, m_rightElbow,
+		Matrix4x4::CreateRotationX(-0.72f * sheatheAmount +
+			0.98f * drawAmount));
+	SetRotation(deltas, m_rightHand,
+		Matrix4x4::CreateRotationZ(-0.24f * sheatheAmount +
+			0.26f * drawAmount));
+
+	// Use the supplied walk clip for the lower body.  Keep the previous
+	// restrained stride only as a fallback when the optional clip is absent.
+	if (walkAnimation == nullptr)
+	{
+		const float walkBlend = drawAmount * drawAmount * (3.0f - 2.0f * drawAmount);
+		const float phase = std::sinf(walkTime * 7.0f) * walkBlend;
+		const float legSwing = -phase * 0.38f;
+		const float leftKneeSwing = std::max(0.0f, phase) * 0.24f;
+		const float rightKneeSwing = std::max(0.0f, -phase) * 0.24f;
+		const float footSwing = phase * 0.20f;
+		SetRotation(deltas, m_leftLeg,
+			Matrix4x4::CreateRotationZ(legSwing * 0.25f) *
+			Matrix4x4::CreateRotationX(legSwing));
+		SetRotation(deltas, m_rightLeg,
+			Matrix4x4::CreateRotationZ(-legSwing * 0.25f) *
+			Matrix4x4::CreateRotationX(-legSwing));
+		SetRotation(deltas, m_leftKnee, Matrix4x4::CreateRotationX(leftKneeSwing));
+		SetRotation(deltas, m_rightKnee, Matrix4x4::CreateRotationX(rightKneeSwing));
+		SetRotation(deltas, m_leftFoot, Matrix4x4::CreateRotationX(footSwing));
+		SetRotation(deltas, m_rightFoot, Matrix4x4::CreateRotationX(-footSwing));
+	}
+
+	std::unordered_map<std::string, Matrix4x4> pose = m_idlePose;
+	for (const auto& [boneName, delta] : deltas)
+	{
+		const auto idle = m_idlePose.find(boneName);
+		pose[boneName] = idle != m_idlePose.end()
+			? delta * idle->second
+			: delta;
+	}
+	if (walkAnimation != nullptr)
+	{
+		const std::vector<std::string> lowerBodyBones = {
+			// Do not import the FBX Hips rotation.  This clip's root is authored
+			// with a different facing basis and flips the entire title character
+			// upside down when applied to the SwordShieldPack rig.
+			m_leftLeg, m_rightLeg, m_leftKnee, m_rightKnee,
+			m_leftFoot, m_rightFoot,
+		};
+		mesh.UpdateAnimationWithManualPose(
+			boneComb, walkAnimation, walkFrame, pose, lowerBodyBones);
+	}
+	else
+	{
+		mesh.UpdateManualPose(boneComb, pose);
+	}
+}
+
+bool CCharacterAnimator::LoadSeatedPoseFile(const std::string& filename)
+{
+	std::ifstream file(filename);
+	if (!file)
+		return false;
+
+	std::string token;
+	std::string currentBone;
+	std::unordered_map<std::string, bool> captured;
+	m_seatedPose.clear();
+	while (file >> token)
+	{
+		if (token == "bone")
+		{
+			std::string requestedBone;
+			file >> std::quoted(requestedBone);
+			currentBone = FindBone(m_boneNames, { std::string_view(requestedBone) });
+			if (currentBone.empty())
+				currentBone = requestedBone;
+			captured[currentBone] = false;
+		}
+		else if (token == "key" && !currentBone.empty())
+		{
+			MotionKeyframe key;
+			file >> key.time
+				>> key.rotation.x >> key.rotation.y >> key.rotation.z
+				>> key.position.x >> key.position.y >> key.position.z
+				>> key.scale.x >> key.scale.y >> key.scale.z;
+			if (!captured[currentBone])
+			{
+				key.position = Vector3(0.0f, 0.0f, 0.0f);
+				key.scale = Vector3(1.0f, 1.0f, 1.0f);
+				m_seatedPose[currentBone] = MotionKeyToMatrix(key);
+				captured[currentBone] = true;
+			}
+		}
+		else if (token == "endbone")
+			currentBone.clear();
+	}
+	return !m_seatedPose.empty();
 }
 
 void CCharacterAnimator::SortKeys(BoneKeys& keys)

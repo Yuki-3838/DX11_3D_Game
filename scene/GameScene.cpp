@@ -24,6 +24,7 @@
 #include	"../system/PlaneDrawer.h"
 #include	"../system/imgui/imgui.h"
 #include	"../system/DebugUI.h"
+#include	"../system/GameFlow.h"
 #include	"../system/CPlane.h"
 #include	"../system/collision.h"
 #include	"../gameobject/player.h"
@@ -727,6 +728,21 @@ void GameScene::update(uint64_t deltatime)
 			swordTransformValid,
 			playerObb,
 			enemyObb);
+		if (!m_resultRequested)
+		{
+			if (m_combat.IsEnemyDefeated())
+			{
+				GameFlow::SetResult(GameFlow::Result::Victory);
+				GameFlow::RequestScene("ResultScene");
+				m_resultRequested = true;
+			}
+			else if (m_combat.IsPlayerDefeated())
+			{
+				GameFlow::SetResult(GameFlow::Result::Defeat);
+				GameFlow::RequestScene("ResultScene");
+				m_resultRequested = true;
+			}
+		}
     }
 }
 
