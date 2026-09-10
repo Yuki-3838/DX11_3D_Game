@@ -5,6 +5,8 @@ VisualStudioVersion = 17.9.34728.123
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DX11_3D_Game", "DX11_3D_Game\DX11_3D_Game.vcxproj", "{822241AC-8AF5-4DB0-B6D6-ED5400365636}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MotionEditor.Wpf", "tools\MotionEditor.Wpf\MotionEditor.Wpf.csproj", "{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,14 @@ Global
 		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.Release|x64.Build.0 = Release|x64
 		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.Release|x86.ActiveCfg = Release|Win32
 		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.Release|x86.Build.0 = Release|Win32
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Debug|x64.Build.0 = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Debug|x86.Build.0 = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x64.ActiveCfg = Release|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x64.Build.0 = Release|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x86.ActiveCfg = Release|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

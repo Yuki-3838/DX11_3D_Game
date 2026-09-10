@@ -34,7 +34,7 @@ struct AttackCollisionResult
     std::vector<CollisionDebugVolume> debugVolumes;
 };
 
-/** Runs the inexpensive candidate filter followed by the exact hitbox/hurtbox test. */
+/** 軽量な候補絞り込みを行った後、攻撃判定と受け判定を正確に検証する。 */
 AttackCollisionResult EvaluateAttackCollision(
     const AttackData& attack,
     const CombatantCollisionState& attacker,

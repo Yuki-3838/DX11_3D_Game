@@ -4,8 +4,9 @@
 
 const aiScene* CAnimationData::LoadAnimation(const std::string filename, const std::string name)
 {
-	// Assimp::Importer owns the returned aiScene. Keep one importer alive per
-	// animation so loading another clip cannot invalidate earlier clips.
+	// 返されたaiSceneはAssimp::Importerが所有する。
+	// 別のモーションを読み込んでも先に読み込んだデータが無効にならないよう、
+	// モーションごとにImporterを保持する。
 	auto importer = std::make_unique<Assimp::Importer>();
 	const aiScene* scene = importer->ReadFile(
 		filename.c_str(),
@@ -14,7 +15,8 @@ const aiScene* CAnimationData::LoadAnimation(const std::string filename, const s
 	m_animationImporters.push_back(std::move(importer));
 	assert(m_Animation[name]);
 
-	if (m_Animation[name] == nullptr) {
+	if (m_Animation[name] == nullptr)
+	{
 		std::cout << " animation load error " << filename  << " "
 			<< m_animationImporters.back()->GetErrorString();
 	}

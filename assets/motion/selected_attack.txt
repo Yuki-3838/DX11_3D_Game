@@ -1,1 +1,1 @@
-assets/motion/sword_shield_attack_safe.motion
+assets/motion/sword_shield_attack_2.motion

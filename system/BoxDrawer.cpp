@@ -11,28 +11,34 @@ static CBoxMesh g_mesh;
 static CMeshRenderer g_renderer;
 static CMaterial g_material;
 static CShader g_shader;
+static CShader g_unlitShader;
 
 void BoxDrawerInit()
 {
 	g_mesh.Init(
-		1,					// •
-		1,					// ‚‚³
-		1,					// ‰œs
+		1,					// å¹…
+		1,					// é«˜ã•
+		1,					// å¥¥è¡Œ
 		Color(1,1,1,1));
 
 	g_renderer.Init(g_mesh);
 
-	// ƒVƒF[ƒ_[‚Ì‰Šú‰»
+	// ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼ã®åˆæœŸåŒ–
 //	g_shader.Create(
-//		"shader/unlitTextureVS.hlsl",				// ’¸“_ƒVƒF[ƒ_[
-//		"shader/unlitTexturePS.hlsl");			// ƒsƒNƒZƒ‹ƒVƒF[ƒ_[
+//		"shader/unlitTextureVS.hlsl",				// é ‚ç‚¹ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼
+//		"shader/unlitTexturePS.hlsl");			// ãƒ”ã‚¯ã‚»ãƒ«ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼
 
 	g_shader.Create(
-		"shader/vertexLightingVS.hlsl",				// ’¸“_ƒVƒF[ƒ_[
-		"shader/vertexLightingPS.hlsl");			// ƒsƒNƒZƒ‹ƒVƒF[ƒ_[
+		"shader/vertexLightingVS.hlsl",				// é ‚ç‚¹ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼
+		"shader/vertexLightingPS.hlsl");			// ãƒ”ã‚¯ã‚»ãƒ«ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼
+
+	// å£ãªã©ã€é¢ã®å‘ãã§è‰²ãŒå¤‰ã‚ã‚‹ã¨å›°ã‚‹å½¢çŠ¶ç”¨ã®ç„¡ç…§æ˜ã‚·ã‚§ãƒ¼ãƒ€ãƒ¼ã€‚
+	g_unlitShader.Create(
+		"shader/unlitTextureVS.hlsl",
+		"shader/unlitTexturePS.hlsl");
 
 	MATERIAL mtrl;
-	// ƒ}ƒeƒŠƒAƒ‹¶¬
+	// ãƒãƒ†ãƒªã‚¢ãƒ«ç”Ÿæˆ
 	mtrl.Ambient = Color(0, 0, 0, 0);
 	mtrl.Diffuse = Color(1, 1, 0, 1);
 	mtrl.Emission = Color(0, 0, 0, 0);
@@ -84,5 +90,19 @@ void BoxDrawerDraw(Matrix4x4 mtx, Color col)
 
 	g_shader.SetGPU();
 
+	g_renderer.Draw();
+}
+
+void BoxDrawerDrawUnlit(SRT rts, Color col)
+{
+	Matrix4x4 mtx = rts.GetMatrix();
+
+	Renderer::SetWorldMatrix(&mtx);
+	g_material.SetDiffuse(col);
+	g_material.Update();
+	g_material.SetGPU();
+
+	// å£å…¨ä½“ã‚’åŒã˜è‰²ã§è¦‹ã›ã‚‹ãŸã‚ã€æ³•ç·šã«ã‚ˆã‚‹æ˜æš—è¨ˆç®—ã‚’ä½¿ã‚ãªã„ã€‚
+	g_unlitShader.SetGPU();
 	g_renderer.Draw();
 }

@@ -9,9 +9,8 @@ namespace GM31::GE::Collision
 		if (vertices.empty())
 			return { Vector3(0.0f, 0.0f, 0.0f), Vector3(0.0f, 0.0f, 0.0f) };
 
-		// The model's exact local bounds are the component-wise minimum and
-		// maximum over every imported vertex. Do not include an artificial
-		// origin point: doing so enlarges models whose geometry is offset from 0.
+		// 読み込んだ全頂点から各成分の最小値と最大値を求め、モデル本来のローカル境界を作る。
+		// 人為的な原点を含めないことで、原点から離れたモデルの判定箱が不必要に大きくならない。
 		Vector3 minimum = vertices.front();
 		Vector3 maximum = vertices.front();
 		for (const Vector3& vertex : vertices)
@@ -24,10 +23,9 @@ namespace GM31::GE::Collision
 
 	BoundingBoxAABB BuildWorldAABBFromOBB(const BoundingBoxOBB& obb)
 	{
-		// Project the three OBB half-axes onto world X/Y/Z. For each world axis,
-		// its AABB half-size is:
+		// OBBの3本の半軸をワールドのX/Y/Z軸へ投影し、各軸のAABB半サイズを求める。
 		//   |axisX| * halfX + |axisY| * halfY + |axisZ| * halfZ
-		// This produces the smallest world-aligned box containing the OBB.
+		// これにより、OBBを内包する最小のワールド軸平行箱が得られる。
 		const Vector3 half(
 			std::abs(obb.axisX.x) * obb.lengthx * 0.5f +
 			std::abs(obb.axisY.x) * obb.lengthy * 0.5f +
@@ -49,10 +47,8 @@ namespace GM31::GE::Collision
 		const Vector3 localSize = localBounds.max - localBounds.min;
 		const Matrix4x4 world = transform.GetMatrix();
 
-		// SRT::GetMatrix uses row-vector order. Therefore rows 1, 2 and 3 are
-		// transformed local X, Y and Z unit vectors. Their lengths contain the
-		// effective scale (including non-uniform or negative scale), while their
-		// normalized values are the OBB directions after rotation.
+		// SRT::GetMatrixは行ベクトル順で計算するため、1～3行目は変換後のローカルX/Y/Z単位ベクトルになる。
+		// 各行の長さから実効倍率を求め、正規化した値を回転後のOBB軸として使用する。
 		Vector3 scaledAxisX(world._11, world._12, world._13);
 		Vector3 scaledAxisY(world._21, world._22, world._23);
 		Vector3 scaledAxisZ(world._31, world._32, world._33);
@@ -69,8 +65,7 @@ namespace GM31::GE::Collision
 
 		BoundingBoxOBB result{};
 		result.center = localCenter;
-		// Transforming the local center with the full matrix also handles model
-		// origins and SRT pivots that are not at the mesh's geometric center.
+		// ローカル中心を行列全体で変換することで、メッシュの幾何中心と異なる原点やSRTピボットにも対応する。
 		result.worldcenter = Vector3::Transform(localCenter, world);
 		result.axisX = axisX;
 		result.axisY = axisY;

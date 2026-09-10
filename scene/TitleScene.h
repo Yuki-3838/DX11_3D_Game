@@ -35,7 +35,7 @@ private:
     Camera m_camera;
     SRT m_playerSrt{};
 
-    // CC0 KayKit room and guild props.
+    // CC0ライセンスのKayKit製ギルド室内と装飾モデル。
     CStaticMesh m_guildFloor;
     CStaticMeshRenderer m_guildFloorRenderer;
     CStaticMesh m_guildBackWall;
@@ -59,8 +59,8 @@ private:
     CStaticMesh m_guildChest;
     CStaticMeshRenderer m_guildChestRenderer;
 
-    // A small 3D contract card and wax seal. This is intentionally geometry,
-    // not a flat UI image, so it participates in the title scene lighting.
+    // 3D形状で作った契約書と封蝋。
+    // 画像ではなく立体として描画するため、タイトルシーンの照明を受ける。
     Box m_guildFoundation{ 120.0f, 0.4f, 120.0f };
     Box m_guildBackdrop{ 400.0f, 220.0f, 0.5f };
     Box m_guildCeiling{ 400.0f, 0.5f, 400.0f };

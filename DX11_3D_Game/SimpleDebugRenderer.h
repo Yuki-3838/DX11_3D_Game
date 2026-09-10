@@ -5,7 +5,7 @@
 
 /**
  * @struct DebugColor
- * @brief RGBA color used by the immediate debug renderer.
+ * @brief 即時描画デバッグ表示で使用するRGBAカラー。
  */
 struct DebugColor
 {
@@ -17,10 +17,9 @@ struct DebugColor
 
 /**
  * @struct DebugRect
- * @brief Screen-space rectangle in normalized coordinates.
+ * @brief 正規化座標で指定する画面上の矩形。
  *
- * Coordinates are expressed as DirectX clip space:
- * x -1 is left, x +1 is right, y -1 is bottom, y +1 is top.
+ * DirectXのクリップ空間で表し、x=-1が左、x=1が右、y=-1が下、y=1が上になる。
  */
 struct DebugRect
 {
@@ -33,11 +32,10 @@ struct DebugRect
 
 /**
  * @class SimpleDebugRenderer
- * @brief Tiny DX11 renderer for visible combat debugging.
+ * @brief 戦闘状態を画面上で確認するための小さなDX11デバッガー。
  *
- * This is intentionally small: it draws colored rectangles without textures,
- * cameras, meshes, or external assets. It gives Phase 2 a visible feedback loop
- * before the real renderer and ImGui backend are expanded.
+ * テクスチャ、カメラ、メッシュ、外部アセットを使わず、色付き矩形だけを描画する。
+ * 本格的なレンダラーやImGuiデバッグ画面を拡張する前に、処理結果を目視できるようにする。
  */
 class SimpleDebugRenderer
 {

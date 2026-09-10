@@ -72,7 +72,7 @@ struct HitboxDefinition
     float length = 0.8f;
 };
 
-/** A simple target volume used by the combat collision pass. */
+/** 戦闘の当たり判定で使用する、対象側の単純な受け判定。 */
 struct HurtboxDefinition
 {
     NarrowPhaseType narrowPhase = NarrowPhaseType::Capsule;

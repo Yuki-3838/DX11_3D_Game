@@ -361,3 +361,22 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# --- このプロジェクト固有 ---
+# ローカル専用の起動設定・音量設定(存在しなくても提出用の既定値で動く)
+dev_settings.ini
+audio_settings.ini
+
+# 調査用に吐いたダンプ
+debug_enemy_bounds.txt
+debug_enemy_intro.txt
+
+# 資料(pptx/動画)を作るための一時作業ディレクトリ。node_modulesを含むため追跡しない
+.codex_ppt_build/
+.codex_video_build/
+presentation_work/
+
+# 就活資料の成果物(バイナリで容量が大きいためリポジトリには置かない)
+docs/DX11_3D_Game_appeal_video.mp4
+docs/DX11_3D_Game_作品資料.pptx
+docs/DX11_3D_Game_作品資料.pptx.inspect.ndjson
+docs/DX11_3D_Game_作品資料/

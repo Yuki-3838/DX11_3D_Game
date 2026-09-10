@@ -157,6 +157,18 @@ private:
     static ComPtr<ID3D11BlendState> m_BlendStateATC;
 
     static LIGHT m_Light;
+
+    // --- シャドウマッピング用 ---
+    // 平行光源から見た深度を書き込むテクスチャ。本描画では各ピクセルを
+    // ライト空間へ変換し、この深度と比較して遮蔽を判定する。
+    static ComPtr<ID3D11Texture2D> m_ShadowTexture;
+    static ComPtr<ID3D11DepthStencilView> m_ShadowDSV;
+    static ComPtr<ID3D11ShaderResourceView> m_ShadowSRV;
+    static ComPtr<ID3D11SamplerState> m_ShadowSampler;
+    static ComPtr<ID3D11Buffer> m_ShadowBuffer;
+    static ComPtr<ID3D11RasterizerState> m_ShadowRasterizer;
+    // キャラクターの一時的な色変化(被弾フラッシュなど)用。
+    static ComPtr<ID3D11Buffer> m_TintBuffer;
 public:
     static void Init();
     static void Dispose();
@@ -184,4 +196,36 @@ public:
     static void SetFillMode(D3D11_FILL_MODE FillMode);
 
     static LIGHT GetLight();
+
+    // --- シャドウマッピング ---
+    /** シャドウマップの解像度。影の輪郭の細かさと描画負荷のバランスで決める。 */
+    static constexpr UINT SHADOW_MAP_SIZE = 2048;
+
+    /**
+     * @brief 影の描画先(深度テクスチャ)へ切り替える。
+     * @details 以降のDrawはライトから見た深度だけを書き込む。
+     *          呼び出し側は深度専用シェーダーを設定してから描画すること。
+     */
+    static void BeginShadowPass();
+
+    /**
+     * @brief 通常の描画先へ戻し、書き込んだ影テクスチャを参照用に割り当てる。
+     */
+    static void EndShadowPass();
+
+    /**
+     * @brief ライトから見たビュー射影行列を設定する。
+     * @param lightViewProjection 影の生成と参照の両方で使う行列。
+     * @param enabled 影を有効にするか。falseなら本描画で影を落とさない。
+     */
+    static void SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled);
+
+    /**
+     * @brief キャラクターへ加算する色を設定する(被弾フラッシュなど)。
+     * @param color 加算する色。wに強さを入れる(0で無効)。
+     * @details メッシュのマテリアルはサブセットごとに設定されるため、
+     *          描画前にマテリアルを差し替える方法では上書きされてしまう。
+     *          描画するキャラクターごとに設定し、描画後は0へ戻すこと。
+     */
+    static void SetCharacterTint(const Vector4& color);
 };

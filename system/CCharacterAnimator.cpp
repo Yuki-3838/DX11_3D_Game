@@ -53,6 +53,27 @@ namespace
 		return {};
 	}
 
+	std::string FindBone(
+		const std::vector<std::string>& boneNames,
+		const std::vector<std::string>& aliases)
+	{
+		for (const auto& alias : aliases)
+		{
+			const std::string normalizedAlias = NormalizeBoneName(alias);
+			for (const auto& name : boneNames)
+				if (NormalizeBoneName(name) == normalizedAlias)
+					return name;
+		}
+		for (const auto& name : boneNames)
+		{
+			const std::string normalizedName = NormalizeBoneName(name);
+			for (const auto& alias : aliases)
+				if (normalizedName.find(NormalizeBoneName(alias)) != std::string::npos)
+					return name;
+		}
+		return {};
+	}
+
 	void SetRotation(
 		std::unordered_map<std::string, Matrix4x4>& rotations,
 		const std::string& boneName,
@@ -70,6 +91,22 @@ namespace
 			Matrix4x4::CreateRotationZ(key.rotation.z) *
 			Matrix4x4::CreateTranslation(key.position.x, key.position.y, key.position.z);
 	}
+
+	Matrix4x4 BlendLocalPose(
+		const Matrix4x4& from,
+		const Matrix4x4& to,
+		float amount)
+	{
+		amount = std::clamp(amount, 0.0f, 1.0f);
+		const Quaternion fromRotation = Quaternion::CreateFromRotationMatrix(from);
+		const Quaternion toRotation = Quaternion::CreateFromRotationMatrix(to);
+		const Quaternion rotation = Quaternion::Slerp(fromRotation, toRotation, amount);
+		const Vector3 fromPosition(from._41, from._42, from._43);
+		const Vector3 toPosition(to._41, to._42, to._43);
+		const Vector3 position = fromPosition + (toPosition - fromPosition) * amount;
+		return Matrix4x4::CreateFromQuaternion(rotation) *
+			Matrix4x4::CreateTranslation(position.x, position.y, position.z);
+	}
 }
 
 void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
@@ -78,15 +115,14 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	const std::vector<std::string>& boneNames = m_boneNames;
 	if (!boneNames.empty())
 		m_selectedBone = boneNames.front();
-	// Keep the torso chain in the attack pose so the swing is driven by the
-	// hips and spine, not only by the right arm. These names also make the
-	// .motion file readable by hand.
+	// 攻撃姿勢では腰と背骨も動かし、右腕だけでなく上半身全体で剣を振る。
+	// ボーン名を固定して、.motionファイルを手作業でも読めるようにする。
 	m_pelvis = FindBone(boneNames, { "pelvis", "hips", "mixamorig:Hips" });
 	m_spine = FindBone(boneNames, { "spine", "mixamorig:Spine" });
 	m_spine01 = FindBone(boneNames, { "spine_01", "spine01", "mixamorig:Spine1" });
 	m_spine02 = FindBone(boneNames, { "spine_02", "spine02", "mixamorig:Spine2" });
-	// D suffixes are Furina/MMD deform bones. They are listed first so that
-	// control/IK bones with zero vertex weights are not selected accidentally.
+	// D末尾のボーンはFurina/MMD系の変形ボーンである。
+	// 頂点ウェイトを持たない制御用・IK用ボーンを誤選択しないよう、先に検索する。
 	m_leftArm = FindBone(boneNames, { "左腕D", "mixamorig:LeftArm", "左腕", "leftarm" });
 	m_rightArm = FindBone(boneNames, { "右腕D", "mixamorig:RightArm", "右腕", "rightarm" });
 	m_leftElbow = FindBone(boneNames, { "左ひじD", "mixamorig:LeftForeArm", "左ひじ", "leftelbow" });
@@ -101,15 +137,15 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	m_rightFoot = FindBone(boneNames, { "右足首D", "mixamorig:RightFoot", "Bip001 R Foot", "右足首", "rightankle", "rightfoot" });
 
 	// GameSceneでも専用エディタで保存した攻撃モーションを使用する。
-	// Quaternius glTF uses explicit Blender-style .L/.R bone names.
-	// Add those aliases without disturbing the existing MMD/Mixamo mappings.
+	// QuaterniusのglTFはBlender形式の.L/.Rボーン名を使うため、
+	// 既存のMMD/Mixamo対応を壊さず別名として追加する。
 	if (m_leftArm.empty()) m_leftArm = FindBone(boneNames, { "upperarm.l" });
 	if (m_rightArm.empty()) m_rightArm = FindBone(boneNames, { "upperarm.r" });
 	if (m_leftElbow.empty()) m_leftElbow = FindBone(boneNames, { "lowerarm.l" });
 	if (m_rightElbow.empty()) m_rightElbow = FindBone(boneNames, { "lowerarm.r" });
 	if (m_leftHand.empty()) m_leftHand = FindBone(boneNames, { "fist.l", "hand.l" });
 	if (m_rightHand.empty()) m_rightHand = FindBone(boneNames, { "fist.r", "hand.r" });
-	// The Sword and Shield Pack uses its original Mixamo names directly.
+	// Sword and Shield Packは元のMixamoボーン名をそのまま使用する。
 	if (m_leftArm.empty()) m_leftArm = FindBone(boneNames, { "mixamorig:LeftArm" });
 	if (m_rightArm.empty()) m_rightArm = FindBone(boneNames, { "mixamorig:RightArm" });
 	if (m_leftElbow.empty()) m_leftElbow = FindBone(boneNames, { "mixamorig:LeftForeArm" });
@@ -122,6 +158,61 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	if (m_rightKnee.empty()) m_rightKnee = FindBone(boneNames, { "lowerleg.r" });
 	if (m_leftFoot.empty()) m_leftFoot = FindBone(boneNames, { "foot.l" });
 	if (m_rightFoot.empty()) m_rightFoot = FindBone(boneNames, { "foot.r" });
+
+	m_importedAttackBones.clear();
+	m_importedAttackBones.reserve(m_boneNames.size());
+	for (const auto& boneName : m_boneNames)
+	{
+		const std::string normalized = NormalizeBoneName(boneName);
+		const bool isGameplayRoot = boneName == m_pelvis ||
+			normalized == "root" ||
+			normalized == "mixamorig:root" ||
+			normalized == "hips" ||
+			 normalized == "mixamorig:hips" ||
+			 normalized == "pelvis";
+		const bool isFinger = normalized.find("finger") != std::string::npos ||
+			normalized.find("index") != std::string::npos ||
+			normalized.find("middle") != std::string::npos ||
+			normalized.find("ring") != std::string::npos ||
+			normalized.find("pinky") != std::string::npos ||
+			normalized.find("thumb") != std::string::npos;
+		// 剣は専用ボーンへ追従させ、当たり判定もそこから作るため、
+		// クリップ側の剣ボーンのキーは取り込まない。
+		const bool isWeaponBone = normalized.find("sword") != std::string::npos ||
+			normalized.find("weapon") != std::string::npos;
+		// 脚は取り込まない。
+		// 実際に画面をキャプチャして確認した結果、脚を取り込むと
+		// キャラクターが座り込んだように脚が開いて崩れることが分かった。
+		// 原因は「脚だけを動かして腰(hips)を固定している」ことにある。
+		// Mixamoのクリップの脚の回転は、腰も一緒に回転・上下することを前提に
+		// 作られている。ところがCAnimationMesh側は平行移動を常にレスト姿勢へ固定し、
+		// さらに腰はゲーム側の向きを守るため除外している。
+		// その結果、腰が沈まないまま脚だけが「沈んだ姿勢用の角度」を取るため、
+		// 脚が横へ開いて座ったような姿勢になる。
+		// 腰の平行移動まで正しく扱えるようになるまでは、脚は除外する。
+		const bool isLeg = normalized.find("leg") != std::string::npos ||
+			normalized.find("thigh") != std::string::npos ||
+			normalized.find("knee") != std::string::npos ||
+			normalized.find("calf") != std::string::npos ||
+			normalized.find("foot") != std::string::npos ||
+			normalized.find("ankle") != std::string::npos ||
+			normalized.find("toe") != std::string::npos;
+		// 攻撃モーションは体幹(背骨・首・頭)と腕へ適用する。
+		// 以前は腕のチェーンだけに絞っていたが、それは当時のプレイヤーモデルが
+		// MMD系リグで、Mixamo製クリップとの不一致により胴体キーで全身が折れたためである。
+		// 現在のプレイヤーは同じSword and Shield Pack由来のMixamoリグ
+		// (assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb)なので、
+		// 骨格が一致しており、背骨を取り込んでも破綻しない。
+		// 腕だけでは体の捻りが出ず「棒立ちで腕を振る」動きになるため、体幹まで広げる。
+		//
+		// 除外するのは次の4種類:
+		//  - ルートと腰 : ワールドの向きはゲーム側(SRT)が管理するため
+		//  - 脚         : 上記の理由(腰を固定したまま脚だけ動かすと破綻する)
+		//  - 指         : 剣の握りを崩さないため
+		//  - 剣         : 専用の追従処理と当たり判定を壊さないため
+		if (!isGameplayRoot && !isFinger && !isWeaponBone && !isLeg)
+			m_importedAttackBones.push_back(boneName);
+	}
 
 	m_motionChoices = {
 		"assets/motion/sword_shield_attack_safe.motion",
@@ -143,13 +234,13 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	const auto selectedIt = std::find(m_motionChoices.begin(), m_motionChoices.end(), m_motionFilename);
 	if (selectedIt != m_motionChoices.end())
 		m_selectedMotionIndex = static_cast<int>(std::distance(m_motionChoices.begin(), selectedIt));
+	m_attackMotionFilename = m_motionFilename;
 
 	LoadMotionFile(m_motionFilename);
-	// Start from the target GLB's own bind pose (a stable T-pose) and apply only
-	// the two upper-arm rotations authored in sword_shield_idle_safe.motion.
-	// The downloaded idle FBX contains a crouched pose and source-unit root
-	// translations, so using it as a base makes the feet turn/sink and also
-	// corrupts every downloaded attack that is layered on top of it.
+	// 対象GLB自身の安定したバインドポーズ（Tポーズ）を基準にし、
+	// sword_shield_idle_safe.motionの上腕回転だけを重ねる。
+	// ダウンロードしたアイドルFBXを基準にすると、しゃがみ姿勢や単位系のルート移動が
+	// 足の回転・沈み込みを起こし、上に重ねた攻撃モーションまで壊すためである。
 	const bool idleLoaded = LoadIdlePose("assets/motion/sword_shield_idle_safe.motion");
 	const bool seatedLoaded = LoadSeatedPoseFile("assets/motion/sword_shield_idle.motion");
 	std::cout << "[Animator] attack bones=" << m_motionMappedBoneCount
@@ -159,10 +250,266 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 		<< " seated loaded=" << (seatedLoaded ? "yes" : "no") << std::endl;
 }
 
+void CCharacterAnimator::SetWalkAnimation(aiAnimation* animation)
+{
+	m_walkAnimation = animation;
+	m_walkFrame = 0;
+	m_walkFrameAccumulator = 0.0f;
+}
+
+void CCharacterAnimator::SetLocomotionAnimations(
+	aiAnimation* walkAnimation,
+	aiAnimation* runAnimation)
+{
+	m_walkAnimation = walkAnimation;
+	m_runAnimation = runAnimation;
+	m_walkFrame = 0;
+	m_walkFrameAccumulator = 0.0f;
+}
+
+const std::vector<std::string>& CCharacterAnimator::LowerBodyBones() const
+{
+	// ボーン名の解決はInitialize時に済んでいるので、初回だけ組み立てて使い回す。
+	if (m_lowerBodyBonesCache.empty())
+	{
+		// 腰(pelvis)は含めない。
+		// 腰の沈み込みを平行移動で再現しようとしたが、待機クリップの脚は
+		// 腰が大きく下がる前提で作られており、安全な範囲の沈み込みでは全く足りず、
+		// 脚が宙で跳ね上がったような姿勢になった(実機キャプチャで確認)。
+		// 腰を正しく動かすには、脚のIKで接地を保つ仕組みが要る。
+		const std::string* candidates[] = {
+			&m_leftLeg, &m_rightLeg, &m_leftKnee, &m_rightKnee,
+			&m_leftFoot, &m_rightFoot,
+		};
+		for (const std::string* name : candidates)
+		{
+			if (!name->empty())
+				m_lowerBodyBonesCache.push_back(*name);
+		}
+	}
+	return m_lowerBodyBonesCache;
+}
+
+void CCharacterAnimator::SetIdleAnimation(aiAnimation* animation)
+{
+	m_idleAnimation = animation;
+	m_idleFrame = 0;
+	m_idleFrameAccumulator = 0.0f;
+}
+
+void CCharacterAnimator::SetAttackAnimations(
+	const std::array<aiAnimation*, 3>& weakAnimations,
+	const std::array<aiAnimation*, 3>& heavyAnimations)
+{
+	m_weakAttackAnimations = weakAnimations;
+	m_heavyAttackAnimations = heavyAnimations;
+}
+
 void CCharacterAnimator::PlayAttackMotion()
 {
-	if (m_motionKeys.empty())
-		LoadMotionFile(m_motionFilename);
+	PlayAttackMotion(1);
+}
+
+void CCharacterAnimator::PlayAttackMotion(int comboStep)
+{
+	const int profileIndex = std::clamp(comboStep, 1, 3) - 1;
+	if (m_weakAttackAnimations[profileIndex] != nullptr)
+	{
+		static constexpr const char* names[] = {
+			"External weak 1 / simple grounded slash",
+			"External weak 2 / simple grounded slash",
+			"External weak 3 / simple grounded slash",
+		};
+		PlayImportedAttackAnimation(
+			m_weakAttackAnimations[profileIndex],
+			names[profileIndex],
+			0.95f,
+			0.16f,
+			0.54f);
+		return;
+	}
+
+	BeginAttackBlend();
+	struct WeakProfile
+	{
+		const char* name;
+		const char* clip;
+		float yaw;
+		float pitch;
+		bool overhead;
+	};
+	static constexpr WeakProfile profiles[] = {
+		{ "Weak 1 / diagonal lead", "assets/motion/sword_shield_slash.motion", -0.15f, 0.04f, false },
+		{ "Weak 2 / reverse cut", "assets/motion/sword_shield_slash_3.motion", -0.30f, 0.02f, false },
+		{ "Weak 3 / advancing finisher", "assets/motion/sword_shield_slash_4.motion", -0.10f, -0.08f, false },
+	};
+	const WeakProfile& profile = profiles[std::clamp(comboStep, 1, 3) - 1];
+	if (LoadMotionFile(profile.clip))
+	{
+		NormalizeMotionTiming(0.95f);
+		ApplyAttackMotionDesign(profile.name, 0.16f, 0.54f, profile.yaw, profile.pitch, profile.overhead);
+	}
+	else
+	{
+		BuildFallbackAttackComboMotion(comboStep);
+		NormalizeMotionTiming(0.95f);
+		ApplyAttackMotionDesign(profile.name, 0.16f, 0.54f, profile.yaw, profile.pitch, profile.overhead);
+	}
+	m_motionTime = 0.0f;
+	m_motionLoop = false;
+	m_motionPlaying = !m_motionKeys.empty();
+	m_useCustomMotion = m_motionPlaying;
+}
+
+void CCharacterAnimator::Initialize(const CAnimationMesh& mesh, const CharacterModelProfile& profile)
+{
+	Initialize(mesh);
+	const auto resolve = [this, &profile](CanonicalJoint joint) {
+		return FindBone(m_boneNames,
+			profile.canonicalAliases[static_cast<size_t>(joint)]);
+	};
+	m_pelvis = resolve(CanonicalJoint::Hips);
+	m_spine = resolve(CanonicalJoint::Spine);
+	m_spine02 = resolve(CanonicalJoint::Chest);
+	m_leftArm = resolve(CanonicalJoint::LeftUpperArm);
+	m_leftElbow = resolve(CanonicalJoint::LeftLowerArm);
+	m_leftHand = resolve(CanonicalJoint::LeftHand);
+	m_rightArm = resolve(CanonicalJoint::RightUpperArm);
+	m_rightElbow = resolve(CanonicalJoint::RightLowerArm);
+	m_rightHand = resolve(CanonicalJoint::RightHand);
+	m_leftLeg = resolve(CanonicalJoint::LeftUpperLeg);
+	m_leftKnee = resolve(CanonicalJoint::LeftLowerLeg);
+	m_leftFoot = resolve(CanonicalJoint::LeftFoot);
+	m_rightLeg = resolve(CanonicalJoint::RightUpperLeg);
+	m_rightKnee = resolve(CanonicalJoint::RightLowerLeg);
+	m_rightFoot = resolve(CanonicalJoint::RightFoot);
+}
+
+void CCharacterAnimator::PlayHeavyAttackMotion()
+{
+	PlayHeavyAttackMotion(1);
+}
+
+void CCharacterAnimator::PlayHeavyAttackMotion(int comboStep)
+{
+	const int profileIndex = std::clamp(comboStep, 1, 3) - 1;
+	if (m_heavyAttackAnimations[profileIndex] != nullptr)
+	{
+		static constexpr const char* names[] = {
+			"External heavy 1 / simple grounded heavy slash",
+			"External heavy 2 / simple grounded heavy slash",
+			"External heavy 3 / simple grounded heavy slash",
+		};
+		PlayImportedAttackAnimation(
+			m_heavyAttackAnimations[profileIndex],
+			names[profileIndex],
+			1.10f,
+			0.20f,
+			0.62f);
+		return;
+	}
+
+	BeginAttackBlend();
+	struct HeavyProfile
+	{
+		const char* name;
+		const char* clip;
+		float yaw;
+		float pitch;
+		bool overhead;
+	};
+	static constexpr HeavyProfile profiles[] = {
+		{ "Heavy 1 / overhead chop", "assets/motion/sword_shield_attack.motion", -0.15f, 0.34f, true },
+		{ "Heavy 2 / committed sweep", "assets/motion/sword_shield_attack_2.motion", -0.35f, 0.14f, false },
+		{ "Heavy 3 / finishing cleave", "assets/motion/sword_shield_attack_3.motion", -0.15f, 0.42f, true },
+	};
+	const HeavyProfile& profile = profiles[std::clamp(comboStep, 1, 3) - 1];
+	if (LoadMotionFile(profile.clip))
+	{
+		NormalizeMotionTiming(1.10f);
+		ApplyAttackMotionDesign(profile.name, 0.20f, 0.62f, profile.yaw, profile.pitch, profile.overhead);
+	}
+	else
+	{
+		BuildFallbackHeavyComboMotion(comboStep);
+		NormalizeMotionTiming(1.10f);
+		ApplyAttackMotionDesign(profile.name, 0.20f, 0.62f, profile.yaw, profile.pitch, profile.overhead);
+	}
+	m_motionTime = 0.0f;
+	m_motionLoop = false;
+	m_motionPlaying = !m_motionKeys.empty();
+	m_useCustomMotion = m_motionPlaying;
+}
+
+void CCharacterAnimator::StartComboPreview(bool heavy)
+{
+	m_comboPreviewActive = true;
+	m_comboPreviewStep = 1;
+	m_comboPreviewHeavy = heavy;
+	if (m_comboPreviewHeavy)
+		PlayHeavyAttackMotion(m_comboPreviewStep);
+	else
+		PlayAttackMotion(m_comboPreviewStep);
+}
+
+void CCharacterAnimator::TriggerHitStop(float seconds)
+{
+	m_hitStopSeconds = std::max(m_hitStopSeconds, std::clamp(seconds, 0.0f, 0.20f));
+}
+
+void CCharacterAnimator::BeginAttackBlend()
+{
+	m_attackBlendFromPose = m_lastRenderedPose;
+	m_attackBlendTime = 0.0f;
+}
+
+void CCharacterAnimator::PlayImportedAttackAnimation(
+	aiAnimation* animation,
+	const char* name,
+	float duration,
+	float windupEnd,
+	float activeEnd)
+{
+	BeginAttackBlend();
+	m_importedAttackAnimation = animation;
+	m_importedAnimationFrame = 0;
+	m_importedAnimationFrameAccumulator = 0.0f;
+	unsigned int maxRotationKeys = 0;
+	for (unsigned int channel = 0; channel < animation->mNumChannels; ++channel)
+		maxRotationKeys = std::max(
+			maxRotationKeys,
+			animation->mChannels[channel]->mNumRotationKeys);
+	if (maxRotationKeys > 1 && duration > 0.0f)
+	{
+		m_importedAnimationFrameRate = static_cast<float>(maxRotationKeys - 1) /
+			(duration * 60.0f);
+	}
+	else
+	{
+		m_importedAnimationFrameRate = 0.0f;
+	}
+	m_motionTime = 0.0f;
+	m_motionDuration = duration;
+	m_attackWindupEnd = windupEnd;
+	m_attackActiveEnd = activeEnd;
+	m_attackMotionName = name;
+	m_attackMotionFilename = name;
+	m_motionLoop = false;
+	m_motionPlaying = true;
+	// 読み込んだFBXは一致するMixamoボーンへ直接適用し、
+	// 旧来の手作業による.motion姿勢レイヤーは通さない。
+	m_useCustomMotion = false;
+	m_importedAttackPose = false;
+}
+
+void CCharacterAnimator::PlayDodgeMotion()
+{
+	// 回避は読み込み攻撃をキャンセルできる。
+	// 攻撃クリップを先に解除し、攻撃再生側の処理に回避モーションが隠されないようにする。
+	m_importedAttackAnimation = nullptr;
+	m_importedAnimationFrame = 0;
+	m_importedAnimationFrameAccumulator = 0.0f;
+	BuildFallbackDodgeMotion();
 	m_motionTime = 0.0f;
 	m_motionLoop = false;
 	m_motionPlaying = !m_motionKeys.empty();
@@ -183,7 +530,10 @@ bool CCharacterAnimator::LoadMotionFile(const std::string& filename)
 	m_motionFilename = filename;
 	const bool loaded = LoadMotion(filename);
 	if (!loaded)
+	{
+		m_importedAttackPose = false;
 		BuildFallbackAttackMotion();
+	}
 	return loaded;
 }
 
@@ -231,6 +581,7 @@ void CCharacterAnimator::AdjustSelectedScale(const Vector3& delta)
 
 void CCharacterAnimator::AddOrUpdateCurrentKey()
 {
+	CaptureUndoIfNeeded();
 	MotionKeyframe key = m_editorKey;
 	key.time = m_motionTime;
 	BoneKeys& keys = m_motionKeys[m_selectedBone];
@@ -250,6 +601,173 @@ void CCharacterAnimator::AddOrUpdateCurrentKey()
 	m_useCustomMotion = true;
 }
 
+void CCharacterAnimator::ApplyEditorKey(const MotionKeyframe& key)
+{
+	m_editorKey = key;
+	AddOrUpdateCurrentKey();
+}
+
+void CCharacterAnimator::PreviewEditorKey(const MotionKeyframe& key)
+{
+	m_editorKey = key;
+	MotionKeyframe current = key;
+	current.time = m_motionTime;
+	BoneKeys& keys = m_motionKeys[m_selectedBone];
+	bool replaced = false;
+	for (auto& existing : keys)
+	{
+		if (std::abs(existing.time - current.time) < 0.001f)
+		{
+			existing = current;
+			replaced = true;
+			break;
+		}
+	}
+	if (!replaced)
+		keys.push_back(current);
+	SortKeys(keys);
+	m_useCustomMotion = true;
+}
+
+void CCharacterAnimator::BeginEditTransaction()
+{
+	if (m_editTransactionActive)
+		return;
+	m_editTransactionActive = true;
+	m_editTransactionCaptured = false;
+	CaptureUndoIfNeeded();
+}
+
+void CCharacterAnimator::EndEditTransaction()
+{
+	m_editTransactionActive = false;
+	m_editTransactionCaptured = false;
+}
+
+CCharacterAnimator::EditorSnapshot CCharacterAnimator::CaptureEditorSnapshot() const
+{
+	EditorSnapshot snapshot;
+	snapshot.motionKeys = m_motionKeys;
+	snapshot.editorKey = m_editorKey;
+	snapshot.motionTime = m_motionTime;
+	snapshot.motionDuration = m_motionDuration;
+	return snapshot;
+}
+
+void CCharacterAnimator::RestoreEditorSnapshot(const EditorSnapshot& snapshot)
+{
+	m_motionKeys = snapshot.motionKeys;
+	m_editorKey = snapshot.editorKey;
+	m_motionTime = snapshot.motionTime;
+	m_motionDuration = snapshot.motionDuration;
+	m_useCustomMotion = !m_motionKeys.empty();
+}
+
+void CCharacterAnimator::CaptureUndoIfNeeded()
+{
+	if (m_editTransactionActive && m_editTransactionCaptured)
+		return;
+	if (m_undoHistory.size() >= 64)
+		m_undoHistory.pop_front();
+	m_undoHistory.push_back(CaptureEditorSnapshot());
+	m_redoHistory.clear();
+	m_editTransactionCaptured = true;
+}
+
+void CCharacterAnimator::UndoEditorChange()
+{
+	if (m_undoHistory.empty())
+		return;
+	m_redoHistory.push_back(CaptureEditorSnapshot());
+	RestoreEditorSnapshot(m_undoHistory.back());
+	m_undoHistory.pop_back();
+}
+
+void CCharacterAnimator::RedoEditorChange()
+{
+	if (m_redoHistory.empty())
+		return;
+	m_undoHistory.push_back(CaptureEditorSnapshot());
+	RestoreEditorSnapshot(m_redoHistory.back());
+	m_redoHistory.pop_back();
+}
+
+bool CCharacterAnimator::SelectKeyAtTime(float time)
+{
+	const auto keyIt = m_motionKeys.find(m_selectedBone);
+	if (keyIt == m_motionKeys.end())
+		return false;
+	for (const auto& key : keyIt->second)
+	{
+		if (std::abs(key.time - time) < 0.035f)
+		{
+			m_motionTime = key.time;
+			m_editorKey = key;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CCharacterAnimator::MoveSelectedKey(float fromTime, float toTime)
+{
+	auto keyIt = m_motionKeys.find(m_selectedBone);
+	if (keyIt == m_motionKeys.end())
+		return false;
+	for (auto& key : keyIt->second)
+	{
+		if (std::abs(key.time - fromTime) < 0.035f)
+		{
+			CaptureUndoIfNeeded();
+			key.time = std::clamp(toTime, 0.0f, m_motionDuration);
+			m_motionTime = key.time;
+			m_editorKey = key;
+			SortKeys(keyIt->second);
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CCharacterAnimator::DeleteKeyAtTime(float time)
+{
+	auto keyIt = m_motionKeys.find(m_selectedBone);
+	if (keyIt == m_motionKeys.end())
+		return false;
+	const auto oldSize = keyIt->second.size();
+	if (std::none_of(keyIt->second.begin(), keyIt->second.end(), [time](const MotionKeyframe& key) {
+		return std::abs(key.time - time) < 0.035f;
+	}))
+		return false;
+	CaptureUndoIfNeeded();
+	keyIt->second.erase(std::remove_if(keyIt->second.begin(), keyIt->second.end(), [time](const MotionKeyframe& key) {
+		return std::abs(key.time - time) < 0.035f;
+	}), keyIt->second.end());
+	return keyIt->second.size() != oldSize;
+}
+
+bool CCharacterAnimator::DuplicateKeyAtTime(float time)
+{
+	const auto keyIt = m_motionKeys.find(m_selectedBone);
+	if (keyIt == m_motionKeys.end())
+		return false;
+	for (const auto& key : keyIt->second)
+	{
+		if (std::abs(key.time - time) < 0.035f)
+		{
+			CaptureUndoIfNeeded();
+			MotionKeyframe copy = key;
+			copy.time = std::clamp(key.time + 1.0f / 30.0f, 0.0f, m_motionDuration);
+			m_motionKeys[m_selectedBone].push_back(copy);
+			SortKeys(m_motionKeys[m_selectedBone]);
+			m_motionTime = copy.time;
+			m_editorKey = copy;
+			return true;
+		}
+	}
+	return false;
+}
+
 void CCharacterAnimator::SetMotionFilename(const std::string& filename)
 {
 	m_motionFilename = filename;
@@ -263,10 +781,124 @@ void CCharacterAnimator::Update(
 {
 	// モーション専用シーンではUIのPlayを使い、GameSceneでは左クリックで
 	// 保存済みattack.motionを先頭から1回再生する。
+	if (m_hitStopSeconds > 0.0f)
+	{
+		// 数回の固定更新で姿勢を完全に止め、剣がすり抜けて見えず
+		// 接触の瞬間が分かるようにする。
+		m_hitStopSeconds = std::max(0.0f, m_hitStopSeconds - 1.0f / 60.0f);
+		if (m_useCustomMotion && !m_motionKeys.empty())
+		{
+			std::unordered_map<std::string, Matrix4x4> deltas;
+			EvaluateCustomMotion(m_motionTime, deltas);
+			const bool useIdleBase = !m_importedAttackPose;
+			std::unordered_map<std::string, Matrix4x4> pose =
+				useIdleBase ? m_idlePose : std::unordered_map<std::string, Matrix4x4>{};
+			for (const auto& [boneName, delta] : deltas)
+			{
+				if (useIdleBase)
+				{
+					const auto idle = m_idlePose.find(boneName);
+					pose[boneName] = idle != m_idlePose.end()
+						? delta * idle->second
+						: delta;
+				}
+				else
+					pose[boneName] = delta;
+			}
+			// 読み込んだ攻撃クリップによって装備が意図せず復活しないようにする。
+			// 剣だけで戦う設定ではアイドル姿勢で盾を隠しているため、攻撃姿勢にも同じ指定を引き継ぐ。
+			if (m_importedAttackPose)
+			{
+				for (const auto& [boneName, hiddenPose] : m_idlePose)
+				{
+					if (NormalizeBoneName(boneName).find("shield") != std::string::npos)
+						pose[boneName] = hiddenPose;
+				}
+			}
+			mesh.UpdateManualPose(boneComb, pose);
+		}
+		return;
+	}
+
+	if (m_importedAttackAnimation != nullptr)
+	{
+		if (m_motionPlaying && m_motionTime < m_motionDuration)
+		{
+			// 外部クリップはプレイヤーと同じMixamoスケルトンを使うため、
+			// 一致する身体チャンネルを適用する。ただし移動はゲーム側が管理するので
+			// ルートの平行移動は取り込まない。
+			// 累積値の小数部を渡してキー間を補間させる。
+			// 攻撃クリップは1秒前後に30キー程度しか無いため、
+			// 補間しないとキーの切り替わりがそのまま段差として見えてしまう。
+			const float attackFrameFraction = m_importedAnimationFrameAccumulator -
+				std::floor(m_importedAnimationFrameAccumulator);
+
+			// 上半身に攻撃、下半身に移動または待機を重ねる(レイヤー合成)。
+			//
+			// 攻撃クリップの脚をそのまま使うと、腰(hips)を固定しているせいで
+			// 脚が開いて座り込んだ姿勢になる(実機で確認済み)。
+			// かといって脚を除外すると、今度は攻撃中ずっと棒立ちになる。
+			// そこで脚は移動・待機クリップに任せる。こちらは腰の上下が小さく破綻しないため、
+			// 脚が動き続けたまま上半身だけが攻撃になる。
+			// 副産物として「歩きながら攻撃」も表現できる。
+			// 下半身へ流すのは移動クリップだけにする。
+			// 待機クリップの脚は腰が大きく沈む前提で作られていて、
+			// 腰を固定したまま適用すると宙に浮いた姿勢になるため使わない。
+			// 立ち止まって攻撃した場合は、脚は休止姿勢のまま(従来と同じ)。
+			const bool useRunForAttack = state.running && m_runAnimation != nullptr;
+			aiAnimation* lowerBodyAnimation = state.walking
+				? (useRunForAttack ? m_runAnimation : m_walkAnimation)
+				: nullptr;
+			if (state.walking)
+			{
+				m_walkFrameAccumulator += useRunForAttack
+					? m_runPlaybackRate
+					: m_walkPlaybackRate;
+				m_walkFrame = static_cast<int>(m_walkFrameAccumulator);
+			}
+			const int lowerBodyFrame = m_walkFrame;
+			const float lowerBodyFraction =
+				m_walkFrameAccumulator - std::floor(m_walkFrameAccumulator);
+
+			if (lowerBodyAnimation != nullptr)
+			{
+				mesh.UpdateLayeredAnimation(
+					boneComb,
+					lowerBodyAnimation, lowerBodyFrame, lowerBodyFraction,
+					LowerBodyBones(), true,
+					m_importedAttackAnimation, m_importedAnimationFrame,
+					attackFrameFraction, m_importedAttackBones, false,
+					m_idlePose);
+			}
+			else
+			{
+				// 下半身へ流すクリップが無い場合は、従来どおり上半身だけを適用する。
+				static const std::unordered_map<std::string, Matrix4x4> noManualPose;
+				mesh.UpdateAnimationWithManualPose(
+					boneComb,
+					m_importedAttackAnimation,
+					m_importedAnimationFrame,
+					noManualPose,
+					m_importedAttackBones,
+					false,
+					attackFrameFraction);
+			}
+			m_motionTime += 1.0f / 60.0f;
+			m_importedAnimationFrameAccumulator += m_importedAnimationFrameRate;
+			m_importedAnimationFrame = static_cast<int>(m_importedAnimationFrameAccumulator);
+			return;
+		}
+
+		m_importedAttackAnimation = nullptr;
+		m_importedAnimationFrame = 0;
+		m_importedAnimationFrameAccumulator = 0.0f;
+		m_motionPlaying = false;
+	}
+
 	if (m_motionPlaying)
 	{
-		// The existing scene API does not pass frame delta to the animator.
-		// Use the game's fixed 60 Hz update for editor playback.
+		// 現在のシーンAPIはアニメーターへフレーム時間を渡さないため、
+		// エディター再生はゲームの固定60Hzで進める。
 		m_motionTime += 1.0f / 60.0f;
 		if (m_motionTime > m_motionDuration)
 		{
@@ -280,38 +912,147 @@ void CCharacterAnimator::Update(
 		}
 	}
 
-	// The editor must display the pose at the scrubbed timeline even while
-	// playback is paused. GameScene still applies it only during one-shot play.
+	if (m_comboPreviewActive && !IsMotionPlaying())
+	{
+		if (m_comboPreviewStep < 3)
+		{
+			++m_comboPreviewStep;
+			if (m_comboPreviewHeavy)
+				PlayHeavyAttackMotion(m_comboPreviewStep);
+			else
+				PlayAttackMotion(m_comboPreviewStep);
+			return;
+		}
+		m_comboPreviewActive = false;
+	}
+
+	// 再生停止中でもタイムラインの現在位置の姿勢をエディターへ表示する。
+	// GameSceneではワンショット再生中だけこの姿勢を適用する。
 	if (m_useCustomMotion && (m_motionPlaying || m_editorEnabled) && !m_motionKeys.empty())
 	{
 		std::unordered_map<std::string, Matrix4x4> deltas;
 		EvaluateCustomMotion(m_motionTime, deltas);
-		std::unordered_map<std::string, Matrix4x4> customPose = m_idlePose;
+		const bool useIdleBase = !m_importedAttackPose;
+		std::unordered_map<std::string, Matrix4x4> customPose =
+			useIdleBase ? m_idlePose : std::unordered_map<std::string, Matrix4x4>{};
 		for (const auto& [boneName, delta] : deltas)
 		{
-			const auto idle = m_idlePose.find(boneName);
-			customPose[boneName] = idle != m_idlePose.end()
-				? delta * idle->second
-				: delta;
+			if (useIdleBase)
+			{
+				const auto idle = m_idlePose.find(boneName);
+				customPose[boneName] = idle != m_idlePose.end()
+					? delta * idle->second
+					: delta;
+			}
+		else
+			customPose[boneName] = delta;
 		}
+		if (m_importedAttackPose)
+		{
+			for (const auto& [boneName, hiddenPose] : m_idlePose)
+			{
+				if (NormalizeBoneName(boneName).find("shield") != std::string::npos)
+					customPose[boneName] = hiddenPose;
+			}
+		}
+		if (m_motionPlaying && m_attackBlendTime < m_attackBlendDuration)
+		{
+			m_attackBlendTime += 1.0f / 60.0f;
+			const float linearBlend = std::clamp(
+				m_attackBlendTime / std::max(m_attackBlendDuration, 0.001f),
+				0.0f,
+				1.0f);
+			const float blend = linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+			for (auto& [boneName, targetPose] : customPose)
+			{
+				const auto from = m_attackBlendFromPose.find(boneName);
+				if (from != m_attackBlendFromPose.end())
+					targetPose = BlendLocalPose(from->second, targetPose, blend);
+			}
+		}
+		m_lastRenderedPose = customPose;
 		mesh.UpdateManualPose(boneComb, customPose);
 		return;
 	}
 
+	const bool useRunAnimation = state.running && m_runAnimation != nullptr;
+	aiAnimation* locomotionAnimation = useRunAnimation ? m_runAnimation : m_walkAnimation;
+	if (state.walking && locomotionAnimation != nullptr)
+	{
+		// ダウンロードした移動クリップはプレイヤーと同じMixamoスケルトンを使う。
+		// 脚に加えて背骨と腕も読み込むが、Hips・手・指は除外する。
+		// Hipsには元データのルート移動が含まれ、手はプレイヤー側の剣の握りを維持するためである。
+		const std::vector<std::string> walkUpperBones = {
+			m_spine, m_spine01, m_spine02,
+			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
+		};
+		m_walkFrameAccumulator += useRunAnimation
+			? m_runPlaybackRate
+			: m_walkPlaybackRate;
+		m_walkFrame = static_cast<int>(m_walkFrameAccumulator);
+		// 歩き・走りも1キーずつ切り替えるとカクつくため、キー間を補間する。
+		const float walkFrameFraction =
+			m_walkFrameAccumulator - std::floor(m_walkFrameAccumulator);
+		// 歩行・走行は1本のクリップで上下とも動かす(従来どおり)。
+		// 腰の平行移動は取り込まない。歩行クリップは腰の上下が小さく、
+		// 取り込まなくても破綻しないことが分かっているため。
+		std::vector<std::string> walkBones = walkUpperBones;
+		const std::vector<std::string>& walkLowerBones = LowerBodyBones();
+		walkBones.insert(
+			walkBones.end(), walkLowerBones.begin(), walkLowerBones.end());
+		mesh.UpdateAnimationWithManualPose(
+			boneComb, locomotionAnimation, m_walkFrame, m_idlePose, walkBones,
+			true, walkFrameFraction);
+		return;
+	}
+	if (!state.walking)
+	{
+		m_walkFrame = 0;
+		m_walkFrameAccumulator = 0.0f;
+	}
+
+	// 待機モーション。
+	// 以前は静止姿勢へ背骨のわずかな呼吸を加えるだけだったため、
+	// 腕を下げた棒立ちに見えていた。専用クリップを再生して、
+	// 構えと重心の揺れがある待機にする。
+	// ジャンプ中は下の手続き的な姿勢(腕を上げる等)を使うので対象外。
+	if (!state.walking && !state.jumping && m_idleAnimation != nullptr)
+	{
+		// 待機でも脚を待機クリップで動かす。
+		// 攻撃中のレイヤー合成では下半身を待機・移動クリップが担当するため、
+		// 待機時に脚を止めていると、攻撃を出した瞬間に脚だけ別の姿勢へ飛んでしまう。
+		// 前後で同じクリップが脚を動かしている状態にして、継ぎ目をなくす。
+		const std::vector<std::string> idleBones = {
+			m_spine, m_spine01, m_spine02,
+			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
+		};
+		m_idleFrameAccumulator += m_idlePlaybackRate;
+		m_idleFrame = static_cast<int>(m_idleFrameAccumulator);
+		const float idleFrameFraction =
+			m_idleFrameAccumulator - std::floor(m_idleFrameAccumulator);
+		// 待機中は脚を動かさず、上半身だけへ待機クリップを適用する。
+		// 待機クリップの脚は腰が大きく沈む前提で作られており、
+		// 腰を固定したまま脚だけ適用すると宙に浮いて足をばたつかせたように見える。
+		// 立ち止まっている間は攻撃中も脚を動かさないため、
+		// 攻撃に入る瞬間に脚が飛ぶこともない。
+		mesh.UpdateAnimationWithManualPose(
+			boneComb, m_idleAnimation, m_idleFrame, m_idlePose, idleBones,
+			true, idleFrameFraction);
+		return;
+	}
+
 	const float phase = std::sinf(state.motionTime * 7.0f);
-	// The paladin is a heavy armored character.  The old walk used nearly
-	// 40-degree hip swings plus a large knee/foot twist, which made the
-	// automatically weighted cape and plates appear to tear apart.  Keep the
-	// stride readable while leaving enough range for the feet to separate.
+	// パラディンは重い鎧のキャラクターなので、腰の大きな振りと
+	// 膝・足首のねじりを抑え、ウェイト付きのマントや装甲が裂けて見えないようにする。
+	// 足同士が分かれる範囲は残し、歩幅は読み取りやすくする。
 	const float armSwing = state.walking ? phase * 0.30f : 0.0f;
 	const float legSwing = state.walking ? -phase * 0.38f : 0.0f;
 	const float leftKneeSwing = state.walking ? std::max(0.0f, phase) * 0.24f : 0.0f;
 	const float rightKneeSwing = state.walking ? std::max(0.0f, -phase) * 0.24f : 0.0f;
 	const float footSwing = state.walking ? phase * 0.20f : (state.jumping ? -0.2f : 0.0f);
 	const float armRaise = state.jumping ? 0.75f : 0.0f;
-	// Idle is intentionally conservative: the bind pose already gives us a
-	// stable standing lower body, so only add a tiny breathing motion to the
-	// spine.  No idle key is allowed to rotate the legs or feet.
+	// アイドル姿勢は控えめにする。バインドポーズの下半身が安定しているため、
+	// 背骨に小さな呼吸だけを加え、脚や足を回すキーは使わない。
 	const float idleBreath = (!state.walking && !state.jumping)
 		? std::sinf(state.motionTime * 2.2f) * 0.018f
 		: 0.0f;
@@ -344,6 +1085,7 @@ void CCharacterAnimator::Update(
 			? delta * idle->second
 			: delta;
 	}
+	m_lastRenderedPose = pose;
 	mesh.UpdateManualPose(boneComb, pose);
 }
 
@@ -412,12 +1154,9 @@ void CCharacterAnimator::UpdateTitleContractPose(
 	sheatheAmount = std::clamp(sheatheAmount, 0.0f, 1.0f);
 	drawAmount = std::clamp(drawAmount, 0.0f, 1.0f);
 
-	// The left hand is the free hand on the title model.  It reaches toward the
-	// contract while the right arm lowers toward the sheath.  Once the sword
-	// starts coming free, pull the elbow back and carry the contract lower at
-	// the side instead of keeping it posed like a precious object at the chest.
-	// This keeps the handoff readable while making the departure feel like a
-	// hunter preparing to fight.
+	// タイトルモデルでは左手を自由な手として契約書へ伸ばし、右腕を鞘へ下げる。
+	// 抜刀を始めたら肘を引き、契約書を胸の前ではなく脇へ下げる。
+	// 受け渡しを読みやすくしつつ、戦闘へ向かう動きに見せる。
 	const float carryAmount = drawAmount;
 	const float reachPose = reachAmount * (1.0f - carryAmount);
 	std::unordered_map<std::string, Matrix4x4> deltas;
@@ -430,8 +1169,8 @@ void CCharacterAnimator::UpdateTitleContractPose(
 	SetRotation(deltas, m_leftHand,
 		Matrix4x4::CreateRotationZ(-0.28f * reachPose + 0.08f * carryAmount));
 
-	// First lower the sword hand to the hip, then reverse that pose into a
-	// readable draw/ready position after the contract is accepted.
+	// まず剣を持つ手を腰まで下げ、契約書を受け取った後に
+	// 抜刀して構える姿勢へ反転させる。
 	SetRotation(deltas, m_rightArm,
 		Matrix4x4::CreateRotationZ(-0.82f * sheatheAmount) *
 		Matrix4x4::CreateRotationX(0.28f * sheatheAmount) *
@@ -444,8 +1183,8 @@ void CCharacterAnimator::UpdateTitleContractPose(
 		Matrix4x4::CreateRotationZ(-0.24f * sheatheAmount +
 			0.26f * drawAmount));
 
-	// Use the supplied walk clip for the lower body.  Keep the previous
-	// restrained stride only as a fallback when the optional clip is absent.
+	// 下半身には付属の歩きクリップを使う。
+	// オプションのクリップがない場合だけ、従来の控えめな歩幅を代替として使う。
 	if (walkAnimation == nullptr)
 	{
 		const float walkBlend = drawAmount * drawAmount * (3.0f - 2.0f * drawAmount);
@@ -477,9 +1216,9 @@ void CCharacterAnimator::UpdateTitleContractPose(
 	if (walkAnimation != nullptr)
 	{
 		const std::vector<std::string> lowerBodyBones = {
-			// Do not import the FBX Hips rotation.  This clip's root is authored
-			// with a different facing basis and flips the entire title character
-			// upside down when applied to the SwordShieldPack rig.
+			// FBXのHips回転は取り込まない。
+			// このクリップは異なる正面軸で作られているため、SwordShieldPackへ適用すると
+			// タイトルキャラクター全体が上下反転してしまう。
 			m_leftLeg, m_rightLeg, m_leftKnee, m_rightKnee,
 			m_leftFoot, m_rightFoot,
 		};
@@ -543,6 +1282,7 @@ void CCharacterAnimator::SortKeys(BoneKeys& keys)
 
 void CCharacterAnimator::BuildFallbackAttackMotion()
 {
+	m_importedAttackPose = false;
 	m_motionKeys.clear();
 	m_motionDuration = 0.95f;
 	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
@@ -558,9 +1298,8 @@ void CCharacterAnimator::BuildFallbackAttackMotion()
 			keys.push_back(key);
 		}
 	};
-	// Keep this fallback in sync with the reference-retargeted attack motion.
-	// It is also
-	// used when the editable motion file is missing or cannot be parsed.
+	// この代替姿勢は、基準モーションをリターゲットした攻撃姿勢と同期させる。
+	// 編集可能なモーションファイルがない、または解析できない場合にも使う。
 	addKeys(m_pelvis, { {}, {0.0f, -0.08f, 0.02f}, {0.0f, -0.18f, 0.04f}, {0.0f, 0.22f, -0.03f}, {0.0f, 0.12f, -0.02f}, {0.0f, 0.04f, 0.0f}, {} });
 	addKeys(m_spine, { {}, {-0.04f, -0.10f, 0.03f}, {-0.08f, -0.20f, 0.04f}, {0.16f, 0.18f, -0.03f}, {0.10f, 0.10f, -0.02f}, {0.02f, 0.03f, 0.0f}, {} });
 	addKeys(m_spine01, { {}, {-0.05f, -0.14f, 0.04f}, {-0.10f, -0.26f, 0.06f}, {0.20f, 0.26f, -0.04f}, {0.14f, 0.14f, -0.03f}, {0.03f, 0.04f, 0.0f}, {} });
@@ -576,6 +1315,459 @@ void CCharacterAnimator::BuildFallbackAttackMotion()
 	addKeys(m_rightKnee, { {}, {0.0f, 0.0f, -0.06f}, {0.0f, 0.0f, -0.10f}, {0.12f, 0.0f, 0.0f}, {0.08f, 0.0f, 0.0f}, {0.03f, 0.0f, 0.0f}, {} });
 	addKeys(m_leftFoot, { {}, {0.0f, 0.0f, -0.04f}, {0.0f, 0.0f, -0.08f}, {-0.08f, 0.0f, 0.0f}, {-0.05f, 0.0f, 0.0f}, {-0.02f, 0.0f, 0.0f}, {} });
 	addKeys(m_rightFoot, { {}, {0.0f, 0.0f, 0.04f}, {0.0f, 0.0f, 0.08f}, {-0.08f, 0.0f, 0.0f}, {-0.05f, 0.0f, 0.0f}, {-0.02f, 0.0f, 0.0f}, {} });
+	m_motionTime = 0.0f;
+	m_motionPlaying = false;
+	m_useCustomMotion = true;
+	m_motionFileLoaded = false;
+	m_motionMappedBoneCount = static_cast<int>(m_motionKeys.size());
+}
+
+void CCharacterAnimator::NormalizeMotionTiming(float targetDuration)
+{
+	const float sourceDuration = std::max(m_motionDuration, 0.001f);
+	const float timeScale = targetDuration / sourceDuration;
+	for (auto& [boneName, keys] : m_motionKeys)
+	{
+		for (auto& key : keys)
+		{
+			key.time *= timeScale;
+			// ダウンロードクリップにはFBX側の単位でルート移動が含まれている。
+			// ゲーム側ですでにプレイヤーを移動しているため、そのまま使うと二重移動や
+			// モデルの沈み込みが発生する。
+			key.position = Vector3(0.0f, 0.0f, 0.0f);
+		}
+	}
+	m_motionDuration = targetDuration;
+}
+
+void CCharacterAnimator::StripAttackLowerBody()
+{
+	for (auto it = m_motionKeys.begin(); it != m_motionKeys.end();)
+	{
+		// 攻撃クリップは武器を持つ腕のチェーンだけを動かす。
+		// 首・頭・腰・脚・顔・出力用補助ボーンは対象モデルの初期姿勢に残し、
+		// リグの不一致でコンボ遷移中に全身が折れ曲がるのを防ぐ。
+		const bool mappedDriverBone =
+			it->first == m_spine || it->first == m_spine01 || it->first == m_spine02 ||
+			it->first == m_leftArm || it->first == m_rightArm ||
+			it->first == m_leftElbow || it->first == m_rightElbow ||
+			it->first == m_leftHand || it->first == m_rightHand;
+		// 指、肩の補助ボーン、独立した剣ボーンは標準の腕チェーンから姿勢を継承する。
+		// 出力形式固有の子ボーンを個別に動かすと、手首のねじれ、武器の浮き、
+		// 全身の崩れが起こりやすいためである。
+		const bool driverBone = mappedDriverBone;
+		if (!driverBone)
+			it = m_motionKeys.erase(it);
+		else
+			++it;
+	}
+}
+
+void CCharacterAnimator::ApplyAttackMotionDesign(
+	const char* name,
+	float windupEnd,
+	float activeEnd,
+	float torsoYaw,
+	float torsoPitch,
+	bool overhead)
+{
+	const float yawDelta = std::abs(torsoYaw - m_lastAttackTorsoYaw);
+	const float pitchDelta = std::abs(torsoPitch - m_lastAttackTorsoPitch);
+	const float poseDelta = std::clamp(yawDelta + pitchDelta, 0.0f, 0.75f);
+	m_attackBlendDuration = std::clamp(0.05f + (poseDelta / 0.75f) * 0.10f, 0.05f, 0.15f);
+
+	// 読み込んだクリップは手・前腕・肩の軌道を細かく持つ。
+	// ここではFBX単体にないゲーム用の時間設計として、振りかぶり、接触時の加速、
+	// 振り切り、構えへの戻りを加える。脚は足IKが整うまで接地を優先して除外する。
+	StripAttackLowerBody();
+	m_attackMotionName = name ? name : "Attack";
+	m_attackWindupEnd = std::clamp(windupEnd, 0.0f, m_motionDuration);
+	m_attackActiveEnd = std::clamp(activeEnd, m_attackWindupEnd, m_motionDuration);
+
+	const float duration = std::max(m_motionDuration, 0.001f);
+	if (!m_pelvis.empty() && m_motionKeys.find(m_pelvis) == m_motionKeys.end())
+	{
+		const auto makeNeutralKey = [](float time) {
+			MotionKeyframe key{};
+			key.time = time;
+			key.rotation = Vector3(0.0f, 0.0f, 0.0f);
+			key.position = Vector3(0.0f, 0.0f, 0.0f);
+			key.scale = Vector3(1.0f, 1.0f, 1.0f);
+			return key;
+		};
+		BoneKeys pelvisKeys;
+		const auto spineIt = m_motionKeys.find(m_spine);
+		if (!m_spine.empty() && spineIt != m_motionKeys.end() && !spineIt->second.empty())
+		{
+			pelvisKeys.reserve(spineIt->second.size());
+			for (const auto& spineKey : spineIt->second)
+				pelvisKeys.push_back(makeNeutralKey(spineKey.time));
+		}
+		else
+		{
+			pelvisKeys = {
+				makeNeutralKey(0.0f),
+				makeNeutralKey(duration * 0.3f),
+				makeNeutralKey(duration * 0.6f),
+				makeNeutralKey(duration),
+			};
+		}
+		m_motionKeys.emplace(m_pelvis, pelvisKeys);
+	}
+	const float windup = std::clamp(m_attackWindupEnd / duration, 0.02f, 0.90f);
+	const float active = std::clamp(m_attackActiveEnd / duration, windup + 0.03f, 0.98f);
+	const auto smooth = [](float value) {
+		value = std::clamp(value, 0.0f, 1.0f);
+		return value * value * (3.0f - 2.0f * value);
+	};
+	const auto pulse = [&smooth](float time, float start, float peak, float end) {
+		if (time <= start || time >= end)
+			return 0.0f;
+		if (time < peak)
+			return smooth((time - start) / std::max(peak - start, 0.001f));
+		return 1.0f - smooth((time - peak) / std::max(end - peak, 0.001f));
+	};
+
+	for (auto& [boneName, keys] : m_motionKeys)
+	{
+		for (auto& key : keys)
+		{
+			const float time = std::clamp(key.time / duration, 0.0f, 1.0f);
+			const float anticipation = pulse(time, 0.0f, windup * 0.62f, windup);
+			const float strike = pulse(
+				time,
+				windup * 0.72f,
+				std::min(active - 0.10f, windup + 0.20f),
+				std::min(active + 0.04f, 0.98f));
+			const float followThrough = pulse(
+				time,
+				std::max(active - 0.02f, 0.0f),
+				std::min(active + 0.08f, 0.96f),
+				0.98f);
+			const float turn = torsoYaw *
+				(-0.55f * anticipation + 0.85f * strike + 0.28f * followThrough);
+			const float pitch = torsoPitch *
+				(0.85f * anticipation - 0.90f * strike + 0.22f * followThrough);
+
+			if (boneName == m_spine)
+			{
+				key.rotation.x += pitch;
+				key.rotation.y += turn;
+				key.rotation.z += torsoYaw * 0.08f * anticipation;
+			}
+			else if (boneName == m_spine01)
+			{
+				key.rotation.x += pitch * 0.82f;
+				key.rotation.y += turn * 0.92f;
+			}
+			else if (boneName == m_spine02)
+			{
+				key.rotation.x += pitch * 0.58f;
+				key.rotation.y += turn * 0.72f;
+			}
+			else if (boneName == m_pelvis)
+			{
+				key.rotation.x += pitch * 0.20f;
+			}
+			else if (boneName == m_rightArm)
+			{
+				key.rotation.x += (overhead ? -0.16f : -0.07f) * anticipation;
+				key.rotation.y += turn * 0.18f;
+			}
+			else if (boneName == m_rightElbow)
+			{
+				key.rotation.x += (overhead ? -0.20f : -0.10f) * anticipation;
+				key.rotation.x += (overhead ? 0.10f : 0.06f) * followThrough;
+			}
+			else if (boneName == m_leftArm)
+			{
+				// 盾側の腕を逆方向へ少し回し、剣腕だけが浮かず胸部と一体に見えるようにする。
+				key.rotation.y -= turn * 0.24f;
+				key.rotation.x += pitch * 0.20f;
+			}
+			else if (boneName == m_leftElbow)
+			{
+				key.rotation.x -= pitch * 0.16f;
+			}
+		}
+	}
+
+	// 数値として正しいクリップでも、対象モデルの関節軸に対して大きすぎる場合がある。
+	// 作成者のタイミングは維持しつつ、ローカル回転の範囲を制限して
+	// 一つの軸の誤リターゲットで胴体全体が折れないようにする。
+	const auto clampRotation = [](Vector3& rotation,
+		float xLimit, float yLimit, float zLimit)
+	{
+		rotation.x = std::clamp(rotation.x, -xLimit, xLimit);
+		rotation.y = std::clamp(rotation.y, -yLimit, yLimit);
+		rotation.z = std::clamp(rotation.z, -zLimit, zLimit);
+	};
+	for (auto& [boneName, keys] : m_motionKeys)
+	{
+		for (auto& key : keys)
+		{
+			if (boneName == m_spine)
+				clampRotation(key.rotation, 0.42f, 0.42f, 0.28f);
+			else if (boneName == m_spine01)
+				clampRotation(key.rotation, 0.34f, 0.34f, 0.24f);
+			else if (boneName == m_spine02)
+				clampRotation(key.rotation, 0.28f, 0.28f, 0.20f);
+			else if (boneName == m_pelvis)
+				clampRotation(key.rotation, 0.12f, 0.12f, 0.12f);
+			else if (boneName == m_leftArm || boneName == m_rightArm)
+				clampRotation(key.rotation, 1.35f, 1.20f, 1.25f);
+			else if (boneName == m_leftElbow || boneName == m_rightElbow)
+				clampRotation(key.rotation, 1.25f, 0.90f, 0.90f);
+			else if (boneName == m_leftHand || boneName == m_rightHand)
+				clampRotation(key.rotation, 0.45f, 0.45f, 0.45f);
+		}
+	}
+
+	m_lastAttackTorsoYaw = torsoYaw;
+	m_lastAttackTorsoPitch = torsoPitch;
+}
+
+void CCharacterAnimator::BuildFallbackHeavyAttackMotion()
+{
+	// 安定したリターゲット姿勢を基準にし、同じラジアン単位のボーン空間で
+	// 強攻撃専用の振り下ろし姿勢を作る。
+	BuildFallbackAttackMotion();
+	m_motionDuration = 1.10f;
+	for (auto& [boneName, keys] : m_motionKeys)
+	{
+		for (auto& key : keys)
+			key.time *= (m_motionDuration / 0.95f);
+	}
+	const auto setRotations = [this](const std::string& boneName, const std::vector<Vector3>& rotations)
+	{
+		auto it = m_motionKeys.find(boneName);
+		if (it == m_motionKeys.end()) return;
+		for (size_t i = 0; i < rotations.size() && i < it->second.size(); ++i)
+			it->second[i].rotation = rotations[i];
+	};
+	setRotations(m_spine, {
+		{}, {-0.10f, -0.12f, 0.02f}, {-0.30f, -0.30f, 0.05f},
+		{0.28f, 0.30f, -0.04f}, {0.18f, 0.18f, -0.02f}, {0.04f, 0.04f, 0.0f}, {}
+	});
+	setRotations(m_spine01, {
+		{}, {-0.12f, -0.16f, 0.03f}, {-0.38f, -0.38f, 0.06f},
+		{0.34f, 0.38f, -0.05f}, {0.22f, 0.22f, -0.03f}, {0.05f, 0.05f, 0.0f}, {}
+	});
+	setRotations(m_rightArm, {
+		{}, {-0.70f, 0.25f, -0.55f}, {-1.20f, 0.35f, -0.95f},
+		{1.15f, -0.65f, 0.95f}, {0.82f, -0.50f, 0.70f}, {0.20f, -0.15f, 0.18f}, {}
+	});
+	setRotations(m_rightElbow, {
+		{}, {-0.55f, 0.0f, 0.0f}, {-1.15f, 0.0f, 0.0f},
+		{0.35f, 0.0f, 0.0f}, {0.42f, 0.0f, 0.0f}, {0.12f, 0.0f, 0.0f}, {}
+	});
+	setRotations(m_leftArm, {
+		{}, {0.25f, 0.0f, 0.25f}, {0.42f, 0.0f, 0.42f},
+		{-0.32f, 0.0f, -0.28f}, {-0.22f, 0.0f, -0.20f}, {-0.07f, 0.0f, -0.06f}, {}
+	});
+	m_motionTime = 0.0f;
+	m_motionPlaying = false;
+	m_useCustomMotion = true;
+	m_motionFileLoaded = false;
+	m_motionMappedBoneCount = static_cast<int>(m_motionKeys.size());
+}
+
+void CCharacterAnimator::BuildFallbackAttackComboMotion(int comboStep)
+{
+	BuildFallbackAttackMotion();
+	if (comboStep <= 1)
+		return;
+
+	const auto setRotations = [this](const std::string& boneName, const std::vector<Vector3>& rotations)
+	{
+		auto it = m_motionKeys.find(boneName);
+		if (it == m_motionKeys.end()) return;
+		for (size_t i = 0; i < rotations.size() && i < it->second.size(); ++i)
+			it->second[i].rotation = rotations[i];
+	};
+	if (comboStep == 2)
+	{
+		// 2段目は逆方向の横薙ぎにする。
+		// 骨盤と脚を反対へ回し、腕だけでなく体ごと向きを変える攻撃に見せる。
+		setRotations(m_pelvis, { {}, {0.0f, -0.12f, 0.12f}, {0.0f, -0.28f, 0.24f}, {0.0f, 0.30f, -0.20f}, {0.0f, 0.18f, -0.10f}, {0.0f, 0.04f, 0.0f}, {} });
+		setRotations(m_spine, { {}, {-0.05f, -0.16f, 0.10f}, {-0.12f, -0.32f, 0.18f}, {0.18f, 0.34f, -0.16f}, {0.10f, 0.18f, -0.08f}, {0.02f, 0.04f, 0.0f}, {} });
+		setRotations(m_rightArm, { {}, {-0.42f, 0.20f, -0.36f}, {-0.85f, 0.35f, -0.70f}, {0.98f, -0.72f, 0.86f}, {0.68f, -0.52f, 0.62f}, {0.16f, -0.12f, 0.14f}, {} });
+		setRotations(m_rightElbow, { {}, {-0.35f, 0.0f, 0.0f}, {-0.85f, 0.0f, 0.0f}, {0.30f, 0.0f, 0.0f}, {0.38f, 0.0f, 0.0f}, {0.10f, 0.0f, 0.0f}, {} });
+		setRotations(m_leftArm, { {}, {0.24f, 0.0f, 0.24f}, {0.46f, 0.0f, 0.45f}, {-0.38f, 0.0f, -0.34f}, {-0.24f, 0.0f, -0.20f}, {-0.07f, 0.0f, -0.06f}, {} });
+		setRotations(m_leftLeg, { {}, {0.12f, 0.0f, 0.10f}, {0.22f, 0.0f, 0.16f}, {-0.22f, 0.0f, -0.10f}, {-0.12f, 0.0f, -0.05f}, {-0.03f, 0.0f, 0.0f}, {} });
+		setRotations(m_rightLeg, { {}, {-0.12f, 0.0f, -0.10f}, {-0.22f, 0.0f, -0.16f}, {0.22f, 0.0f, 0.10f}, {0.12f, 0.0f, 0.05f}, {0.03f, 0.0f, 0.0f}, {} });
+	}
+	else
+	{
+		// 3段目は深くしゃがみながら体重を前へ移す振り下ろしの締め技にする。
+		// 2回の横薙ぎと明確に違う動きにする。
+		m_motionDuration = 1.05f;
+		for (auto& [boneName, keys] : m_motionKeys)
+			for (auto& key : keys)
+				key.time *= (m_motionDuration / 0.95f);
+		setRotations(m_pelvis, { {}, {0.12f, 0.08f, 0.0f}, {0.30f, 0.12f, 0.0f}, {-0.24f, -0.10f, 0.0f}, {-0.14f, -0.05f, 0.0f}, {-0.03f, 0.0f, 0.0f}, {} });
+		setRotations(m_spine, { {}, {0.10f, 0.08f, 0.0f}, {0.30f, 0.14f, 0.0f}, {-0.34f, -0.12f, 0.0f}, {-0.20f, -0.06f, 0.0f}, {-0.04f, 0.0f, 0.0f}, {} });
+		setRotations(m_spine01, { {}, {0.14f, 0.10f, 0.0f}, {0.38f, 0.18f, 0.0f}, {-0.40f, -0.16f, 0.0f}, {-0.24f, -0.08f, 0.0f}, {-0.05f, 0.0f, 0.0f}, {} });
+		setRotations(m_rightArm, { {}, {-1.05f, 0.20f, -0.65f}, {-1.65f, 0.25f, -1.00f}, {1.25f, -0.55f, 0.90f}, {0.84f, -0.38f, 0.62f}, {0.20f, -0.10f, 0.14f}, {} });
+		setRotations(m_rightElbow, { {}, {-0.70f, 0.0f, 0.0f}, {-1.35f, 0.0f, 0.0f}, {0.42f, 0.0f, 0.0f}, {0.48f, 0.0f, 0.0f}, {0.14f, 0.0f, 0.0f}, {} });
+		setRotations(m_leftArm, { {}, {0.38f, 0.0f, 0.28f}, {0.62f, 0.0f, 0.48f}, {-0.46f, 0.0f, -0.30f}, {-0.28f, 0.0f, -0.18f}, {-0.08f, 0.0f, -0.04f}, {} });
+	}
+	m_motionTime = 0.0f;
+	m_motionPlaying = false;
+	m_useCustomMotion = true;
+	m_motionFileLoaded = false;
+	m_motionMappedBoneCount = static_cast<int>(m_motionKeys.size());
+}
+
+void CCharacterAnimator::BuildFallbackHeavyComboMotion(int comboStep)
+{
+	BuildFallbackHeavyAttackMotion();
+	if (comboStep <= 1)
+		return;
+	const auto setRotations = [this](const std::string& boneName, const std::vector<Vector3>& rotations)
+	{
+		auto it = m_motionKeys.find(boneName);
+		if (it == m_motionKeys.end()) return;
+		for (size_t i = 0; i < rotations.size() && i < it->second.size(); ++i)
+			it->second[i].rotation = rotations[i];
+	};
+	if (comboStep == 2)
+	{
+		setRotations(m_pelvis, { {}, {0.10f, -0.10f, 0.10f}, {0.25f, -0.20f, 0.22f}, {-0.20f, 0.20f, -0.18f}, {-0.12f, 0.10f, -0.08f}, {-0.03f, 0.02f, 0.0f}, {} });
+		setRotations(m_spine, { {}, {-0.16f, -0.18f, 0.10f}, {-0.42f, -0.32f, 0.20f}, {0.36f, 0.36f, -0.18f}, {0.22f, 0.20f, -0.08f}, {0.04f, 0.04f, 0.0f}, {} });
+		setRotations(m_rightArm, { {}, {-0.85f, 0.28f, -0.60f}, {-1.45f, 0.40f, -1.00f}, {1.35f, -0.75f, 1.05f}, {0.95f, -0.55f, 0.75f}, {0.22f, -0.12f, 0.18f}, {} });
+		setRotations(m_rightElbow, { {}, {-0.62f, 0.0f, 0.0f}, {-1.35f, 0.0f, 0.0f}, {0.42f, 0.0f, 0.0f}, {0.52f, 0.0f, 0.0f}, {0.16f, 0.0f, 0.0f}, {} });
+	}
+	else
+	{
+		m_motionDuration = 1.25f;
+		for (auto& [boneName, keys] : m_motionKeys)
+			for (auto& key : keys)
+				key.time *= (m_motionDuration / 1.10f);
+		setRotations(m_pelvis, { {}, {0.20f, 0.0f, 0.0f}, {0.42f, 0.0f, 0.0f}, {-0.30f, 0.0f, 0.0f}, {-0.18f, 0.0f, 0.0f}, {-0.04f, 0.0f, 0.0f}, {} });
+		setRotations(m_spine, { {}, {0.18f, 0.0f, 0.0f}, {0.52f, 0.0f, 0.0f}, {-0.46f, 0.0f, 0.0f}, {-0.26f, 0.0f, 0.0f}, {-0.05f, 0.0f, 0.0f}, {} });
+		setRotations(m_rightArm, { {}, {-1.10f, 0.20f, -0.70f}, {-1.90f, 0.25f, -1.15f}, {1.55f, -0.65f, 1.10f}, {1.00f, -0.45f, 0.78f}, {0.24f, -0.10f, 0.18f}, {} });
+		setRotations(m_rightElbow, { {}, {-0.85f, 0.0f, 0.0f}, {-1.60f, 0.0f, 0.0f}, {0.48f, 0.0f, 0.0f}, {0.58f, 0.0f, 0.0f}, {0.18f, 0.0f, 0.0f}, {} });
+	}
+	m_motionTime = 0.0f;
+	m_motionPlaying = false;
+	m_useCustomMotion = true;
+	m_motionFileLoaded = false;
+	m_motionMappedBoneCount = static_cast<int>(m_motionKeys.size());
+}
+
+void CCharacterAnimator::BuildFallbackDodgeMotion()
+{
+	m_importedAttackPose = false;
+	m_motionKeys.clear();
+	m_motionDuration = 0.40f;
+	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
+		if (boneName.empty()) return;
+		BoneKeys& keys = m_motionKeys[boneName];
+		// 60fpsで24フレーム相当の回避動作にする。
+		// 中間角度の差を意図的にPIより大きくし、Quaternion::Slerpが立ち姿勢への最短経路ではなく
+		// 前転の一回転全体を補間するようにする。
+		const float times[] = { 0.00f, 0.05f, 0.12f, 0.20f, 0.29f, 0.36f, 0.40f };
+		for (size_t i = 0; i < rotations.size() && i < 7; ++i)
+		{
+			MotionKeyframe key;
+			key.time = times[i];
+			key.rotation = rotations[i];
+			keys.push_back(key);
+		}
+	};
+	const auto addPositions = [this](const std::string& boneName, const std::vector<Vector3>& positions) {
+		auto it = m_motionKeys.find(boneName);
+		if (it == m_motionKeys.end()) return;
+		for (size_t i = 0; i < positions.size() && i < it->second.size(); ++i)
+			it->second[i].position = positions[i];
+	};
+
+	// 腰を前方向へ一回転させる。このモデルのローカル軸ではX負方向が前転なので、
+	// 以前の正方向カーブでは後転に見えていた。-2PIまで連続した曲線にして
+	// Slerpが前転一回転を追従するようにする。
+	addKeys(m_pelvis, {
+		{}, { -0.45f, 0.0f, 0.0f }, { -1.25f, 0.0f, 0.0f },
+		{ -3.10f, 0.0f, 0.0f }, { -4.80f, 0.0f, 0.0f },
+		{ -6.00f, 0.0f, 0.0f }, { -6.2831853f, 0.0f, 0.0f }
+	});
+	// 前転中に腰を上下へ移動させない。
+	// 以前のY負方向移動はルートの高さを変えて浮き沈みを起こしていたため、
+	// しゃがみは脚の回転だけで作る。
+	addPositions(m_pelvis, { {}, {}, {}, {}, {}, {}, {} });
+
+	// 逆さになったときも鎧の胴体がまとまって見えるよう、腰に対して背骨を少し丸める。
+	// 一つの関節だけがゴムのように曲がらないよう、背骨のチェーンへ分散する。
+	addKeys(m_spine, {
+		{}, { -0.12f, 0.0f, 0.0f }, { -0.28f, 0.0f, 0.0f },
+		{ -0.42f, 0.0f, 0.0f }, { -0.30f, 0.0f, 0.0f },
+		{ -0.12f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_spine01, {
+		{}, { -0.18f, 0.0f, 0.0f }, { -0.38f, 0.0f, 0.0f },
+		{ -0.56f, 0.0f, 0.0f }, { -0.40f, 0.0f, 0.0f },
+		{ -0.16f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_spine02, {
+		{}, { -0.22f, 0.0f, 0.0f }, { -0.46f, 0.0f, 0.0f },
+		{ -0.68f, 0.0f, 0.0f }, { -0.48f, 0.0f, 0.0f },
+		{ -0.20f, 0.0f, 0.0f }, {}
+	});
+
+	// 両腿を引き込み、膝を折り、着地に向けて徐々に伸ばす。
+	// 左右対称の値を使い、足が別々に振られないようにする。
+	addKeys(m_leftLeg, {
+		{}, { -0.72f, 0.0f, -0.05f }, { -1.10f, 0.0f, -0.08f },
+		{ -0.48f, 0.0f, -0.05f }, { 0.38f, 0.0f, 0.0f },
+		{ 0.24f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_rightLeg, {
+		{}, { -0.72f, 0.0f, 0.05f }, { -1.10f, 0.0f, 0.08f },
+		{ -0.48f, 0.0f, 0.05f }, { 0.38f, 0.0f, 0.0f },
+		{ 0.24f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_leftKnee, {
+		{}, { 1.30f, 0.0f, 0.0f }, { 2.20f, 0.0f, 0.0f },
+		{ 2.65f, 0.0f, 0.0f }, { 2.10f, 0.0f, 0.0f },
+		{ 0.92f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_rightKnee, {
+		{}, { 1.30f, 0.0f, 0.0f }, { 2.20f, 0.0f, 0.0f },
+		{ 2.65f, 0.0f, 0.0f }, { 2.10f, 0.0f, 0.0f },
+		{ 0.92f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_leftFoot, {
+		{}, { -0.32f, 0.0f, 0.0f }, { -0.68f, 0.0f, 0.0f },
+		{ -0.82f, 0.0f, 0.0f }, { -0.52f, 0.0f, 0.0f },
+		{ -0.22f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_rightFoot, {
+		{}, { -0.32f, 0.0f, 0.0f }, { -0.68f, 0.0f, 0.0f },
+		{ -0.82f, 0.0f, 0.0f }, { -0.52f, 0.0f, 0.0f },
+		{ -0.22f, 0.0f, 0.0f }, {}
+	});
+
+	// 肘を胴体へ寄せる。手は意図的に触らず、前転中も剣と盾の接続姿勢を安定させる。
+	addKeys(m_leftArm, {
+		{}, { -0.30f, 0.0f, 0.24f }, { -0.64f, 0.0f, 0.42f },
+		{ -0.78f, 0.0f, 0.50f }, { -0.56f, 0.0f, 0.34f },
+		{ -0.22f, 0.0f, 0.14f }, {}
+	});
+	addKeys(m_rightArm, {
+		{}, { -0.30f, 0.0f, -0.24f }, { -0.64f, 0.0f, -0.42f },
+		{ -0.78f, 0.0f, -0.50f }, { -0.56f, 0.0f, -0.34f },
+		{ -0.22f, 0.0f, -0.14f }, {}
+	});
+	addKeys(m_leftElbow, {
+		{}, { 0.68f, 0.0f, 0.0f }, { 1.22f, 0.0f, 0.0f },
+		{ 1.48f, 0.0f, 0.0f }, { 1.18f, 0.0f, 0.0f },
+		{ 0.58f, 0.0f, 0.0f }, {}
+	});
+	addKeys(m_rightElbow, {
+		{}, { 0.68f, 0.0f, 0.0f }, { 1.22f, 0.0f, 0.0f },
+		{ 1.48f, 0.0f, 0.0f }, { 1.18f, 0.0f, 0.0f },
+		{ 0.58f, 0.0f, 0.0f }, {}
+	});
 	m_motionTime = 0.0f;
 	m_motionPlaying = false;
 	m_useCustomMotion = true;
@@ -636,8 +1828,24 @@ void CCharacterAnimator::EvaluateCustomMotion(
 			: Matrix4x4::CreateRotationX(pose.rotation.x) *
 			  Matrix4x4::CreateRotationY(pose.rotation.y) *
 			  Matrix4x4::CreateRotationZ(pose.rotation.z);
-		rotations[boneName] = Matrix4x4::CreateScale(pose.scale) * rotation *
+		const Matrix4x4 localPose = Matrix4x4::CreateScale(pose.scale) * rotation *
 			Matrix4x4::CreateTranslation(pose.position.x, pose.position.y, pose.position.z);
+		if (m_importedAttackPose)
+		{
+					// ダウンロードクリップは独自のバインド・構え姿勢を基準に作られている。
+					// 絶対回転を対象モデルの初期姿勢へ直接適用すると、1フレーム目が
+					// Tポーズへ跳ねるため、最初のキーを基準にして差分だけを
+					// 現在の戦闘構えへ重ねる。
+			const Matrix4x4 sourceStart = MotionKeyToMatrix(keys.front());
+			const Matrix4x4 sourceDelta = localPose * sourceStart.Invert();
+			const auto guard = m_idlePose.find(boneName);
+			rotations[boneName] = sourceDelta *
+				(guard != m_idlePose.end() ? guard->second : Matrix4x4::Identity);
+		}
+		else
+		{
+			rotations[boneName] = localPose;
+		}
 	}
 }
 
@@ -677,6 +1885,10 @@ bool CCharacterAnimator::LoadMotion(const std::string& filename)
 	std::string currentBone;
 	std::unordered_map<std::string, BoneKeys> loadedKeys;
 	float loadedDuration = 1.0f;
+	const bool isImportedSwordAttack =
+		filename.find("sword_shield_") != std::string::npos &&
+		filename.find("_safe") == std::string::npos &&
+		filename.find("idle") == std::string::npos;
 	while (file >> token)
 	{
 		if (token == "DX11_MOTION")
@@ -721,8 +1933,74 @@ bool CCharacterAnimator::LoadMotion(const std::string& filename)
 	}
 
 	for (auto& [name, keys] : loadedKeys)
+	{
 		SortKeys(keys);
+		for (auto& key : keys)
+		{
+			const auto finite = [](float value) { return std::isfinite(value); };
+			if (!finite(key.time) ||
+				!finite(key.rotation.x) || !finite(key.rotation.y) || !finite(key.rotation.z) ||
+				!finite(key.position.x) || !finite(key.position.y) || !finite(key.position.z) ||
+				!finite(key.scale.x) || !finite(key.scale.y) || !finite(key.scale.z))
+			{
+				key.time = 0.0f;
+				key.rotation = Vector3(0.0f, 0.0f, 0.0f);
+				key.position = Vector3(0.0f, 0.0f, 0.0f);
+				key.scale = Vector3(1.0f, 1.0f, 1.0f);
+			}
+			if (isImportedSwordAttack)
+			{
+				const std::string normalized = NormalizeBoneName(name);
+				// 元パックはバインド姿勢が異なるため、腕の大きな軌道は活かしつつ
+				// 胴体の回転範囲を制限し、誤ったキーで全身が180度折れないようにする。
+				if (normalized.find("spine") != std::string::npos)
+				{
+					key.rotation.x = std::clamp(key.rotation.x, -1.20f, 1.20f);
+					key.rotation.y = std::clamp(key.rotation.y, -1.20f, 1.20f);
+					key.rotation.z = std::clamp(key.rotation.z, -0.90f, 0.90f);
+				}
+				else if (normalized.find("shoulder") != std::string::npos)
+				{
+					key.rotation.x = std::clamp(key.rotation.x, -1.60f, 1.60f);
+					key.rotation.y = std::clamp(key.rotation.y, -1.60f, 1.60f);
+					key.rotation.z = std::clamp(key.rotation.z, -1.60f, 1.60f);
+				}
+				key.scale = Vector3(1.0f, 1.0f, 1.0f);
+				key.position = Vector3(0.0f, 0.0f, 0.0f);
+			}
+		}
+	}
+	if (isImportedSwordAttack)
+	{
+		// ダウンロードクリップは下半身のバインド姿勢が異なる。
+		// 太腿・脛・足首の回転を対象GLBへ直接適用すると脚が折れて揺れるため、
+		// 攻撃の体重移動だけを残し、接地した下半身は対象モデル側で管理する。
+		for (auto it = loadedKeys.begin(); it != loadedKeys.end();)
+		{
+			const std::string normalized = NormalizeBoneName(it->first);
+			const bool lowerBody =
+				normalized.find("hips") != std::string::npos ||
+				normalized.find("pelvis") != std::string::npos ||
+				normalized == "root" ||
+				normalized.find("upleg") != std::string::npos ||
+				normalized.find("thigh") != std::string::npos ||
+				normalized.find("leftleg") != std::string::npos ||
+				normalized.find("rightleg") != std::string::npos ||
+				normalized.find("lowerleg") != std::string::npos ||
+				normalized.find("calf") != std::string::npos ||
+				normalized.find("foot") != std::string::npos ||
+				normalized.find("ankle") != std::string::npos ||
+				normalized.find("toe") != std::string::npos;
+			if (lowerBody)
+				it = loadedKeys.erase(it);
+			else
+				++it;
+		}
+	}
 	m_motionKeys = std::move(loadedKeys);
+	m_importedAttackPose = isImportedSwordAttack;
+	if (isImportedSwordAttack)
+		StripAttackLowerBody();
 	m_motionDuration = std::max(loadedDuration, 0.01f);
 	m_motionTime = 0.0f;
 	m_motionPlaying = false;
@@ -735,7 +2013,10 @@ bool CCharacterAnimator::LoadMotion(const std::string& filename)
 			++m_motionMappedBoneCount;
 	}
 	if (m_motionMappedBoneCount == 0)
+	{
+		m_importedAttackPose = false;
 		BuildFallbackAttackMotion();
+	}
 	return true;
 }
 
@@ -772,15 +2053,17 @@ bool CCharacterAnimator::LoadIdlePose(const std::string& filename)
 				>> key.scale.x >> key.scale.y >> key.scale.z;
 			if (!captured[currentBone])
 			{
-				// The FBX idle clip contains absolute/root translation in its own
-				// importer units (for example Hips Y=-15).  The target GLB already
-				// owns the correct rest translations; copying those values here
-				// sinks the scaled character into the field and makes retargeting
-				// dependent on the source file's unit system.  Keep only the local
-				// pose rotation and let GameScene ground the rendered mesh from its
-				// actual vertex bounds.
+				// FBXアイドルには読み込み元単位の絶対・ルート移動（例：Hips Y=-15）が含まれる。
+				// 対象GLBは正しい初期位置を持っているため、これをコピーすると
+				// 倍率変更後のキャラクターが地面へ沈み、リターゲットが元データの単位系に
+				// 依存してしまう。ローカル回転だけを使い、実頂点の境界から接地させる。
 				key.position = Vector3(0.0f, 0.0f, 0.0f);
 				key.scale = Vector3(1.0f, 1.0f, 1.0f);
+				// 以前のアイドルデータはShield_jointのスケールを0にして盾を隠していた。
+				// このGLBでは同じ関節が兜の接続にも使われるため、関節は等倍のままにし、
+				// 盾のメッシュ部分だけを非表示にする。
+				if (NormalizeBoneName(currentBone).find("shield") != std::string::npos)
+					key.scale = Vector3(1.0f, 1.0f, 1.0f);
 				m_idlePose[currentBone] = MotionKeyToMatrix(key);
 				captured[currentBone] = true;
 			}
@@ -788,18 +2071,10 @@ bool CCharacterAnimator::LoadIdlePose(const std::string& filename)
 		else if (token == "endbone")
 			currentBone.clear();
 	}
-	// Keep the shield hidden for the current sword-only combat pass.  This is a
-	// render choice, not part of the character pose, and does not alter hand or
-	// finger transforms.
-	const auto shield = m_idlePose.find("mixamorig:Shield_joint");
-	if (shield != m_idlePose.end())
-		shield->second = Matrix4x4::CreateScale(0.0f, 0.0f, 0.0f);
-
-	// The downloaded idle clip leaves the right hand in an open/T-pose.  The
-	// sword is already skinned to Sword_joint, so only the hand fingers need a
-	// local curl to make the grip read correctly.  Curling each phalanx around
-	// its local X axis keeps the palm/wrist animation untouched and is inherited
-	// by every downloaded attack because m_idlePose is used as the attack base.
+	// ダウンロードしたアイドルでは右手が開いたTポーズになる。
+	// 剣はすでにSword_jointへスキニングされているため、握りを見せるには指だけを
+	// ローカルX軸で曲げればよい。手のひらと手首の動きを壊さず、
+	// m_idlePoseを攻撃の基準にする全クリップへこの握りを引き継ぐ。
 	const auto addGripCurl = [this](const char* finger, float proximal, float middle, float distal)
 	{
 		const float curls[] = { proximal, middle, distal };
@@ -812,7 +2087,7 @@ bool CCharacterAnimator::LoadIdlePose(const std::string& filename)
 				m_idlePose[resolved] = Matrix4x4::CreateRotationX(curls[segment - 1]);
 		}
 	};
-	// Negative X is the curl direction for this Mixamo hand's local axes.
+	// このMixamo手ボーンのローカル軸ではX負方向が握り込み方向になる。
 	addGripCurl("Index", -0.85f, -1.05f, -0.80f);
 	addGripCurl("Middle", -0.90f, -1.10f, -0.85f);
 	addGripCurl("Ring", -0.90f, -1.10f, -0.85f);
@@ -828,6 +2103,13 @@ void CCharacterAnimator::RenderMotionEditor()
 	ImGui::SetNextWindowPos(ImVec2(20.0f, 80.0f), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(420.0f, 760.0f), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Motion Editor");
+	if (!ImGui::GetIO().WantCaptureKeyboard && ImGui::GetIO().KeyCtrl)
+	{
+		if (ImGui::IsKeyPressed(ImGuiKey_Z))
+			UndoEditorChange();
+		if (ImGui::IsKeyPressed(ImGuiKey_Y))
+			RedoEditorChange();
+	}
 	ImGui::Text("攻撃モーション編集：ボーンを選び、時間ごとにポーズを登録します");
 	if (!m_motionChoices.empty())
 	{
@@ -867,6 +2149,74 @@ void CCharacterAnimator::RenderMotionEditor()
 	ImGui::SliderFloat("Duration", &m_motionDuration, 0.05f, 10.0f, "%.2f sec");
 	ImGui::SliderFloat("Timeline", &m_motionTime, 0.0f, m_motionDuration, "%.3f sec");
 
+	const float timelineWidth = std::max(ImGui::GetContentRegionAvail().x, 300.0f);
+	const float timelineHeight = 92.0f;
+	const ImVec2 timelinePos = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("MotionTimeline", ImVec2(timelineWidth, timelineHeight));
+	const bool timelineHovered = ImGui::IsItemHovered();
+	ImDrawList* timelineDraw = ImGui::GetWindowDrawList();
+	const float timelineLeft = timelinePos.x + 8.0f;
+	const float timelineRight = timelinePos.x + timelineWidth - 8.0f;
+	const float timelineTop = timelinePos.y + 8.0f;
+	const float timelineBottom = timelinePos.y + timelineHeight - 8.0f;
+	const float timelineSpan = std::max(m_motionDuration, 0.05f);
+	const auto timelineX = [timelineLeft, timelineRight, timelineSpan](float time) {
+		return timelineLeft + std::clamp(time / timelineSpan, 0.0f, 1.0f) * (timelineRight - timelineLeft);
+	};
+	timelineDraw->AddRectFilled(ImVec2(timelineLeft, timelineTop), ImVec2(timelineRight, timelineBottom), IM_COL32(25, 30, 38, 255), 4.0f);
+	for (int frame = 0; frame <= static_cast<int>(std::ceil(timelineSpan * 30.0f)); frame += 5)
+	{
+		const float time = static_cast<float>(frame) / 30.0f;
+		if (time > timelineSpan)
+			break;
+		const float x = timelineX(time);
+		timelineDraw->AddLine(ImVec2(x, timelineTop + 20.0f), ImVec2(x, timelineBottom), IM_COL32(75, 82, 95, 180), 1.0f);
+		timelineDraw->AddText(ImVec2(x + 2.0f, timelineTop + 2.0f), IM_COL32(170, 180, 195, 220), std::to_string(frame).c_str());
+	}
+	const auto selectedKeysIt = m_motionKeys.find(m_selectedBone);
+	if (selectedKeysIt != m_motionKeys.end())
+	{
+		for (const auto& key : selectedKeysIt->second)
+		{
+			const float x = timelineX(key.time);
+			const ImU32 color = std::abs(key.time - m_motionTime) < 0.02f
+				? IM_COL32(255, 215, 70, 255) : IM_COL32(75, 205, 240, 255);
+			timelineDraw->AddCircleFilled(ImVec2(x, timelineTop + 58.0f), 5.0f, color, 8);
+		}
+	}
+	const float currentX = timelineX(m_motionTime);
+	timelineDraw->AddLine(ImVec2(currentX, timelineTop), ImVec2(currentX, timelineBottom), IM_COL32(255, 100, 80, 255), 2.0f);
+
+	const auto timelineTimeFromMouse = [&]() {
+		return std::clamp((ImGui::GetIO().MousePos.x - timelineLeft) / (timelineRight - timelineLeft) * timelineSpan, 0.0f, timelineSpan);
+	};
+	if (timelineHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+	{
+		const float clickedTime = timelineTimeFromMouse();
+		if (!SelectKeyAtTime(clickedTime))
+			m_motionTime = clickedTime;
+		else
+		{
+			m_timelineDragging = true;
+			m_timelineDragFrom = m_motionTime;
+			BeginEditTransaction();
+		}
+	}
+	if (timelineHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+		DeleteKeyAtTime(timelineTimeFromMouse());
+	if (m_timelineDragging && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+	{
+		const float newTime = timelineTimeFromMouse();
+		if (MoveSelectedKey(m_timelineDragFrom, newTime))
+			m_timelineDragFrom = newTime;
+	}
+	if (m_timelineDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+	{
+		m_timelineDragging = false;
+		EndEditTransaction();
+	}
+	ImGui::TextDisabled("Timeline: click to scrub / drag key / right-click key to delete");
+
 	if (ImGui::Button(m_motionPlaying ? "Pause" : "Play"))
 		m_motionPlaying = !m_motionPlaying;
 	ImGui::SameLine();
@@ -875,6 +2225,12 @@ void CCharacterAnimator::RenderMotionEditor()
 		m_motionPlaying = false;
 		m_motionTime = 0.0f;
 	}
+	ImGui::SameLine();
+	if (ImGui::Button("Undo") && CanUndoEditorChange())
+		UndoEditorChange();
+	ImGui::SameLine();
+	if (ImGui::Button("Redo") && CanRedoEditorChange())
+		RedoEditorChange();
 	ImGui::SameLine();
 	if (ImGui::Button("Add / Update Key"))
 		AddOrUpdateCurrentKey();
@@ -894,19 +2250,45 @@ void CCharacterAnimator::RenderMotionEditor()
 		ImGui::EndCombo();
 	}
 
+	MotionKeyframe editedKey = m_editorKey;
 	Vector3 degrees(
-		m_editorKey.rotation.x * 180.0f / PI,
-		m_editorKey.rotation.y * 180.0f / PI,
-		m_editorKey.rotation.z * 180.0f / PI);
+		editedKey.rotation.x * 180.0f / PI,
+		editedKey.rotation.y * 180.0f / PI,
+		editedKey.rotation.z * 180.0f / PI);
 	if (ImGui::InputFloat3("Rotation (degrees)", &degrees.x))
 	{
-		m_editorKey.rotation = Vector3(
+		editedKey.rotation = Vector3(
 			degrees.x * PI / 180.0f,
 			degrees.y * PI / 180.0f,
 			degrees.z * PI / 180.0f);
+		BeginEditTransaction();
+		PreviewEditorKey(editedKey);
 	}
-	ImGui::InputFloat3("Position", &m_editorKey.position.x);
-	ImGui::InputFloat3("Scale", &m_editorKey.scale.x);
+	if (ImGui::IsItemActivated())
+		BeginEditTransaction();
+	if (ImGui::IsItemDeactivatedAfterEdit())
+		EndEditTransaction();
+	if (ImGui::InputFloat3("Position", &editedKey.position.x))
+	{
+		BeginEditTransaction();
+		PreviewEditorKey(editedKey);
+	}
+	if (ImGui::IsItemActivated())
+		BeginEditTransaction();
+	if (ImGui::IsItemDeactivatedAfterEdit())
+		EndEditTransaction();
+	if (ImGui::InputFloat3("Scale", &editedKey.scale.x))
+	{
+		editedKey.scale.x = std::max(editedKey.scale.x, 0.01f);
+		editedKey.scale.y = std::max(editedKey.scale.y, 0.01f);
+		editedKey.scale.z = std::max(editedKey.scale.z, 0.01f);
+		BeginEditTransaction();
+		PreviewEditorKey(editedKey);
+	}
+	if (ImGui::IsItemActivated())
+		BeginEditTransaction();
+	if (ImGui::IsItemDeactivatedAfterEdit())
+		EndEditTransaction();
 
 	const auto keyIt = m_motionKeys.find(m_selectedBone);
 	const size_t keyCount = keyIt == m_motionKeys.end() ? 0 : keyIt->second.size();
@@ -927,11 +2309,11 @@ void CCharacterAnimator::RenderMotionEditor()
 	}
 	if (ImGui::Button("Delete Key At Timeline") && keyIt != m_motionKeys.end())
 	{
-		BoneKeys& keys = m_motionKeys[m_selectedBone];
-		keys.erase(std::remove_if(keys.begin(), keys.end(), [this](const MotionKeyframe& key) {
-			return std::abs(key.time - m_motionTime) < 0.001f;
-		}), keys.end());
+		DeleteKeyAtTime(m_motionTime);
 	}
+	ImGui::SameLine();
+	if (ImGui::Button("Duplicate Key"))
+		DuplicateKeyAtTime(m_motionTime);
 	if (ImGui::Button("Save Motion"))
 		SaveMotion(m_motionFilename);
 	ImGui::SameLine();

@@ -57,6 +57,11 @@ void Box::Draw(Matrix4x4 mtx, Color col) {
      BoxDrawerDraw(mtx, col);
 }
 
+void Box::DrawUnlit(SRT srt, Color col) {
+     srt.scale = Vector3(m_width, m_height, m_depth);
+     BoxDrawerDrawUnlit(srt, col);
+}
+
 void Cylinder::Draw(SRT srt, Color col) {
      srt.scale = Vector3(m_radius, m_height, m_radius);
      CylinderDrawerDraw(srt, col);

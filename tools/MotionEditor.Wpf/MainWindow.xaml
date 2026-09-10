@@ -1,0 +1,205 @@
+<Window x:Class="DX11MotionEditor.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="DX11 Motion Editor"
+    Width="1500" Height="920" MinWidth="1100" MinHeight="700"
+    Background="#16191E"
+    Foreground="#E8EDF3"
+    WindowStartupLocation="CenterScreen">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="ファイル">
+                <MenuItem Header="開く..." Click="OpenClick" />
+                <MenuItem Header="保存" Click="SaveClick" />
+                <MenuItem Header="名前を付けて保存..." Click="SaveAsClick" />
+                <Separator />
+                <MenuItem Header="終了" Click="ExitClick" />
+            </MenuItem>
+            <MenuItem Header="編集">
+                <MenuItem Header="Undo" Click="UndoClick" />
+                <MenuItem Header="Redo" Click="RedoClick" />
+                <Separator />
+                <MenuItem Header="キーを追加 / 更新" Click="AddKeyClick" />
+                <MenuItem Header="現在のキーを削除" Click="DeleteKeyClick" />
+                <MenuItem Header="現在のキーを複製" Click="DuplicateKeyClick" />
+            </MenuItem>
+            <MenuItem Header="再生">
+                <MenuItem x:Name="PlayMenuItem" Header="再生 / 一時停止" Click="PlayClick" />
+                <MenuItem Header="先頭へ" Click="StopClick" />
+            </MenuItem>
+        </Menu>
+
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusText" Text="準備中" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock x:Name="FileStatusText" />
+            </StatusBarItem>
+        </StatusBar>
+
+        <Grid Margin="6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="235" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="295" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="190" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="190" />
+            </Grid.RowDefinitions>
+
+            <GroupBox Grid.Row="0" Grid.RowSpan="2" Grid.Column="0" Header="モーションファイル">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Center">
+                        <Button Content="再読込" Click="ReloadFilesClick" />
+                        <Button Content="開く..." Click="OpenClick" />
+                    </StackPanel>
+                    <ListBox x:Name="MotionFilesList" SelectionChanged="MotionFileSelectionChanged" />
+                </DockPanel>
+            </GroupBox>
+
+            <GroupBox Grid.Row="2" Grid.Column="0" Header="ボーン">
+                <ListBox x:Name="BonesList" SelectionChanged="BoneSelectionChanged" />
+            </GroupBox>
+
+            <Grid Grid.Row="0" Grid.RowSpan="3" Grid.Column="1" Margin="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="190" />
+                </Grid.RowDefinitions>
+                <DockPanel Grid.Row="0" Margin="3">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Undo" Click="UndoClick" />
+                        <Button Content="Redo" Click="RedoClick" />
+                        <Button Content="保存" Click="SaveClick" />
+                    </StackPanel>
+                    <TextBlock x:Name="CurrentMotionText" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
+                </DockPanel>
+                <Border Grid.Row="1" Background="#1D2229" BorderBrush="#3B4552" BorderThickness="1" CornerRadius="3" Margin="3">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0" Margin="8,6,8,2">
+                            <TextBlock Text="簡易ポーズプレビュー" FontWeight="SemiBold" />
+                            <TextBlock DockPanel.Dock="Right" Text="選択ボーンをドラッグ：回転 / 移動 / 拡縮" Foreground="#9BA8B8" />
+                        </DockPanel>
+                        <Grid Grid.Row="1" Background="#14171B">
+                            <Viewport3D x:Name="PoseViewport" ClipToBounds="True" Focusable="True"
+                                MouseDown="PoseViewportMouseDown"
+                                MouseMove="PoseViewportMouseMove"
+                                MouseUp="PoseViewportMouseUp"
+                                MouseWheel="PoseViewportMouseWheel"
+                                SizeChanged="PoseViewportSizeChanged">
+                                <Viewport3D.Camera>
+                                    <PerspectiveCamera x:Name="PoseCamera"
+                                        Position="0,1,5.5"
+                                        LookDirection="0,-0.5,-5.5"
+                                        UpDirection="0,1,0"
+                                        NearPlaneDistance="0.001"
+                                        FarPlaneDistance="100"
+                                        FieldOfView="42" />
+                                </Viewport3D.Camera>
+                                <ModelVisual3D>
+                                    <ModelVisual3D.Content>
+                                        <Model3DGroup x:Name="PoseWorld" />
+                                    </ModelVisual3D.Content>
+                                </ModelVisual3D>
+                            </Viewport3D>
+                            <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
+                                Background="#CC14171B" BorderBrush="#4B5968" BorderThickness="1"
+                                Padding="8" IsHitTestVisible="False">
+                                <StackPanel>
+                                    <TextBlock Text="3Dプレビュー" FontWeight="SemiBold" />
+                                    <TextBlock Text="空白で左ドラッグ・中ドラッグ: 回転 / 右ドラッグ: 移動 / ホイール: 拡大縮小"
+                                        Foreground="#B7C3D0" FontSize="11" />
+                                    <TextBlock Text="Shift+左ドラッグ: 選択ボーン操作 / Alt+左ドラッグ: 回転"
+                                        Foreground="#B7C3D0" FontSize="11" />
+                                    <CheckBox x:Name="ShowSkeletonCheckBox" Content="編集用スケルトン表示"
+                                        Foreground="#D8E0EA" IsChecked="False" Click="ShowSkeletonClick" />
+                                </StackPanel>
+                            </Border>
+                            <StackPanel HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10">
+                                <Button Content="モデル読込" Padding="8,3" Click="OpenModelClick" />
+                                <Button Content="視点リセット" Margin="0,4,0,0" Padding="8,3" Click="ResetViewClick" />
+                            </StackPanel>
+                            <TextBlock x:Name="ModelStatusText" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                Margin="10" Foreground="#B7C3D0" FontSize="11" IsHitTestVisible="False" />
+                        </Grid>
+                    </Grid>
+                </Border>
+                <GroupBox Grid.Row="2" Header="タイムライン">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Canvas x:Name="TimelineCanvas" Grid.Row="0" Background="#20242B"
+                            MouseLeftButtonDown="TimelineMouseDown"
+                            MouseMove="TimelineMouseMove"
+                            MouseLeftButtonUp="TimelineMouseUp"
+                            MouseRightButtonDown="TimelineRightMouseDown"
+                            SizeChanged="TimelineSizeChanged" />
+                        <DockPanel Grid.Row="1" Margin="3,2,3,0">
+                            <CheckBox x:Name="LoopCheckBox" Content="ループ" IsChecked="True" VerticalAlignment="Center" />
+                            <Button Content="再生 / 一時停止" Click="PlayClick" />
+                            <Button Content="停止" Click="StopClick" />
+                            <TextBlock Text="時間" VerticalAlignment="Center" Margin="12,0,3,0" />
+                            <Slider x:Name="TimeSlider" Minimum="0" Maximum="1" Width="220" ValueChanged="TimeSliderChanged" />
+                            <TextBlock x:Name="TimeText" Width="150" VerticalAlignment="Center" Margin="8,0,0,0" />
+                        </DockPanel>
+                    </Grid>
+                </GroupBox>
+            </Grid>
+
+            <ScrollViewer Grid.Row="0" Grid.RowSpan="3" Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <GroupBox Header="キー編集">
+                        <StackPanel>
+                            <TextBlock x:Name="SelectedBoneText" Text="ボーン未選択" FontWeight="SemiBold" Margin="3" />
+                            <TextBlock Text="回転（度）" Margin="3,10,3,0" Foreground="#9BA8B8" />
+                            <UniformGrid Columns="3">
+                                <TextBox x:Name="RotationXBox" Tag="rx" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="RotationYBox" Tag="ry" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="RotationZBox" Tag="rz" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                            </UniformGrid>
+                            <TextBlock Text="移動" Margin="3,6,3,0" Foreground="#9BA8B8" />
+                            <UniformGrid Columns="3">
+                                <TextBox x:Name="PositionXBox" Tag="px" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="PositionYBox" Tag="py" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="PositionZBox" Tag="pz" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                            </UniformGrid>
+                            <TextBlock Text="拡縮" Margin="3,6,3,0" Foreground="#9BA8B8" />
+                            <UniformGrid Columns="3">
+                                <TextBox x:Name="ScaleXBox" Tag="sx" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="ScaleYBox" Tag="sy" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                                <TextBox x:Name="ScaleZBox" Tag="sz" TextChanged="NumericFieldChanged" GotKeyboardFocus="BeginFieldEdit" LostKeyboardFocus="EndFieldEdit" />
+                            </UniformGrid>
+                            <StackPanel Orientation="Horizontal" Margin="3,8,3,0">
+                                <RadioButton Content="回転" IsChecked="True" GroupName="Gizmo" Tag="0" Checked="GizmoModeChanged" Margin="3" />
+                                <RadioButton Content="移動" GroupName="Gizmo" Tag="1" Checked="GizmoModeChanged" Margin="3" />
+                                <RadioButton Content="拡縮" GroupName="Gizmo" Tag="2" Checked="GizmoModeChanged" Margin="3" />
+                            </StackPanel>
+                            <CheckBox x:Name="AutoSaveCheckBox" Content="編集時に自動保存" IsChecked="True" Margin="5" />
+                        </StackPanel>
+                    </GroupBox>
+                    <GroupBox Header="キー操作">
+                        <StackPanel>
+                            <Button Content="キーを追加 / 更新" Click="AddKeyClick" />
+                            <Button Content="現在のキーを削除" Click="DeleteKeyClick" />
+                            <Button Content="現在のキーを複製" Click="DuplicateKeyClick" />
+                            <Button Content="Undo" Click="UndoClick" />
+                            <Button Content="Redo" Click="RedoClick" />
+                        </StackPanel>
+                    </GroupBox>
+                    <TextBlock Text="数値は入力中に即時反映されます。タイムラインのキーはドラッグで移動、右クリックで削除できます。" TextWrapping="Wrap" Foreground="#9BA8B8" Margin="8" />
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -32,13 +32,14 @@ private:
 
 	float m_cameraYaw = 0.0f;
 	float m_cameraPitch = 0.08f;
-	// The editor preview uses the GLB's native units (about 2.9 units tall),
-	// unlike GameScene where the player is scaled up to 10. Keep the preview
-	// camera close enough to inspect hands and feet immediately.
+	// エディターのプレビューはGLB本来の単位（高さ約2.9）を使用する。
+	// ゲームシーンではプレイヤーを10倍にしているため、同じ倍率にはしない。
+	// 手足をすぐ確認できるよう、プレビューカメラはモデルへ近づけておく。
 	float m_cameraDistance = 6.0f;
 	float m_cameraTargetHeight = 1.45f;
 	std::unordered_map<std::string, Vector3> m_boneScreenPositions;
 	bool m_draggingBone = false;
+	int m_gizmoAxis = -1; // 0=X, 1=Y, 2=Z
 	int m_gizmoMode = 0; // 0 rotate, 1 move, 2 scale
 	bool m_showBoneMarkers = false;
 };

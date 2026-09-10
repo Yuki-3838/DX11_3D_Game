@@ -1,8 +1,10 @@
 #include "ResultScene.h"
 
 #include "../Application.h"
+#include "../system/DebugUI.h"
 #include "../system/GameFlow.h"
 #include "../system/Inputmanager.h"
+#include "../system/SoundManager.h"
 #include "../system/imgui/imgui.h"
 #include <dinput.h>
 
@@ -48,5 +50,12 @@ void ResultScene::draw(uint64_t)
     ImGui::End();
 }
 
-void ResultScene::init() {}
+void ResultScene::init()
+{
+    // リザルト画面では戦闘中のデバッグ表示を出さず、マウス操作を有効にする。
+    DebugUI::SetVisible(false);
+    DebugUI::SetCursorVisible(true);
+    SoundManager::StopBgm();
+}
+
 void ResultScene::dispose() {}

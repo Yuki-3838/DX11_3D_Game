@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "gameobject.h"
+#include "../system/CombatAttackTable.h"
 
 class player;
 
@@ -11,35 +12,33 @@ public:
 	// 攻撃前に止まり、攻撃後に長く止まることで、プレイヤーが差し込める隙を作る。
 	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat };
 
-	enemy(IScene* scene) : gameobject(scene) {}
+	explicit enemy(IScene* scene);
 
 	void update(uint64_t delta) override;
 	void draw(uint64_t delta) override;
 	void init() override;
 	void dispose() override;
 
-	void setTarget(player* target) { m_target = target; }
-	Vector3 getVel() const { return m_move; }
-	void setVel(const Vector3& vel) { m_move = vel; }
+	void setTarget(player* target);
+	Vector3 getVel() const;
+	void setVel(const Vector3& vel);
 
-	MotionState getMotionState() const { return m_motionState; }
+	MotionState getMotionState() const;
+	void resetEncounter();
 	const char* getMotionStateName() const;
-	bool isInRecovery() const { return m_motionState == MotionState::Recovery; }
-	float getStateTime() const { return m_stateTime; }
-	SRT getRenderSRT() const
-	{
-		SRT renderSrt = m_srt;
-		// The gameplay heading is correct, but the asset presents its back
-		// The imported dragon is authored in a steep pose; pitch the visual pose
-		// so its head/body read correctly from the third-person camera.
-		renderSrt.rot.x += PI * 0.5f;
-		renderSrt.pos.y += m_visualGroundOffsetY;
-		return renderSrt;
-	}
-	void setVisualGroundOffsetY(float offsetY) { m_visualGroundOffsetY = offsetY; }
+	bool isInRecovery() const;
+	float getStateTime() const;
+	SRT getRenderSRT() const;
+	void setVisualGroundOffsetY(float offsetY);
+
+	// 現在選択中の攻撃。戦闘判定(OneVsOneCombat)とHUDが同じものを参照することで、
+	// 「見えている予兆」と「実際に来る攻撃」が必ず一致する。
+	Combat::EnemyAttackKind getAttackKind() const;
+	const Combat::AttackData& getAttackData() const;
 
 private:
 	void changeState(MotionState nextState);
+	void selectNextAttack(float distance);
 	float distanceToTarget(const Vector3& targetPosition) const;
 	float angleToTarget(const Vector3& targetPosition) const;
 	void faceTarget(const Vector3& targetPosition, float deltaSec, float turnRate);
@@ -51,9 +50,14 @@ private:
 	static constexpr float APPROACH_SPEED = 84.0f;
 	static constexpr float CIRCLE_SPEED = 56.0f;
 	static constexpr float RETREAT_SPEED = 98.0f;
-	static constexpr float WINDUP_SECONDS = 0.80f;
-	static constexpr float ACTIVE_SECONDS = 0.90f;
-	static constexpr float RECOVERY_SECONDS = 1.35f;
+	// 攻撃の時間は system/CombatAttackTable.h が定義元。
+	// 攻撃の種類ごとに長さが変わるため、固定値ではなく
+	// 選択中の攻撃データ(m_attackKind)から都度取得する。
+	// 戦闘判定(OneVsOneCombat)も同じデータを参照するため、
+	// 見た目の予備動作と実際の攻撃判定が必ず一致する。
+	float windupSeconds() const;
+	float activeSeconds() const;
+	float recoverySeconds() const;
 	static constexpr float RETREAT_SECONDS = 0.22f;
 	static constexpr float MIN_CIRCLE_SECONDS = 0.55f;
 	static constexpr float MAX_CIRCLE_SECONDS = 1.40f;
@@ -66,4 +70,8 @@ private:
 	float m_stateTime = 0.0f;
 	float m_circleDirection = 1.0f;
 	float m_visualGroundOffsetY = 0.0f;
+	Combat::EnemyAttackKind m_attackKind = Combat::EnemyAttackKind::Slam;
+	// 同じ攻撃が続けて出ると読み合いにならないため、直前に使った攻撃を覚えておく。
+	Combat::EnemyAttackKind m_previousAttackKind = Combat::EnemyAttackKind::Slam;
+	int m_attackSelectCounter = 0;
 };

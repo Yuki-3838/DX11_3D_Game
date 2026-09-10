@@ -7,6 +7,56 @@
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"	
 
+player::player(IScene* scene)
+	: gameobject(scene)
+{
+}
+
+Vector3 player::getVel() const
+{
+	return m_move;
+}
+
+Vector3 player::getPos() const
+{
+	return m_srt.pos;
+}
+
+void player::setVisualGroundOffsetY(float offsetY)
+{
+	m_visualGroundOffsetY = offsetY;
+}
+
+player::MotionState player::getMotionState() const
+{
+	return m_motionState;
+}
+
+float player::getMotionTime() const
+{
+	return m_motionTime;
+}
+
+bool player::isDodging() const
+{
+	return m_isDodging;
+}
+
+bool player::isInvincible() const
+{
+	return m_isDodging;
+}
+
+int player::getDodgeFrame() const
+{
+	return static_cast<int>(m_dodgeTime * 60.0f);
+}
+
+void player::setVel(const Vector3& vel)
+{
+	m_move = vel;
+}
+
 void player::init() {
 
 	m_srt.pos = Vector3(0, 0, 0);
@@ -23,6 +73,10 @@ void player::update(uint64_t dt, float cameraYaw) {
 }
 
 void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
+	update(dt, cameraYaw, movementLocked, false, false);
+}
+
+void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool sprinting, bool dodgeTriggered) {
 
 	auto& input = CInputManager::GetInstance();
 	const auto isMoveKeyPressed = [&input](int directInputKey, int virtualKey) {
@@ -34,13 +88,11 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	const bool moveBackward = !movementLocked && isMoveKeyPressed(DIK_S, 'S');
 	const bool moveLeft = !movementLocked && isMoveKeyPressed(DIK_A, 'A');
 	const bool moveRight = !movementLocked && isMoveKeyPressed(DIK_D, 'D');
-	const bool jumpDown = !movementLocked && isMoveKeyPressed(DIK_LSHIFT, VK_LSHIFT);
-	const bool jumpTriggered = jumpDown && !m_jumpWasPressed;
-	m_jumpWasPressed = jumpDown;
+	const bool jumpTriggered = false;
 	if (movementLocked)
 	{
-		// Attack animation owns the root pose. Cancel locomotion inertia on the
-		// very first attack frame so the character cannot slide while swinging.
+		// 攻撃中は攻撃アニメーションがルート姿勢を管理する。
+		// 攻撃開始フレームで移動の慣性を消し、剣を振りながら滑らないようにする。
 		m_move.x = 0.0f;
 		m_move.z = 0.0f;
 	}
@@ -48,6 +100,25 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
 	m_move.x = 0.0f;
 	m_move.z = 0.0f;
+	if (!m_isDodging && dodgeTriggered && !movementLocked && !m_isJumping)
+	{
+		m_isDodging = true;
+		m_dodgeTime = 0.0f;
+		m_dodgeDirection = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y));
+	}
+	if (m_isDodging)
+	{
+		m_dodgeTime += deltaSec;
+		m_motionState = MotionState::Dodge;
+		m_move = m_dodgeDirection * (180.0f * deltaSec);
+		if (m_dodgeTime >= 0.40f)
+		{
+			m_isDodging = false;
+			m_dodgeTime = 0.0f;
+		}
+		m_srt.pos += m_move;
+		return;
+	}
 	if (jumpTriggered && !m_isJumping)
 	{
 		m_jumpVelocity = 8.5f;
@@ -75,6 +146,10 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	{
 		m_motionState = MotionState::Jump;
 	}
+	else if (isMoving && sprinting)
+	{
+		m_motionState = MotionState::Run;
+	}
 	else if (isMoving)
 	{
 		m_motionState = MotionState::Walk;
@@ -83,7 +158,7 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	{
 		m_motionState = MotionState::Idle;
 	}
-	if (m_motionState == MotionState::Walk)
+	if (m_motionState == MotionState::Walk || m_motionState == MotionState::Run)
 	{
 		m_motionTime += deltaSec;
 	}
@@ -105,8 +180,9 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 		const float moveX = forwardX * normalizedForward + rightX * normalizedRight;
 		const float moveZ = forwardZ * normalizedForward + rightZ * normalizedRight;
 
-		m_move.x = moveX * VALUE_MOVE_MODEL * deltaSec;
-		m_move.z = moveZ * VALUE_MOVE_MODEL * deltaSec;
+		const float moveSpeed = sprinting ? VALUE_MOVE_MODEL * 1.65f : VALUE_MOVE_MODEL;
+		m_move.x = moveX * moveSpeed * deltaSec;
+		m_move.z = moveZ * moveSpeed * deltaSec;
 
 		// 移動方向へプレイヤーを滑らかに振り向かせる。
 		m_destrot.y = std::atan2(-moveX, -moveZ);
@@ -188,9 +264,9 @@ SRT player::getRenderSRT() const
 {
 	SRT renderSrt = m_srt;
 	renderSrt.pos.y += m_visualGroundOffsetY;
-	if (m_motionState == MotionState::Walk)
+	if (m_motionState == MotionState::Walk || m_motionState == MotionState::Run)
 	{
-		const float step = std::sinf(m_motionTime * 7.0f);
+		const float step = std::sinf(m_motionTime * (m_motionState == MotionState::Run ? 10.0f : 7.0f));
 		renderSrt.pos.y -= std::fabs(step) * 0.12f;
 	}
 	return renderSrt;
@@ -202,6 +278,10 @@ const char* player::getMotionStateName() const
 	{
 	case MotionState::Walk:
 		return "Walk";
+	case MotionState::Run:
+		return "Run";
+	case MotionState::Dodge:
+		return "Dodge";
 	case MotionState::Jump:
 		return "Jump";
 	default:
@@ -217,6 +297,9 @@ void player::resetMotion()
 	m_jumpVelocity = 0.0f;
 	m_jumpWasPressed = false;
 	m_isJumping = false;
+	m_isDodging = false;
+	m_dodgeTime = 0.0f;
+	m_dodgeDirection = Vector3(0, 0, 0);
 }
 
 void player::dispose() {

@@ -1,4 +1,5 @@
 #include	<iostream>
+#include <algorithm>
 #include	"CAnimationMeshBlender.h"
 #include    "transform.h"
 
@@ -9,7 +10,7 @@ void CAnimationMeshBlender::SetFromAnimation(
 {
 	m_fromblendstate.animatiodata = animatiodata;
 	m_fromblendstate.loop = loop;
-	m_fromblendstate.speed = speed;
+	m_fromblendstate.speed = std::max(speed, 0.0f);
 }
 
 void CAnimationMeshBlender::SetToAnimation(
@@ -19,20 +20,21 @@ void CAnimationMeshBlender::SetToAnimation(
 {
 	m_toblendstate.animatiodata = animatiodata;
 	m_toblendstate.loop = loop;
-	m_toblendstate.speed = speed;
+	m_toblendstate.speed = std::max(speed, 0.0f);
 }
 
-// ƒ[ƒJƒ‹ƒ|[ƒY‚ÌƒuƒŒƒ“ƒh
+// ãƒ­ãƒ¼ã‚«ãƒ«ãƒãƒ¼ã‚ºã®ãƒ–ãƒ¬ãƒ³ãƒ‰
 void CAnimationMeshBlender::BlendLocalPose(
     const std::unordered_map<std::string, SRTQ>& localposefrom,
     const std::unordered_map<std::string, SRTQ>& localposeto,
     float rate,
     std::unordered_map<std::string, SRTQ>& blendedlocalpose) {
 
+    rate = std::clamp(rate, 0.0f, 1.0f);
     blendedlocalpose.clear();
     blendedlocalpose.reserve(std::max(localposefrom.size(), localposeto.size()));
 
-    // 1) ‚Ü‚¸ toPose ‚ÌƒL[‚ğŠî€‚ÉƒuƒŒƒ“ƒhiÅIp¨‚É‘¶İ‚·‚éƒ{[ƒ“‚ğ—Dæj
+    // 1) ã¾ãš toPose ã®ã‚­ãƒ¼ã‚’åŸºæº–ã«ãƒ–ãƒ¬ãƒ³ãƒ‰ï¼ˆæœ€çµ‚å§¿å‹¢ã«å­˜åœ¨ã™ã‚‹ãƒœãƒ¼ãƒ³ã‚’å„ªå…ˆï¼‰
     for (const auto& [bone, toSrtq] : localposeto) {
         auto itFrom = localposefrom.find(bone);
         const SRTQ& fromSrtq = (itFrom != localposefrom.end()) ? itFrom->second : SRTQ();
@@ -45,9 +47,9 @@ void CAnimationMeshBlender::BlendLocalPose(
         blendedlocalpose.emplace(bone, blended);
     }
 
-    // 2) from ‚É‚Ì‚İ‘¶İ‚·‚éƒL[‚àæ‚è‚±‚Ú‚³‚È‚¢ito ‚É–³‚¢‚È‚ç to=Identity ‚Æ‚İ‚È‚·j
+    // 2) from ã«ã®ã¿å­˜åœ¨ã™ã‚‹ã‚­ãƒ¼ã‚‚å–ã‚Šã“ã¼ã•ãªã„ï¼ˆto ã«ç„¡ã„ãªã‚‰ to=Identity ã¨ã¿ãªã™ï¼‰
     for (const auto& [bone, fromSrtq] : localposefrom) {
-        if (blendedlocalpose.find(bone) != blendedlocalpose.end()) continue; // Šù‚Éˆ—Ï‚İ
+        if (blendedlocalpose.find(bone) != blendedlocalpose.end()) continue; // æ—¢ã«å‡¦ç†æ¸ˆã¿
         const SRTQ& toSrtq = SRTQ();
 
         SRTQ blended{};
@@ -61,11 +63,11 @@ void CAnimationMeshBlender::BlendLocalPose(
 
 void CAnimationMeshBlender::UpdateBlended(BoneCombMatrix& bonecombarray, int& CurrentFrame)
 {
-    // 1) Aƒ[ƒJƒ‹p¨ƒ}ƒbƒv‚ğ\’z
+    // 1) Aãƒ­ãƒ¼ã‚«ãƒ«å§¿å‹¢ãƒãƒƒãƒ—ã‚’æ§‹ç¯‰
     std::unordered_map<std::string, SRTQ> localposefrom;
     std::unordered_map<std::string, SRTQ> localposeto;
 
-    if (m_toblendstate.animatiodata != nullptr) {
+    if (m_fromblendstate.animatiodata != nullptr) {
         BuildLocalPoseMap(m_fromblendstate.animatiodata, CurrentFrame, localposefrom);
     }
 
@@ -73,13 +75,13 @@ void CAnimationMeshBlender::UpdateBlended(BoneCombMatrix& bonecombarray, int& Cu
         BuildLocalPoseMap(m_toblendstate.animatiodata, CurrentFrame, localposeto);
     }
 
-    // ƒuƒŒƒ“ƒh‚µ‚½ƒ[ƒJƒ‹ƒ|[ƒY‚ğ¶¬
+    // ãƒ–ãƒ¬ãƒ³ãƒ‰ã—ãŸãƒ­ãƒ¼ã‚«ãƒ«ãƒãƒ¼ã‚ºã‚’ç”Ÿæˆ
     std::unordered_map<std::string, SRTQ> blendedlocalpose;
     BlendLocalPose(localposefrom, localposeto, m_blendrate, blendedlocalpose);
 
-    // 2)@ƒOƒ[ƒoƒ‹ƒ|[ƒY‚ğ¶¬‚·‚é
+    // 2)ã€€ã‚°ãƒ­ãƒ¼ãƒãƒ«ãƒãƒ¼ã‚ºã‚’ç”Ÿæˆã™ã‚‹
     for (auto& [bonename, srtq] : blendedlocalpose) {
-        // ƒm[ƒh–¼‚©‚çƒ{[ƒ“«‘‚ğg‚Á‚Äassimp‚Ìƒ{[ƒ“î•ñ‚ğæ“¾
+        // ãƒãƒ¼ãƒ‰åã‹ã‚‰ãƒœãƒ¼ãƒ³è¾æ›¸ã‚’ä½¿ã£ã¦assimpã®ãƒœãƒ¼ãƒ³æƒ…å ±ã‚’å–å¾—
         BONE* bone = &m_BoneDictionary[bonename];
 
         Matrix4x4 scalemtx = Matrix4x4::CreateScale(srtq.scale);
@@ -89,10 +91,10 @@ void CAnimationMeshBlender::UpdateBlended(BoneCombMatrix& bonecombarray, int& Cu
         bone->AnimationMatrix = scalemtx * rotmtx * transmtx;
     }
 
-    // ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚ğ‚·‚×‚ÄÄ‹A‚ğg—p‚µ‚ÄXV‚·‚é
+    // ãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã‚’ã™ã¹ã¦å†å¸°ã‚’ä½¿ç”¨ã—ã¦æ›´æ–°ã™ã‚‹
     UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
 
-    // ƒ{[ƒ“ƒRƒ“ƒrƒl[ƒVƒ‡ƒ“s—ñ‚Ì”z—ñ‚ğƒZƒbƒg
+    // ãƒœãƒ¼ãƒ³ã‚³ãƒ³ãƒ“ãƒãƒ¼ã‚·ãƒ§ãƒ³è¡Œåˆ—ã®é…åˆ—ã‚’ã‚»ãƒƒãƒˆ
     for (const auto& bone : m_BoneDictionary)
     {
         bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] = bone.second.Matrix.Transpose();

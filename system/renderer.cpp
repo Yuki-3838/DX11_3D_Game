@@ -37,6 +37,27 @@ ComPtr<ID3D11BlendState> Renderer::m_BlendStateATC;
 
 LIGHT Renderer::m_Light;
 
+ComPtr<ID3D11Texture2D> Renderer::m_ShadowTexture;
+ComPtr<ID3D11DepthStencilView> Renderer::m_ShadowDSV;
+ComPtr<ID3D11ShaderResourceView> Renderer::m_ShadowSRV;
+ComPtr<ID3D11SamplerState> Renderer::m_ShadowSampler;
+ComPtr<ID3D11Buffer> Renderer::m_ShadowBuffer;
+ComPtr<ID3D11RasterizerState> Renderer::m_ShadowRasterizer;
+ComPtr<ID3D11Buffer> Renderer::m_TintBuffer;
+
+namespace
+{
+    // シェーダー側のcbuffer ShadowBuffer(b7)と対応させる。
+    struct SHADOWPARAM
+    {
+        Matrix4x4 LightViewProjection;
+        // x: シャドウマップ1テクセルのUVサイズ(PCFの参照間隔に使う)
+        // y: 影を有効にするか(1で有効)
+        // z, w: 予備
+        Vector4 Params;
+    };
+}
+
 //------------------------------------------------------------------------------
 // Renderer クラスの各関数の実装
 //------------------------------------------------------------------------------
@@ -230,6 +251,83 @@ void Renderer::Init()
     m_DeviceContext->VSSetConstantBuffers(4, 1, m_LightBuffer.GetAddressOf());
     m_DeviceContext->PSSetConstantBuffers(4, 1, m_LightBuffer.GetAddressOf());
 
+    // --- シャドウマップの生成 ---
+    // 深度を書き込み、かつシェーダーから読みたいので、テクスチャはTYPELESSで作り
+    // 深度ステンシルビュー(D32_FLOAT)とシェーダーリソースビュー(R32_FLOAT)を
+    // それぞれ別のフォーマットで張る。
+    D3D11_TEXTURE2D_DESC shadowTexDesc{};
+    shadowTexDesc.Width = SHADOW_MAP_SIZE;
+    shadowTexDesc.Height = SHADOW_MAP_SIZE;
+    shadowTexDesc.MipLevels = 1;
+    shadowTexDesc.ArraySize = 1;
+    shadowTexDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    shadowTexDesc.SampleDesc.Count = 1;
+    shadowTexDesc.Usage = D3D11_USAGE_DEFAULT;
+    shadowTexDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    m_Device->CreateTexture2D(&shadowTexDesc, nullptr, m_ShadowTexture.GetAddressOf());
+
+    D3D11_DEPTH_STENCIL_VIEW_DESC shadowDsvDesc{};
+    shadowDsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    shadowDsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    m_Device->CreateDepthStencilView(
+        m_ShadowTexture.Get(), &shadowDsvDesc, m_ShadowDSV.GetAddressOf());
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc{};
+    shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    shadowSrvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    shadowSrvDesc.Texture2D.MipLevels = 1;
+    m_Device->CreateShaderResourceView(
+        m_ShadowTexture.Get(), &shadowSrvDesc, m_ShadowSRV.GetAddressOf());
+
+    // 比較サンプラー。深度比較をハードウェアに行わせ、
+    // 4テクセルの結果を自動で補間させることで輪郭のジャギーを和らげる。
+    D3D11_SAMPLER_DESC shadowSamplerDesc{};
+    shadowSamplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    // 影マップの外側は「遮蔽なし」として扱いたいので、境界色1.0でクランプする。
+    shadowSamplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDesc.BorderColor[0] = 1.0f;
+    shadowSamplerDesc.BorderColor[1] = 1.0f;
+    shadowSamplerDesc.BorderColor[2] = 1.0f;
+    shadowSamplerDesc.BorderColor[3] = 1.0f;
+    shadowSamplerDesc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+    shadowSamplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    m_Device->CreateSamplerState(&shadowSamplerDesc, m_ShadowSampler.GetAddressOf());
+    m_DeviceContext->PSSetSamplers(1, 1, m_ShadowSampler.GetAddressOf());
+
+    // 影生成時だけ深度に傾斜バイアスを掛け、自分自身を影と誤判定する
+    // シャドウアクネ(縞模様)を防ぐ。
+    D3D11_RASTERIZER_DESC shadowRasterDesc{};
+    shadowRasterDesc.FillMode = D3D11_FILL_SOLID;
+    shadowRasterDesc.CullMode = D3D11_CULL_BACK;
+    shadowRasterDesc.DepthClipEnable = TRUE;
+    shadowRasterDesc.DepthBias = 2000;
+    shadowRasterDesc.SlopeScaledDepthBias = 2.0f;
+    shadowRasterDesc.DepthBiasClamp = 0.0f;
+    m_Device->CreateRasterizerState(&shadowRasterDesc, m_ShadowRasterizer.GetAddressOf());
+
+    bufferDesc.ByteWidth = sizeof(SHADOWPARAM);
+    m_Device->CreateBuffer(&bufferDesc, nullptr, m_ShadowBuffer.GetAddressOf());
+    m_DeviceContext->VSSetConstantBuffers(7, 1, m_ShadowBuffer.GetAddressOf());
+    m_DeviceContext->PSSetConstantBuffers(7, 1, m_ShadowBuffer.GetAddressOf());
+
+    // 影を使わないシーンでも未初期化の値を読まないよう、無効状態で初期化しておく。
+    SetLightViewProjection(Matrix4x4::Identity, false);
+
+    // キャラクターの色変化用。既定は無効(加算量0)。
+    bufferDesc.ByteWidth = sizeof(Vector4);
+    m_Device->CreateBuffer(&bufferDesc, nullptr, m_TintBuffer.GetAddressOf());
+    m_DeviceContext->VSSetConstantBuffers(8, 1, m_TintBuffer.GetAddressOf());
+    m_DeviceContext->PSSetConstantBuffers(8, 1, m_TintBuffer.GetAddressOf());
+    SetCharacterTint(Vector4(0.0f, 0.0f, 0.0f, 0.0f));
+}
+
+void Renderer::SetCharacterTint(const Vector4& color)
+{
+    if (!m_TintBuffer)
+        return;
+    m_DeviceContext->UpdateSubresource(m_TintBuffer.Get(), 0, nullptr, &color, 0, 0);
 }
 
 /**
@@ -284,7 +382,67 @@ void Renderer::Begin()
 void Renderer::End()
 {
     m_SwapChain->Present(1, 0);
-}void Renderer::RestoreMainRenderTarget()
+}
+
+void Renderer::BeginShadowPass()
+{
+    if (!m_ShadowDSV)
+        return;
+
+    // 影テクスチャがピクセルシェーダーへ割り当てられたままだと、
+    // 書き込み先としてバインドできない(同じリソースの読み書き衝突)。先に外す。
+    ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
+    m_DeviceContext->PSSetShaderResources(1, 1, nullSrv);
+
+    // 深度だけを書くのでレンダーターゲットは割り当てない。
+    ID3D11RenderTargetView* nullRtv[1] = { nullptr };
+    m_DeviceContext->OMSetRenderTargets(1, nullRtv, m_ShadowDSV.Get());
+    m_DeviceContext->ClearDepthStencilView(
+        m_ShadowDSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(SHADOW_MAP_SIZE);
+    viewport.Height = static_cast<float>(SHADOW_MAP_SIZE);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+    m_DeviceContext->RSSetViewports(1, &viewport);
+
+    if (m_ShadowRasterizer)
+        m_DeviceContext->RSSetState(m_ShadowRasterizer.Get());
+}
+
+void Renderer::EndShadowPass()
+{
+    RestoreMainRenderTarget();
+
+    // 影生成用に深度バイアス付きのラスタライザへ切り替えていたので、
+    // 通常の背面カリングへ戻す。戻し忘れると本描画全体にバイアスが掛かる。
+    DisableCulling(true);
+
+    // 書き込んだ深度を、本描画から参照できるようにt1へ割り当てる。
+    if (m_ShadowSRV)
+        m_DeviceContext->PSSetShaderResources(1, 1, m_ShadowSRV.GetAddressOf());
+}
+
+void Renderer::SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled)
+{
+    if (!m_ShadowBuffer)
+        return;
+
+    SHADOWPARAM param{};
+    // シェーダーへは転置して渡す(このプロジェクトの他の行列と同じ扱い)。
+    param.LightViewProjection = lightViewProjection.Transpose();
+    param.Params = Vector4(
+        1.0f / static_cast<float>(SHADOW_MAP_SIZE),
+        enabled ? 1.0f : 0.0f,
+        0.0f,
+        0.0f);
+    m_DeviceContext->UpdateSubresource(m_ShadowBuffer.Get(), 0, nullptr, &param, 0, 0);
+}
+
+void Renderer::RestoreMainRenderTarget()
 {
     ID3D11RenderTargetView* renderTarget = m_RenderTargetView.Get();
     m_DeviceContext->OMSetRenderTargets(1, &renderTarget, m_DepthStencilView.Get());

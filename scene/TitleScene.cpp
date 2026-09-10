@@ -4,12 +4,14 @@
 #include "../system/Inputmanager.h"
 #include "../system/CShader.h"
 #include "../system/DebugUI.h"
+#include "../system/SoundManager.h"
 #include "../system/meshmanager.h"
 #include "../system/imgui/imgui.h"
 
 #include <algorithm>
 #include <cmath>
 #include <dinput.h>
+#include <Windows.h>
 
 namespace
 {
@@ -57,21 +59,16 @@ void TitleScene::update(uint64_t deltatime)
         m_transitionSeconds += deltaSeconds;
 
         const Vector3 startingPosition(20.0f, 0.75f, 5.0f);
-        // Keep the approach lane in front of the table.  The old target was
-        // inside the right chair's footprint, which made the player visibly
-        // pass through the chair and table edge during the handoff.
+        // テーブルの手前を通る接近経路にする。
+        // 椅子の占有範囲を通らない位置へ目標地点を置き、受け渡し時に
+        // プレイヤーが椅子やテーブルを突き抜けて見えないようにする。
         const Vector3 contractPosition(10.0f, 0.75f, 4.5f);
-        // Finish drawing the sword before taking the first step.  The old
-        // route covered almost 56 world units in 1.9 seconds, so the player
-        // appeared to teleport between footsteps.  This shorter, slower lane
-        // keeps the walk readable while still taking the player out of frame.
-        // Continue beyond the camera's right edge so the character finishes
-        // the walk instead of being cut off at the edge of the frame.
+        // 剣を納めてから歩き始める。移動距離を短くして速度を抑えることで、
+        // 足運びが飛んで見えないようにする。
+        // 画面外まで歩かせ、画面端でキャラクターが途切れないようにする。
         const Vector3 exitPosition(50.0f, 0.75f, -42.0f);
-        // The walk clip advances along the character's local -Z axis.  Match
-        // the actor's yaw to the actual exit vector; the previous fixed yaw
-        // made the feet walk diagonally across the route, which looked like
-        // sideways sliding even though the position interpolation was straight.
+        // 歩きモーションの進行方向であるローカル-Z軸を退出方向へ合わせ、
+        // 移動補間の向きと足の向きがずれて横滑りに見えないようにする。
         const Vector3 exitDirection = exitPosition - contractPosition;
         const float walkHeading = std::atan2(-exitDirection.x, -exitDirection.z);
 
@@ -89,8 +86,7 @@ void TitleScene::update(uint64_t deltatime)
             const float progress = SmoothStep(
                 (m_transitionSeconds - kWalkStartSeconds) / kWalkDurationSeconds);
             m_playerSrt.pos = Lerp(contractPosition, exitPosition, progress);
-            // Keep the model's forward axis aligned with the direction of
-            // travel so each planted foot moves in the same direction.
+            // モデルの前方向を移動方向へ合わせ、接地した足が同じ方向へ進むようにする。
             m_playerSrt.rot.y = walkHeading;
         }
 
@@ -101,17 +97,16 @@ void TitleScene::update(uint64_t deltatime)
                 m_playerWalkAnimation != nullptr;
             if (useWalkAnimation)
             {
-                // The FBX clip is authored as a regular keyframe animation.
-                // Advance it at 30 fps while the title route moves at the
-                // slower cinematic walking speed.
+                // FBXのキーフレームを30fps相当で進める。
+                // タイトル演出の移動速度が遅くても歩きが速くなりすぎないようにする。
                 if ((m_playerWalkTick++ % 2) == 0)
                     ++m_playerWalkFrame;
             }
             const float reachAmount = SmoothStep((m_transitionSeconds - 0.42f) / 0.78f);
             const float sheatheAmount = SmoothStep(m_transitionSeconds / 0.45f);
             const float drawAmount = SmoothStep((m_transitionSeconds - 1.52f) / 0.72f);
-            // Keep the title-specific handoff pose on the upper body while
-            // the imported clip drives only the legs/feet during departure.
+            // 上半身はタイトル専用の受け渡し姿勢を維持し、退出時だけ
+            // 読み込んだ歩きモーションで脚と足を動かす。
             m_playerAnimator.UpdateTitleContractPose(
                 *m_playerAnimationMesh,
                 m_playerBoneComb,
@@ -123,7 +118,7 @@ void TitleScene::update(uint64_t deltatime)
                 m_playerWalkFrame);
         }
 
-        // Change scenes only after the actor has reached the off-screen exit.
+        // キャラクターが画面外へ出た後にゲームシーンへ切り替える。
         if (m_transitionSeconds >= kWalkStartSeconds + kWalkDurationSeconds + 0.15f)
         {
             GameFlow::RequestScene("GameScene");
@@ -140,9 +135,8 @@ void TitleScene::update(uint64_t deltatime)
 
 void TitleScene::DrawQuestDocument()
 {
-    // Place the contract on the near/right side of the table so the approach
-    // is a short, believable reach instead of dragging the paper through the
-    // whole tabletop.
+    // 契約書をテーブル手前右側へ置き、テーブル全体を横切らずに
+    // 自然な距離で手を伸ばせるようにする。
     const Vector3 tablePosition(4.5f, 17.2f, 8.0f);
     Vector3 handPosition(m_playerSrt.pos.x + 3.5f,
         m_playerSrt.pos.y + 16.0f,
@@ -153,15 +147,14 @@ void TitleScene::DrawQuestDocument()
         const auto handIt = bones.find("mixamorig:LeftHand");
         if (handIt != bones.end())
         {
-            // The debug bone matrix is in player-local space.  Use the actual
-            // animated free hand, including the title pose and player SRT, so
-            // the document cannot float beside or through the arm.
+            // デバッグ用ボーン行列はプレイヤーのローカル空間なので、
+            // タイトル姿勢とプレイヤーのSRTを合成した実際の手の位置を使う。
+            // これにより契約書が腕の横や内部に浮かないようにする。
             const Matrix4x4 handWorld = handIt->second * m_playerSrt.GetMatrix();
             handPosition = Vector3::Transform(
                 Vector3(0.0f, 0.10f, 0.04f), handWorld);
-            // Keep the hand position itself accurate; the clearance for the
-            // paper is applied below so the page can be held outside the arm
-            // without moving the hand target.
+            // 手の位置は正確なまま保持し、紙を腕の外側へ出すための余白だけを
+            // 後段で加える。手の目標位置自体は動かさない。
         }
     }
     const float takeProgress = m_starting
@@ -169,28 +162,22 @@ void TitleScene::DrawQuestDocument()
         : 0.0f;
 
     SRT document{};
-    // The contract lies flat on the table, then turns upright into the free
-    // hand.  Keeping the page nearly camera-facing makes the seal and writing
-    // read as a held document instead of an edge-on plank.
+    // 契約書はテーブル上では水平に置き、手へ渡すときに立てる。
+    // カメラに近い向きを保ち、紙が板の側面に見えないようにする。
     document.rot = Vector3(-1.57f * takeProgress,
         0.02f * takeProgress, 0.10f * takeProgress);
     const Matrix4x4 documentRotation = Matrix4x4::CreateFromYawPitchRoll(
         document.rot.y, document.rot.x, document.rot.z);
 
-    // Hold the document by the lower corner nearest the free hand.  The
-    // character's free hand is on screen-right, so the page extends inward
-    // across the front of the torso, like a hunter presenting a contract,
-    // instead of hanging beside the arm.  This local grip point is transformed
-    // with the page, guaranteeing that the hand remains on its corner while
-    // the character walks away.
+    // 自由な手に近い紙の下角を握り位置にする。
+    // 紙を胴体の前へ広げ、腕の横に垂れ下がらないようにする。
+    // 握り位置を紙のローカル座標で変換するため、歩行中も手と紙の角が一致する。
     const Vector3 localGripPoint(2.15f, 0.0f, -2.45f);
     Vector3 documentHandPosition = handPosition -
         Vector3::TransformNormal(localGripPoint, documentRotation);
-    // Keep a small camera-facing clearance while carrying.  Without this the
-    // hand anchor is inside the torso once the walk pose turns the character,
-    // so depth testing hides the page even though it still follows the hand.
-    // Keep the offset modest; the previous 5-unit correction made the page
-    // cover the whole character.
+    // 運搬中はカメラ側へ少しだけ離す。
+    // 歩行姿勢で手が胴体へ入り込んでも深度テストで紙が隠れないようにする。
+    // 補正量は小さくし、紙がキャラクター全体を覆わないようにする。
     documentHandPosition += Vector3(0.0f, 0.0f, -0.30f);
     Vector3 towardCamera = m_camera.GetPosition() - documentHandPosition;
     if (towardCamera.LengthSquared() > 0.0001f)
@@ -202,9 +189,8 @@ void TitleScene::DrawQuestDocument()
     const Matrix4x4 documentWorld = document.GetMatrix();
     m_questDocument.Draw(documentWorld, Color(0.95f, 0.80f, 0.52f, 1.0f));
 
-    // The band and seal are children of the paper transform.  Drawing them
-    // at world-space offsets was the reason they slid through the document
-    // as it tilted into the hand.
+    // 紐と封蝋は紙の子要素として紙の行列で描画する。
+    // ワールド座標の固定オフセットにすると、紙を傾けたときにずれるためである。
     const Matrix4x4 bandWorld =
         Matrix4x4::CreateTranslation(0.18f, 0.14f, 0.0f) * documentWorld;
     m_questDocumentBand.Draw(bandWorld, Color(0.31f, 0.07f, 0.05f, 1.0f));
@@ -295,9 +281,9 @@ void TitleScene::draw(uint64_t)
     chest.scale = Vector3(8.0f, 8.0f, 8.0f);
     DrawStaticMesh(m_guildChestRenderer, chest);
 
-    // A simple dark sheath makes the sword handoff readable even though the
-    // player asset keeps the sword embedded in its skinned mesh.  The title
-    // pose lowers the sword arm to this prop before drawing it again.
+    // プレイヤーモデル内の剣はスキニングメッシュに含まれているため、
+    // 受け渡しを分かりやすくする暗い鞘を別モデルとして描画する。
+    // タイトル姿勢では剣を持つ腕を鞘の位置まで下げる。
     SRT sheath{};
     sheath.pos = Vector3(m_playerSrt.pos.x - 2.7f, m_playerSrt.pos.y + 6.7f,
         m_playerSrt.pos.z + 0.7f);
@@ -305,9 +291,9 @@ void TitleScene::draw(uint64_t)
     sheath.scale = Vector3(0.78f, 0.62f, 0.78f);
     m_sheath.Draw(sheath, Color(0.12f, 0.035f, 0.018f, 1.0f));
 
-    // Draw the paper before the character.  The modest camera clearance keeps
-    // the page in front of the torso while depth testing lets the forearm and
-    // hand appear over its lower corner.
+    // 紙をキャラクターより先に描画する。
+    // 小さなカメラ側補正で胴体の前に紙を置き、前腕と手は深度テストで
+    // 紙の下角より手前に表示する。
     DrawQuestDocument();
 
     if (m_playerAnimationMesh)
@@ -327,80 +313,90 @@ void TitleScene::draw(uint64_t)
     const float w = viewport->WorkSize.x;
     const float h = viewport->WorkSize.y;
     const ImU32 gold = IM_COL32(224, 190, 128, 255);
-    const ImU32 cream = IM_COL32(247, 239, 224, 255);
-    const ImU32 dark = IM_COL32(13, 15, 21, 220);
 
+    // タイトル画面は3Dのギルド背景だけを残し、メニューはSTARTとENDに絞る。
     drawList->AddRectFilled(min, max, IM_COL32(7, 9, 15, 38));
 
-    const float logoSize = std::max(42.0f, w * 0.088f);
-    const char* logo = "DRAGON HUNT";
-    const ImVec2 logoPos(min.x + w * 0.27f, min.y + h * 0.055f);
-    for (const ImVec2& offset : { ImVec2(-3, -3), ImVec2(3, -3), ImVec2(-3, 3), ImVec2(3, 3) })
-        drawList->AddText(nullptr, logoSize, ImVec2(logoPos.x + offset.x, logoPos.y + offset.y), IM_COL32(35, 20, 23, 255), logo);
-    drawList->AddText(nullptr, logoSize, logoPos, cream, logo);
+    // タイトル画面の作品名を中央上部へ表示する。
+    // メニューの情報量は増やさず、作品名だけをタイトルとして見せる。
+    const char* gameTitle = "DragonHunt";
+    ImFont* titleFont = ImGui::GetFont();
+    const float titleFontSize = 56.0f;
+    const ImVec2 titleSize = titleFont->CalcTextSizeA(
+        titleFontSize, 1000.0f, 0.0f, gameTitle);
+    const ImVec2 titlePosition(
+        min.x + (w - titleSize.x) * 0.5f,
+        min.y + h * 0.12f);
+    drawList->AddText(
+        titleFont,
+        titleFontSize,
+        ImVec2(titlePosition.x + 2.0f, titlePosition.y + 3.0f),
+        IM_COL32(0, 0, 0, 180),
+        gameTitle);
+    drawList->AddText(
+        titleFont,
+        titleFontSize,
+        titlePosition,
+        gold,
+        gameTitle);
 
-    const float panelX = min.x + w * 0.035f;
-    const float panelY = min.y + h * 0.26f;
-    const float panelW = std::min(455.0f, w * 0.39f);
-    const float panelH = h * 0.54f;
-    drawList->AddRectFilled(ImVec2(panelX, panelY), ImVec2(panelX + panelW, panelY + panelH), dark, 8.0f);
-    drawList->AddRect(ImVec2(panelX, panelY), ImVec2(panelX + panelW, panelY + panelH), gold, 8.0f, 0, 2.0f);
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.026f), ImVec2(panelX + 24.0f, panelY + 22.0f), gold, "GUILD HALL // QUEST BOARD");
-    drawList->AddText(nullptr, std::max(30.0f, h * 0.050f), ImVec2(panelX + 24.0f, panelY + 67.0f), cream, "ANCIENT DRAGON");
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.025f), ImVec2(panelX + 24.0f, panelY + 118.0f), IM_COL32(204, 184, 160, 255), "HUNTING CONTRACT");
-    drawList->AddLine(ImVec2(panelX + 24.0f, panelY + 150.0f), ImVec2(panelX + panelW - 24.0f, panelY + 150.0f), IM_COL32(224, 190, 128, 120), 1.0f);
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.024f), ImVec2(panelX + 24.0f, panelY + 174.0f), cream, "A dragon has appeared beyond the guild walls.");
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.024f), ImVec2(panelX + 24.0f, panelY + 202.0f), cream, "Take the contract. Strike when it is open.");
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.024f), ImVec2(panelX + 24.0f, panelY + 252.0f), gold, "TARGET");
-    drawList->AddText(nullptr, std::max(18.0f, h * 0.026f), ImVec2(panelX + 112.0f, panelY + 250.0f), cream, "Ancient Dragon");
-    drawList->AddText(nullptr, std::max(17.0f, h * 0.024f), ImVec2(panelX + 24.0f, panelY + 282.0f), gold, "OBJECTIVE");
-    drawList->AddText(nullptr, std::max(18.0f, h * 0.026f), ImVec2(panelX + 112.0f, panelY + 280.0f), cream, "Exploit its openings");
+    const float buttonW = std::min(300.0f, w * 0.32f);
+    const float buttonH = 54.0f;
+    const float buttonGap = 18.0f;
+    const float menuX = min.x + (w - buttonW) * 0.5f;
+    const float menuY = min.y + h * 0.68f;
 
-    const float buttonX = panelX + 24.0f;
-    const float buttonY = panelY + panelH - 86.0f;
-    const float buttonW = panelW - 48.0f;
-    const float buttonH = 56.0f;
-    drawList->AddRectFilled(ImVec2(buttonX, buttonY), ImVec2(buttonX + buttonW, buttonY + buttonH), IM_COL32(108, 24, 17, 245), 4.0f);
-    drawList->AddRect(ImVec2(buttonX, buttonY), ImVec2(buttonX + buttonW, buttonY + buttonH), gold, 4.0f, 0, 2.0f);
-    drawList->AddText(nullptr, std::max(22.0f, h * 0.032f), ImVec2(buttonX + buttonW * 0.29f, buttonY + 13.0f), cream, "TAKE QUEST");
-    drawList->AddText(nullptr, std::max(16.0f, h * 0.022f), ImVec2(panelX + 24.0f, panelY + panelH + 18.0f), IM_COL32(204, 184, 160, 255), "ENTER / SPACE   ACCEPT CONTRACT");
-
-    ImGui::SetNextWindowPos(ImVec2(buttonX, buttonY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(buttonW, buttonH), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    if (ImGui::Begin("Guild Quest Start Hitbox", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings))
+    if (!m_starting)
     {
-        if (ImGui::InvisibleButton("Take Quest", ImVec2(buttonW, buttonH)))
+        const float menuHeight = buttonH * 2.0f + 66.0f;
+        ImGui::SetNextWindowPos(ImVec2(menuX, menuY), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(buttonW, menuHeight), ImGuiCond_Always);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.92f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.88f, 0.75f, 0.50f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.42f, 0.09f, 0.06f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.16f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.78f, 0.24f, 0.13f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 12.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 14.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 6.0f));
+        if (ImGui::Begin("Title Menu", nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings))
         {
-            StartTitleTransition(m_starting, m_transitionSeconds);
+            const float contentWidth = ImGui::GetContentRegionAvail().x;
+            if (ImGui::Button("START", ImVec2(contentWidth, buttonH)))
+                StartTitleTransition(m_starting, m_transitionSeconds);
+
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            const ImVec2 promptSize = ImGui::CalcTextSize("PRESS ENTER");
+            ImGui::SetCursorPosX((contentWidth - promptSize.x) * 0.5f + ImGui::GetStyle().WindowPadding.x);
+            ImGui::TextDisabled("PRESS ENTER");
+            ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.13f, 0.16f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.26f, 0.30f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.34f, 0.36f, 0.40f, 1.0f));
+            if (ImGui::Button("END", ImVec2(contentWidth, buttonH)))
+                PostQuitMessage(0);
+            ImGui::PopStyleColor(3);
         }
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(5);
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
 
     if (m_starting)
     {
         const float fadeProgress = SmoothStep((m_transitionSeconds - 4.40f) / 0.70f);
-        drawList->AddRectFilled(min, max, IM_COL32(0, 0, 0, static_cast<int>(fadeProgress * 235.0f)));
-        const char* status = m_transitionSeconds < 0.45f
-            ? "SHEATHING SWORD"
-            : (m_transitionSeconds < 1.50f
-                ? "TAKING CONTRACT"
-                : (m_transitionSeconds < 1.92f
-                    ? "DRAWING SWORD"
-                    : (m_transitionSeconds < kWalkStartSeconds
-                        ? "READY TO DEPART"
-                        : "LEAVING GUILD")));
-        drawList->AddText(nullptr, std::max(18.0f, h * 0.026f),
-            ImVec2(min.x + w * 0.5f - 120.0f, min.y + h * 0.84f),
-            IM_COL32(255, 240, 220, 240), status);
+        drawList->AddRectFilled(min, max,
+            IM_COL32(0, 0, 0, static_cast<int>(fadeProgress * 235.0f)));
     }
 }
 
 void TitleScene::init()
 {
+    DebugUI::SetCursorVisible(true);
+    SoundManager::PlayTitleBgm();
+
     auto shader = std::make_unique<CShader>();
     shader->Create("shader/vertexLightingVS.hlsl", "shader/vertexLightingPS.hlsl");
     ShaderManager::Register<CShader>("Shader3D", std::move(shader));
@@ -419,9 +415,8 @@ void TitleScene::init()
     m_playerAnimator.Initialize(*m_playerAnimationMesh);
     m_playerBoneComb.Create();
 
-    // Use the walk clip supplied for this character instead of synthesizing
-    // a lower-body stride.  Keep a second variant as a fallback because both
-    // files were supplied with this model pack.
+    // キャラクターに付属する歩きモーションを使用する。
+    // モデルパックには別名の候補もあるため、読み込み失敗時は2つ目を試す。
     const aiScene* walkScene = m_playerAnimationData.LoadAnimation(
         "assets/motion/sword and shield walk.fbx", "walk");
     if (walkScene == nullptr || walkScene->mNumAnimations == 0)
@@ -435,8 +430,8 @@ void TitleScene::init()
     m_playerSrt.scale = Vector3(18.0f, 18.0f, 18.0f);
     m_playerSrt.pos = Vector3(20.0f, 0.75f, 5.0f);
     m_playerSrt.rot.y = 0.46f;
-    // Start with the sword lowered at the player's side.  Pressing Start then
-    // visibly sheaths it before the contract handoff and redraws it on exit.
+    // 初期状態では剣をプレイヤーの脇へ下げる。
+    // START後に剣を納める動作を見せ、退出時に抜刀した状態へ戻す。
     m_playerAnimator.UpdateTitleContractPose(
         *m_playerAnimationMesh,
         m_playerBoneComb,

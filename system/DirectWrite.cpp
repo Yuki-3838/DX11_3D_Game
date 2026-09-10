@@ -325,7 +325,7 @@ HRESULT DirectWrite::CreateTextFormat()
         m_textFormat.GetAddressOf());
     if (FAILED(hr))
     {
-        // Fallback to a system font.
+        // 指定フォントが使えない場合はシステムフォントへ切り替える。
         hr = m_dwriteFactory->CreateTextFormat(
             L"Yu Gothic UI",
             nullptr,

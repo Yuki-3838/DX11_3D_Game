@@ -24,8 +24,8 @@
 #include <d2d1helper.h>
 #include <utility>
 
-// Link libraries are intentionally NOT placed in this header.
-// Add these to the .cpp file or project linker settings:
+// リンクライブラリはこのヘッダーへ直接記述しない。
+// 必要なライブラリはcppファイルまたはプロジェクトのリンカー設定へ追加する。
 //   d2d1.lib
 //   dwrite.lib
 
@@ -190,7 +190,7 @@ public:
 
     HRESULT GetAllFontFamilyName(IDWriteFontCollection* customFontCollection);
 
-    // Validates font files by trying to create IDWriteFontFile references.
+    // IDWriteFontFileの参照を作成してフォントファイルを検証する。
     HRESULT LoadFontFiles(const std::vector<std::wstring>& fontPaths);
 
     void ResetText();
@@ -205,7 +205,7 @@ public:
     int     AddFont(const std::wstring& fontPath);
     void    SetFontByName(const std::wstring& familyName, FontData setting);
 
-    // Kept public for compatibility with the existing code.
+    // 既存コードとの互換性のため、公開メンバーとして残している。
     Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection = nullptr;
 
 private:
