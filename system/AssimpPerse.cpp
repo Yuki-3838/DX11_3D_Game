@@ -9,7 +9,18 @@
 #include	"CTreeNode.h"
 #include	"utility.h"
 
+// Assimpはビルド構成でDLLを使い分ける。
+// Debug(mtd)はVisual Studioが入っているPCにしか無いデバッグ版CRT
+// (ucrtbased.dll / MSVCP140D.dll)へ依存するため、これを配布物に入れると
+// Visual Studioの無いPCでは起動できない。
+// Releaseは再頒布可能CRT(MSVCP140.dll)だけで動くRelease版Assimpを使う。
+// 実行時は同名のDLL(assimp-vc143-mtd.dll / assimp-vc142-mt.dll)が
+// 作業フォルダに必要になる。
+#ifdef _DEBUG
 #pragma comment(lib, "assimp-vc143-mtd.lib")
+#else
+#pragma comment(lib, "assimp-vc142-mt.lib")
+#endif
 
 namespace GM31 {namespace GE {namespace {}
 namespace myAssimp{

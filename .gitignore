@@ -380,3 +380,6 @@ docs/DX11_3D_Game_appeal_video.mp4
 docs/DX11_3D_Game_作品資料.pptx
 docs/DX11_3D_Game_作品資料.pptx.inspect.ndjson
 docs/DX11_3D_Game_作品資料/
+
+# MakeDistribution.bat が作る配布フォルダ
+dist/
