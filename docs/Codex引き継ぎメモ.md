@@ -378,6 +378,29 @@ Debug|x64ビルド成功、起動・プロセス応答確認済み。デバッ�
   ゲーム本体を起動せずコンボ1→2→3段の繋がりを確認できる。
 - 操作: WASD移動 / Space回避 / LShiftダッシュ / 左クリック通常攻撃 / 右クリック強攻撃 / TABロックオン / Rリセット
 
+## 7. 他のPCで動かすための決まり(2026-09-10 確認)
+
+- **クローン直後の状態でDebug|x64・Release|x64ともにビルドが通る**。実際にクローンして確認済み。
+  依存を足す変更をしたら、この状態を壊していないか同じ手順で確かめること。
+- **AssimpはDebugとReleaseで別のDLLをリンクしている**(`system/AssimpPerse.cpp`の`#ifdef _DEBUG`)。
+  - Debug: `assimp-vc143-mtd.lib` / `assimp-vc143-mtd.dll`
+  - Release: `assimp-vc142-mt.lib` / `assimp-vc142-mt.dll`
+  - 理由: デバッグ版Assimpは`ucrtbased.dll` / `MSVCP140D.dll`という**デバッグ版CRT**へ依存する。
+    これはVisual Studioが入っているPCにしか無く、再頒布も許可されていない。
+    **Debug構成のビルドは絶対に配布しないこと**。
+- **配布物を作るときは `MakeDistribution.bat`**。Release|x64をビルドし、
+  実行ファイル・リリース版AssimpのDLL・`shader`・`assets`を`dist`へまとめる。
+  - `dist`は約695MB。`assets`を丸ごとコピーしているため。減らすなら実際に読むモデルだけに絞る。
+  - このバッチは**CP932(Shift-JIS)で保存すること**。UTF-8で保存すると`cmd`が行を壊し、
+    「'…' is not recognized as an internal or external command」が並ぶ。
+- **依存を疑うときは `dumpbin /dependents` を使う**。コードや資料の記述ではなく実物を見る。
+  末尾が`D.dll`(`MSVCP140D.dll`, `VCRUNTIME140D.dll`, `ucrtbased.dll`)ならデバッグ版CRT依存。
+- `third_party/DirectXTK/lib`(約110MB)と`third_party/assimp/bin`は**意図的に追跡していない**。
+  DirectXTKは`SimpleMath`のヘッダしか使っておらず、`Matrix::Identity`等は
+  `system/SimpleMathIdentity.cpp`で自前定義しているため`DirectXTK.lib`はリンクしていない。
+  AssimpのDLLはリポジトリのルートにある。
+- ローカル専用の`dev_settings.ini` / `audio_settings.ini`と、`dist/`は`.gitignore`に入れてある。
+
 ### 2026-09-09 戦闘カメラ第一段階
 
 `system/ThirdPersonCamera.h/.cpp`と`scene/GameScene.h/.cpp`を更新した。
