@@ -4,64 +4,64 @@
 #include "transform.h"
 
 /**
- * @brief 3D}Œ`‚Ì’ŠÛŠî’êƒNƒ‰ƒX
+ * @brief 3Då›³å½¢ã®æŠ½è±¡åŸºåº•ã‚¯ãƒ©ã‚¹
  *
- * ‚·‚×‚Ä‚Ì3D}Œ`ƒNƒ‰ƒX‚Í‚±‚ÌƒNƒ‰ƒX‚ðŒp³‚µA•`‰æ‚âƒTƒCƒYÝ’è‚Ì‚½‚ß‚Ì
- * ƒCƒ“ƒ^[ƒtƒF[ƒX‚ðŽÀ‘•‚·‚é•K—v‚ª‚ ‚è‚Ü‚·B
+ * ã™ã¹ã¦ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹ã¯ã“ã®ã‚¯ãƒ©ã‚¹ã‚’ç¶™æ‰¿ã—ã€æç”»ã‚„ã‚µã‚¤ã‚ºè¨­å®šã®ãŸã‚ã®
+ * ã‚¤ãƒ³ã‚¿ãƒ¼ãƒ•ã‚§ãƒ¼ã‚¹ã‚’å®Ÿè£…ã™ã‚‹å¿…è¦ãŒã‚ã‚Šã¾ã™ã€‚
  */
 class C3DShape {
 protected:
-	static bool m_first;                // <-- ‰Šú‰»ƒtƒ‰ƒO
+	static bool m_first;                // <-- åˆæœŸåŒ–ãƒ•ãƒ©ã‚°
 public:
     /**
-     * @brief ƒRƒ“ƒXƒgƒ‰ƒNƒ^
+     * @brief ã‚³ãƒ³ã‚¹ãƒˆãƒ©ã‚¯ã‚¿
      */
     C3DShape();
 
     /**
-     * @brief ƒfƒXƒgƒ‰ƒNƒ^
+     * @brief ãƒ‡ã‚¹ãƒˆãƒ©ã‚¯ã‚¿
      */
     virtual ~C3DShape() {}
 
     /**
-     * @brief SRTiScale, Rotation, Translationj‚Å}Œ`‚ð•`‰æ
-     * @param srt ƒXƒP[ƒ‹E‰ñ“]E•½sˆÚ“®î•ñ
-     * @param col •`‰æF
+     * @brief SRTï¼ˆScale, Rotation, Translationï¼‰ã§å›³å½¢ã‚’æç”»
+     * @param srt ã‚¹ã‚±ãƒ¼ãƒ«ãƒ»å›žè»¢ãƒ»å¹³è¡Œç§»å‹•æƒ…å ±
+     * @param col æç”»è‰²
      */
     virtual void Draw(SRT srt, Color col) = 0;
 
     /**
-     * @brief s—ñ‚ðŽg—p‚µ‚Ä}Œ`‚ð•`‰æ
-     * @param mtx •`‰æ‚ÉŽg—p‚·‚é•ÏŠ·s—ñ
-     * @param col •`‰æF
+     * @brief è¡Œåˆ—ã‚’ä½¿ç”¨ã—ã¦å›³å½¢ã‚’æç”»
+     * @param mtx æç”»ã«ä½¿ç”¨ã™ã‚‹å¤‰æ›è¡Œåˆ—
+     * @param col æç”»è‰²
      */
     virtual void Draw(Matrix4x4 mtx, Color col) = 0;
 
     /**
-     * @brief }Œ`‚ÌƒTƒCƒY‚ðÝ’è
-     * @param radius ”¼Œa‚Ü‚½‚Í•
-     * @param height ‚‚³
-     * @param depth ‰œs‚«
+     * @brief å›³å½¢ã®ã‚µã‚¤ã‚ºã‚’è¨­å®š
+     * @param radius åŠå¾„ã¾ãŸã¯å¹…
+     * @param height é«˜ã•
+     * @param depth å¥¥è¡Œã
      */
     virtual void SetSize(float radius, float height, float depth) = 0;
 
     /**
-     * @brief }Œ`‚Ì–¼‘O‚ðŽæ“¾
-     * @return }Œ`‚Ì–¼‘O•¶Žš—ñ
+     * @brief å›³å½¢ã®åå‰ã‚’å–å¾—
+     * @return å›³å½¢ã®åå‰æ–‡å­—åˆ—
      */
     virtual std::string getName() const = 0;
 };
 
 /**
- * @brief ‹…‘Ì‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief çƒä½“ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Sphere : public C3DShape {
 private:
     float m_radius;
 public:
     /**
-        * @brief ƒRƒ“ƒXƒgƒ‰ƒNƒ^
-        * @param r ”¼Œa
+        * @brief ã‚³ãƒ³ã‚¹ãƒˆãƒ©ã‚¯ã‚¿
+        * @param r åŠå¾„
     */
     Sphere(float r) : m_radius(r) {}
 
@@ -69,8 +69,8 @@ public:
     void Draw(Matrix4x4 mtx, Color col) override;
 
     /**
-     * @brief ”¼Œa‚ðÝ’è
-    * @param r ”¼Œa
+     * @brief åŠå¾„ã‚’è¨­å®š
+    * @param r åŠå¾„
     */
 	void SetRadius(float r) {
 		m_radius = r;
@@ -86,12 +86,12 @@ public:
 };
 
 /**
- * @brief ‰~‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief å††éŒã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Cone : public C3DShape {
 private:
-    float m_radius; ///< ’ê–Ê‚Ì”¼Œa
-    float m_height; ///< ‚‚³
+    float m_radius; ///< åº•é¢ã®åŠå¾„
+    float m_height; ///< é«˜ã•
 public:
     Cone(float r, float h) : m_radius(r), m_height(h) {}
 
@@ -109,7 +109,7 @@ public:
     }
 };
 /**
- * @brief ƒ{ƒbƒNƒXi’¼•û‘Ìj‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief ãƒœãƒƒã‚¯ã‚¹ï¼ˆç›´æ–¹ä½“ï¼‰ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Box : public C3DShape {
 private:
@@ -123,6 +123,9 @@ public:
 
     void Draw(Matrix4x4 mtx, Color col);
 
+    // ç…§æ˜Žã«ã‚ˆã‚‹é¢ã”ã¨ã®æ˜Žæš—ã‚’ä»˜ã‘ãšã«æç”»ã™ã‚‹ã€‚
+    void DrawUnlit(SRT srt, Color col);
+
     void SetSize(float width, float height, float depth) override {
         m_width = width;
 		m_height = height;
@@ -135,7 +138,7 @@ public:
 };
 
 /**
- * @brief ‰~’Œ‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief å††æŸ±ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Cylinder : public C3DShape {
 private:
@@ -167,15 +170,15 @@ public:
 };
 
 /**
- * @brief ü•ªiƒZƒOƒƒ“ƒgj‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief ç·šåˆ†ï¼ˆã‚»ã‚°ãƒ¡ãƒ³ãƒˆï¼‰ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Segment : public C3DShape {
 private:
-    Vector3 m_start;     ///< Žn“_
-    Vector3 m_end;       ///< I“_
-    Vector3 m_direction; ///< •ûŒüƒxƒNƒgƒ‹
-    float m_length;      ///< ’·‚³
-    float m_width{2};       ///< ü‚Ì‘¾‚³  
+    Vector3 m_start;     ///< å§‹ç‚¹
+    Vector3 m_end;       ///< çµ‚ç‚¹
+    Vector3 m_direction; ///< æ–¹å‘ãƒ™ã‚¯ãƒˆãƒ«
+    float m_length;      ///< é•·ã•
+    float m_width{2};       ///< ç·šã®å¤ªã•  
 public:
     Segment(Vector3 s,Vector3 e):m_start(s),m_end(e),m_direction(e-s),m_length((e-s).Length()){}
 
@@ -196,12 +199,12 @@ public:
 };
 
 /**
- * @brief ƒJƒvƒZƒ‹i‰~’Œ{‹…j‚Ì3D}Œ`ƒNƒ‰ƒX
+ * @brief ã‚«ãƒ—ã‚»ãƒ«ï¼ˆå††æŸ±ï¼‹çƒï¼‰ã®3Då›³å½¢ã‚¯ãƒ©ã‚¹
  */
 class Capsule : public C3DShape {
 private:
-    float m_radius; ///< ”¼Œa
-    float m_height; ///< ‚‚³
+    float m_radius; ///< åŠå¾„
+    float m_height; ///< é«˜ã•
 public:
     Capsule(float r, float h) : m_radius(r), m_height(h) {}
 

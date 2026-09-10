@@ -59,5 +59,6 @@ PS_IN main(in VSONESKIN_IN In)
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
+    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
     return Out;
 }

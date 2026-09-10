@@ -7,7 +7,8 @@ bool g_cursorHidden = false;
 }
 
 std::vector<std::function<void(void)>> DebugUI::m_debugfunction;
-namespace { bool g_debugVisible = true; }
+namespace { bool g_debugVisible = false; }
+namespace { bool g_cursorVisibleRequested = false; }
 
 void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context) 
 {
@@ -16,11 +17,15 @@ void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    // キーボードナビは有効にしない。有効にするとデバッグUIを表示している間ずっと
+    // io.WantCaptureKeyboard が true になり、回避(Space)やダッシュ(LShift)など
+    // WantCaptureKeyboardで入力を止めているゲーム側の操作が効かなくなるためである。
+    // テキスト入力中は従来どおりWantCaptureKeyboardがtrueになるので、
+    // デバッグUIへの文字入力とゲーム操作の取り合いは起きない。
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;     // Allow ImGui windows to detach outside the game window.
 
-    // Setup Dear ImGui style
+    // Dear ImGuiの表示スタイルを初期化する。
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsLight();
 
@@ -30,22 +35,22 @@ void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context)
     cfg.OversampleH = 2;
     cfg.OversampleV = 1;
     cfg.MergeMode = false;
-    // Meiryo or Yu Gothic font for Windows debug UI
+    // WindowsのデバッグUI用にメイリオまたは游ゴシックを読み込む。
     io.Fonts->AddFontFromFileTTF(
         "C:\\Windows\\Fonts\\meiryo.ttc",
         18.0f,
         &cfg,
         io.Fonts->GetGlyphRangesJapanese()   // Japanese glyph range
     );
-    // The DX11 backend builds the atlas after it registers its texture flags.
+    // DX11バックエンドがテクスチャ設定を登録した後にフォントアトラスを構築する。
 
-    // Setup Platform/Renderer backends
+    // プラットフォーム用とレンダラー用のバックエンドを初期化する。
     ImGui_ImplWin32_Init(Application::GetWindow());
     ImGui_ImplDX11_Init(device, context);
 }
 
 void DebugUI::DisposeUI() {
-    // Cleanup
+    // デバッグUIを終了して使用したリソースを解放する。
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -55,7 +60,7 @@ void DebugUI::DisposeUI() {
         g_cursorHidden = false;
     }
 }
-// Debug window registration
+// デバッグウィンドウを登録する。
 void DebugUI::RedistDebugFunction(std::function<void(void)> f) {
     m_debugfunction.push_back(std::move(f));
 }
@@ -68,13 +73,22 @@ void DebugUI::SetVisible(bool visible) {
     g_debugVisible = visible;
 }
 
+void DebugUI::ToggleVisible() {
+    g_debugVisible = !g_debugVisible;
+}
+
+void DebugUI::SetCursorVisible(bool visible) {
+    g_cursorVisibleRequested = visible;
+}
+
 void DebugUI::BeginFrame() {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     const bool gameIsForeground = GetForegroundWindow() == Application::GetWindow();
-    const bool showCursor = !gameIsForeground || ImGui::GetIO().WantCaptureMouse;
+    const bool showCursor = g_cursorVisibleRequested ||
+        !gameIsForeground || ImGui::GetIO().WantCaptureMouse;
     if (showCursor && g_cursorHidden)
     {
         ShowCursor(TRUE);
@@ -103,7 +117,7 @@ void DebugUI::Render() {
             f();
         }
     }
-    // Finish and render the frame
+    // ImGuiフレームを確定して画面へ描画する。
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     ImGui::UpdatePlatformWindows();

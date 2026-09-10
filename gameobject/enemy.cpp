@@ -15,6 +15,116 @@ namespace
 	}
 }
 
+enemy::enemy(IScene* scene)
+	: gameobject(scene)
+{
+}
+
+void enemy::setTarget(player* target)
+{
+	m_target = target;
+}
+
+Vector3 enemy::getVel() const
+{
+	return m_move;
+}
+
+void enemy::setVel(const Vector3& vel)
+{
+	m_move = vel;
+}
+
+enemy::MotionState enemy::getMotionState() const
+{
+	return m_motionState;
+}
+
+void enemy::resetEncounter()
+{
+	m_motionState = MotionState::Approach;
+	m_stateTime = 0.0f;
+	m_move = Vector3(0.0f, 0.0f, 0.0f);
+	m_circleDirection = 1.0f;
+}
+
+bool enemy::isInRecovery() const
+{
+	return m_motionState == MotionState::Recovery;
+}
+
+float enemy::getStateTime() const
+{
+	return m_stateTime;
+}
+
+Combat::EnemyAttackKind enemy::getAttackKind() const
+{
+	return m_attackKind;
+}
+
+const Combat::AttackData& enemy::getAttackData() const
+{
+	return Combat::EnemyAttackOf(m_attackKind);
+}
+
+float enemy::windupSeconds() const
+{
+	return getAttackData().frames.anticipationSeconds;
+}
+
+float enemy::activeSeconds() const
+{
+	return getAttackData().frames.activeSeconds;
+}
+
+float enemy::recoverySeconds() const
+{
+	return getAttackData().frames.recoverySeconds;
+}
+
+void enemy::selectNextAttack(float distance)
+{
+	// 距離で候補を絞り、そのうえで直前と同じ攻撃が続かないようにする。
+	// 完全なランダムだと同じ攻撃が連続して「読む意味」が薄れ、
+	// 逆に完全な順番固定だと暗記ゲームになるため、その中間を取る。
+	const bool inBiteRange = distance <= Combat::Tuning::ENEMY_BITE_HIT_RANGE;
+
+	Combat::EnemyAttackKind candidates[3];
+	int candidateCount = 0;
+	candidates[candidateCount++] = Combat::EnemyAttackKind::Slam;
+	candidates[candidateCount++] = Combat::EnemyAttackKind::Sweep;
+	// 噛みつきは射程が短いので、近いときだけ選択肢に入れる。
+	// 遠くから出しても当たらず、プレイヤーが予兆を読む意味が無くなるためである。
+	if (inBiteRange)
+		candidates[candidateCount++] = Combat::EnemyAttackKind::Bite;
+
+	// 単純な巡回に位置ずらしを加えることで、外部の乱数生成器に依存せず
+	// 「毎回同じ順番」にもならないようにする。
+	m_attackSelectCounter = (m_attackSelectCounter + 1) % 7;
+	int index = (m_attackSelectCounter + (m_attackSelectCounter / 3)) % candidateCount;
+	if (candidates[index] == m_previousAttackKind && candidateCount > 1)
+		index = (index + 1) % candidateCount;
+
+	m_previousAttackKind = m_attackKind;
+	m_attackKind = candidates[index];
+}
+
+SRT enemy::getRenderSRT() const
+{
+	SRT renderSrt = m_srt;
+	// ゲーム上の向きは正しいが、モデルの正面が反転して見えるため、描画時だけ向きを補正する。
+	// ドラゴンのモデルは傾いた姿勢で作られているので、描画姿勢だけピッチを加えて頭部と胴体を正しく見せる。
+	renderSrt.rot.x += PI * 0.5f;
+	renderSrt.pos.y += m_visualGroundOffsetY;
+	return renderSrt;
+}
+
+void enemy::setVisualGroundOffsetY(float offsetY)
+{
+	m_visualGroundOffsetY = offsetY;
+}
+
 void enemy::init()
 {
 	m_srt.pos = Vector3(0, 0, 0);
@@ -37,14 +147,20 @@ void enemy::update(uint64_t dt)
 	m_move = Vector3(0, 0, 0);
 
 	if (m_motionState == MotionState::Approach && distance <= ATTACK_DISTANCE)
-		// Do not require the body center to enter the preferred orbit radius.
-		// Collision separation can stop a large monster just outside that radius.
+	{
+		// 大型の敵は衝突分離によって希望距離の少し外側で止まることがあるため、
+		// 敵の中心が希望距離へ完全に入ることは遷移条件にしない。
+		selectNextAttack(distance);
 		changeState(MotionState::Windup);
+	}
 	else if (m_motionState == MotionState::Circle &&
 		m_stateTime >= MIN_CIRCLE_SECONDS &&
 		(distance <= ATTACK_DISTANCE ||
 		 (m_stateTime >= MAX_CIRCLE_SECONDS && distance <= ATTACK_DISTANCE + 32.0f)))
+	{
+		selectNextAttack(distance);
 		changeState(MotionState::Windup);
+	}
 
 	switch (m_motionState)
 	{
@@ -56,9 +172,9 @@ void enemy::update(uint64_t dt)
 	{
 		faceTarget(targetPosition, deltaSec, 7.0f);
 		const float distanceError = distance - PREFERRED_DISTANCE;
-		// Keep orbiting, but actually close the gap when the player escapes.
-		// The previous 0.65-unit cap made the radial approach negligible after
-		// the retreat, so the enemy could circle forever outside attack range.
+		// 周回しながら、プレイヤーが離れた場合は距離方向にも近づける。
+		// 接近量に小さすぎる上限を設けると、後退後に攻撃距離へ戻れず
+		// 敵が延々と周回し続けるためである。
 		const float forwardSpeed = std::clamp(
 			distanceError * 3.0f,
 			-CIRCLE_SPEED * 0.75f,
@@ -71,15 +187,18 @@ void enemy::update(uint64_t dt)
 	}
 	case MotionState::Windup:
 		faceTarget(targetPosition, deltaSec, 3.5f);
-		if (m_stateTime >= WINDUP_SECONDS) changeState(MotionState::Active);
+		if (m_stateTime >= windupSeconds()) changeState(MotionState::Active);
 		break;
 	case MotionState::Active:
-		// A short committed lunge makes the active hit window readable.
-		moveInFacingDirection(48.0f * deltaSec);
-		if (m_stateTime >= ACTIVE_SECONDS) changeState(MotionState::Recovery);
+		// 攻撃判定中は短く踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
+		// 薙ぎ払いは射程が広い分だけ踏み込みも大きくし、
+		// 「距離を取るだけでは避けられない」ことが動きから読めるようにする。
+		moveInFacingDirection(
+			(m_attackKind == Combat::EnemyAttackKind::Sweep ? 68.0f : 48.0f) * deltaSec);
+		if (m_stateTime >= activeSeconds()) changeState(MotionState::Recovery);
 		break;
 	case MotionState::Recovery:
-		if (m_stateTime >= RECOVERY_SECONDS) changeState(MotionState::Retreat);
+		if (m_stateTime >= recoverySeconds()) changeState(MotionState::Retreat);
 		break;
 	case MotionState::Retreat:
 		faceTarget(targetPosition, deltaSec, 6.0f);
@@ -94,7 +213,6 @@ void enemy::update(uint64_t dt)
 
 	// Scene側はupdate前後の座標差分を使って壁・他エネミーとの
 	// 衝突補正を行うため、ここでAIが決めた移動を仮適用する。
-	m_srt.pos += m_move;
 	m_srt.pos += m_move;
 }
 

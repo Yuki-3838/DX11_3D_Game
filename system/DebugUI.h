@@ -14,12 +14,14 @@ class DebugUI {
 public:
 
     static void Init(ID3D11Device* device, ID3D11DeviceContext* context);
-// Debug window registration
+// デバッグウィンドウの登録
     static void RedistDebugFunction(std::function<void(void)> f);
 
     static void ClearDebugFunctions();
 
-    static void SetVisible(bool visible);
+	static void SetVisible(bool visible);
+	static void ToggleVisible();
+	static void SetCursorVisible(bool visible);
 
     static void BeginFrame();
 

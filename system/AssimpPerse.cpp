@@ -52,8 +52,8 @@ namespace myAssimp{
 		}
 	}
 
-	// glTF accessory meshes keep their transforms on scene nodes. Cache the
-	// complete transform so non-skinned parts are not rendered at the origin.
+	// glTFの装備メッシュはシーンノード側に変換を持つ。
+	// スキニングされないパーツが原点に描画されないよう、完全な変換を保存する。
 	void CreateMeshGlobalTransforms(aiNode* node, const aiMatrix4x4& parentTransform)
 	{
 		const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
@@ -417,8 +417,8 @@ namespace myAssimp{
 				v.pos = mesh->mVertices[vidx];
 				if (isGltf && !mesh->HasBones() && m < g_MeshGlobalTransforms.size())
 				{
-					// The renderer receives raw vertices, so apply the node transform
-					// once for non-skinned glTF accessory meshes.
+					// レンダラーへ渡す頂点は未変換なので、スキニングされないglTF装備に
+					// ノード変換を一度だけ適用する。
 					const Matrix4x4 nodeTransform =
 						utility::aiMtxToDxMtx(g_MeshGlobalTransforms[m]);
 					const Vector3 transformed = Vector3::Transform(

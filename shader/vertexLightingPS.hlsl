@@ -19,5 +19,9 @@ float4 main(in PS_IN In)  : SV_Target
 		outDiffuse.a = In.Diffuse.a;
     }
 
+    // 影を落とす。闘技場の床はこのシェーダーで描いているため、
+    // ここでキャラクターの形をした影が地面に出る。
+    outDiffuse.rgb *= CalcShadowFactor(In.ShadowCoord);
+
     return outDiffuse;
 }

@@ -463,9 +463,9 @@ void GameApp::Present()
 {
     if (m_swapChain)
     {
-        // The app owns the 60 FPS limiter in ProcessFrame.
-        // Using sync interval 1 here can add a second wait on some systems,
-        // which drops the prototype to roughly 30 FPS.
+        // 60FPSの制限はProcessFrame側で行っている。
+        // ここで同期間隔1を指定すると、環境によっては待ち時間が二重になり、
+        // 試作版の更新速度が約30FPSまで落ちるため、同期間隔は0にする。
         m_swapChain->Present(0, 0);
     }
 }

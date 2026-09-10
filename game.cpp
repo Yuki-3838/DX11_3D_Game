@@ -1,5 +1,6 @@
 #include	<cstdint>
 #include    <string>
+#include	<fstream>
 #include	"system/renderer.h"
 #include    "system/DebugUI.h"
 #include    "system/CDirectInput.h"
@@ -7,8 +8,30 @@
 #include	"fpscontrol.h"
 #include	"system/Inputmanager.h"
 #include    "system/GameFlow.h"
+#include    "system/SoundManager.h"
 
-void gameinit() 
+namespace
+{
+// dev_settings.ini(未コミット・ローカル専用)に devmode=1 と書くと、
+// 起動時にタイトルを飛ばしてGameSceneへ直行し、ImGuiデバッグ表示も最初から出す。
+// ファイルが無い/devmode=0なら、提出用と同じ挙動(タイトルから開始・デバッグ非表示)になる。
+// 提出前にこのファイルを削除・devmode=0にする必要はない(存在しなければ何も変わらない)。
+bool LoadDevModeSetting()
+{
+	std::ifstream input("dev_settings.ini");
+	std::string line;
+	while (std::getline(input, line))
+	{
+		if (line.rfind("devmode=", 0) == 0)
+		{
+			return line.substr(8) == "1";
+		}
+	}
+	return false;
+}
+}
+
+void gameinit()
 {
 	// レンダラの初期化
 	Renderer::Init();
@@ -21,12 +44,20 @@ void gameinit()
 
 	// デバッグUIの初期化
 	DebugUI::Init(Renderer::GetDevice(), Renderer::GetDeviceContext());
+	SoundManager::Init();
 
 	// シーンマネージャの初期化
 	SceneManager::Init();
 
 	//　シーン選択
-	SceneManager::SetCurrentScene("TitleScene");
+	// 通常の起動はタイトルシーンから開始する。
+	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
+	const bool devMode = LoadDevModeSetting();
+	SceneManager::SetCurrentScene(devMode ? "GameScene" : "TitleScene");
+	if (devMode)
+	{
+		DebugUI::SetVisible(true);
+	}
 
 }
 
@@ -34,8 +65,9 @@ void gameupdate(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
     input.Update();
+    SoundManager::Update();
 
-    // F1: GameScene, F2: car model scene, F3: motion editor
+    // F1：ゲームシーン、F2：車モデルシーン、F3：モーションエディター、F4：デバッグ表示切り替え
     if (input.IsKeyTriggered(DIK_F1))
     {
         SceneManager::SetCurrentScene("GameScene");
@@ -47,6 +79,10 @@ void gameupdate(uint64_t deltatime)
     else if (input.IsKeyTriggered(DIK_F3))
     {
         SceneManager::SetCurrentScene("MotionEditorScene");
+    }
+    else if (input.IsKeyTriggered(DIK_F4))
+    {
+        DebugUI::ToggleVisible();
     }
 
     SceneManager::Update(deltatime);
@@ -81,6 +117,7 @@ void gamedispose()
 
 	// シーンマネージャの終了処理
 	SceneManager::Dispose();
+	SoundManager::Shutdown();
 
 	// レンダラの終了処理
 	Renderer::Dispose();

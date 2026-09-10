@@ -103,6 +103,7 @@
     <ClInclude Include="..\system\renderer.h" />
     <ClInclude Include="..\system\SceneClassFactory.h" />
     <ClInclude Include="..\system\scenemanager.h" />
+    <ClInclude Include="..\system\SoundManager.h" />
     <ClInclude Include="..\system\OneVsOneCombat.h" />
     <ClInclude Include="..\system\SphereDrawer.h" />
     <ClInclude Include="..\system\stb_image.h" />
@@ -177,6 +178,7 @@
     <ClCompile Include="..\system\PlaneDrawer.cpp" />
     <ClCompile Include="..\system\renderer.cpp" />
     <ClCompile Include="..\system\scenemanager.cpp" />
+    <ClCompile Include="..\system\SoundManager.cpp" />
     <ClCompile Include="..\system\SimpleMathIdentity.cpp" />
     <ClCompile Include="..\system\OneVsOneCombat.cpp" />
     <ClCompile Include="..\system\SphereDrawer.cpp" />
@@ -255,7 +257,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -263,7 +265,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\third_party\assimp\lib;$(ProjectDir)..\third_party\DirectXTK\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -274,7 +276,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -284,7 +286,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\third_party\assimp\lib;$(ProjectDir)..\third_party\DirectXTK\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -293,7 +295,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -301,7 +303,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\third_party\assimp\lib;$(ProjectDir)..\third_party\DirectXTK\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -312,7 +314,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;DX11_GAME_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\directxtk\include;C:\assimp\5.2.5\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -322,7 +324,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\assimp\5.2.5\lib;C:\directxtk\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\third_party\assimp\lib;$(ProjectDir)..\third_party\DirectXTK\lib\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

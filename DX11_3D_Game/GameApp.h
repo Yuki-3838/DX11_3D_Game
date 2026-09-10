@@ -15,11 +15,10 @@
 
 /**
  * @class GameApp
- * @brief Application root for the DX11 one-on-one action prototype.
+ * @brief DX11一対一アクション試作のアプリケーション本体。
  *
- * The app owns the platform loop, the DX11 device, fixed-step combat updates,
- * and debug output. Gameplay systems should be added as separate classes and
- * called from `FixedUpdate` instead of being buried directly in the Win32 loop.
+ * ウィンドウループ、DX11デバイス、固定更新の戦闘処理、デバッグ出力を管理する。
+ * ゲーム処理はWin32ループへ直接書かず、別クラスとしてFixedUpdateから呼び出す。
  */
 class GameApp
 {
@@ -28,16 +27,16 @@ public:
     ~GameApp();
 
     /**
-     * @brief Creates the window, DX11 objects, prototype combat data, and debug outputs.
+     * @brief ウィンドウ、DX11オブジェクト、戦闘データ、デバッグ出力を初期化する。
      */
     bool Init(HINSTANCE hInstance, int windowWidth, int windowHeight);
 
     /**
-     * @brief Runs the Win32 message loop and the fixed-step game loop.
+     * @brief Win32メッセージループと固定更新のゲームループを実行する。
      */
     void Run();
 
-    /** @brief Releases DX11 and window resources. */
+    /** @brief DX11とウィンドウのリソースを解放する。 */
     void Cleanup();
 
 private:

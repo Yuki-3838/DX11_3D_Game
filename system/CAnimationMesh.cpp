@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <cmath>
+#include <limits>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
 #include	"meshmanager.h"
@@ -179,9 +181,9 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 		return false;
 	const auto swordBoneIt = m_BoneDictionary.find("mixamorig:Sword_joint");
 
-	// The embedded subset has mixed/incorrect weights, so its CPU-deformed
-	// vertices are not safe collision endpoints.  Use the same right-hand bone
-	// that visually holds the weapon and a fitted local hand direction instead.
+	// 内蔵メッシュの一部はウェイトが混在・不正なため、CPU変形後の頂点を
+	// 攻撃判定の端点に使うと表示とずれる。見た目で武器を持つ右手ボーンと、
+	// 調整済みの手元ローカル方向から端点を求める。
 	const auto rightHandIt = m_DebugBoneMatrices.find("mixamorig:RightHand");
 	if (rightHandIt != m_DebugBoneMatrices.end())
 	{
@@ -212,28 +214,25 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 			worldLength = Vector3::TransformNormal(
 				localAxis, swordBoneIt->second.Matrix * parentWorld).Length();
 		}
-		// The visible sword is held sideways from the hand in the reference pose.
-		// The former world-down correction produced the vertical OBB seen in the
-		// debug view. Use the hand's local horizontal axis so the span rotates with
-		// the character instead of staying vertical in world space.
-		// Flip the horizontal axis to match the visible blade direction, then add
-		// a small local-down component for the sword's natural diagonal pose.
+		// 基準姿勢では見た目の剣が手から横向きに伸びている。
+		// ワールド下方向の補正ではデバッグOBBが縦になったため、手のローカル横軸を使い、
+		// キャラクターと一緒に回転するようにする。
+		// 見た目の剣先方向へ軸を反転し、自然な斜め姿勢のため少しだけローカル下方向を加える。
 		Vector3 bladeDirection = Vector3::TransformNormal(
 			Vector3(1.0f, 0.18f, 0.0f), handWorld);
 		if (bladeDirection.LengthSquared() <= 0.0001f)
 			bladeDirection = Vector3(1.0f, 0.0f, 0.0f);
 		else
 			bladeDirection.Normalize();
-		// The imported bounds include the guard/pommel and are longer than the
-		// visible blade span from the gripping palm.  The previous 28% stopped
-		// before the rendered tip; 45% reaches the actual sword endpoint while
-		// keeping the right-hand grip as the segment origin.
+		// 読み込み境界には鍔や柄尻が含まれ、手から見える刃の範囲より長い。
+		// 以前の28%では剣先まで届かなかったため45%まで伸ばし、
+		// 右手の握りを線分の始点として実際の剣先へ届かせる。
 		worldLength *= 0.45f;
 		base = Vector3::Transform(Vector3(0.0f, 0.0f, 0.0f), handWorld);
 		tip = base + bladeDirection * worldLength;
-		// The hand joint is slightly above and toward the guard on this asset.
-		// Shift both endpoints together so the OBB center sits on the visible
-		// blade center; this is a center correction, not a length correction.
+		// このモデルでは手の関節が鍔より少し上にある。
+		// OBBの中心が見た目の刃の中心に来るよう両端を同じ量だけ移動する。
+		// これは長さではなく中心位置の補正である。
 		const Vector3 centerOffset =
 			-bladeDirection * (worldLength * 0.08f) +
 			Vector3(0.0f, -worldLength * 0.12f, 0.0f);
@@ -245,12 +244,11 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 	if (swordBoneIt == m_BoneDictionary.end())
 		return false;
 
-	// Reproduce the skinning shader on the CPU, but select the hilt/tip from the
-	// sword's *source* longitudinal axis. The asset's sword mesh has stray
-	// character-bone weights; a PCA over the already-deformed cloud can therefore
-	// choose a body/origin outlier as the blade tip. Selecting endpoint bands in
-	// local mesh space keeps the collision segment on the same visible vertices
-	// that the shader renders.
+	// スキニングシェーダーの変形をCPUで再現するが、柄と剣先は剣の
+	// 「元メッシュの長手方向」から選ぶ。剣メッシュにはキャラクター側の余計な
+	// ボーンウェイトがあるため、変形後の頂点群へPCAを行うと胴体の外れ値を
+	// 剣先と誤認する可能性がある。ローカルメッシュの端部帯から選ぶことで、
+	// シェーダーが描画する頂点と同じ部分に攻撃線分を置く。
 	std::array<const BONE*, MAX_BONE> bonesByIndex{};
 	for (const auto& [name, bone] : m_BoneDictionary)
 	{
@@ -419,9 +417,8 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 	m_swordWorldMatrix = swordLocal * boneMatrix * parentWorld;
 	const float halfLength = std::max(m_swordLocalHalfLength, 0.001f);
 	const Vector3 localBase = m_swordUsesPlayerAsset
-		// swordLocal first subtracts m_swordModelCenter from every vertex;
-		// add it back here so the collision endpoints use the same centered
-		// coordinate system as the visible sword mesh.
+		// swordLocalでは各頂点からm_swordModelCenterを先に引いているため、
+		// 見た目の剣メッシュと同じ中心座標系になるよう、ここで中心を戻す。
 		? m_swordModelCenter + m_swordCollisionLocalAxis * halfLength
 		: Vector3(0.0f, 0.0f, 0.0f);
 	const Vector3 localTip = m_swordUsesPlayerAsset
@@ -532,9 +529,9 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 		m_RestLocalMatrices[name] = utility::aiMtxToDxMtx(matrix);
 	}
 
-	// glTF inverse-bind matrices use a different import convention than the
-	// legacy PMX/FBX path. Rebuild them from the rest hierarchy so the bind pose
-	// is stable: finalBone = inverse(restGlobal) * currentGlobal.
+	// glTFの逆バインド行列は従来のPMX/FBX経路と読み込み規約が異なる。
+	// バインド姿勢を安定させるため休止階層から再構築する。
+	// 計算式はfinalBone = inverse(restGlobal) * currentGlobalである。
 	const std::string extension = std::filesystem::path(filename).extension().string();
 	if (extension == ".gltf" || extension == ".glb")
 	{
@@ -565,6 +562,15 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 
 	// レンダラ初期化
 	m_StaticMeshRenderer.Init(*this);
+	if (filename.find("SwordShieldPack_Player") != std::string::npos)
+	{
+		// 出力された装備名が入れ替わっており、Helmetというサブセットが大きな盾形、
+		// Shieldが兜の外殻になっている。兜用関節のスケールを0にせず、
+		// 描画時に盾サブセットだけを隠して攻撃中に復活しないようにする。
+		if (!m_StaticMeshRenderer.SetSubsetVisibleByKeyword(
+			"Paladin_J_Nordstrom_Helmet", false))
+			std::cout << "[Player] shield subset not found" << std::endl;
+	}
 
 	float playerExtent = 100.0f;
 	if (!m_vertices.empty())
@@ -592,16 +598,15 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 	proxyMaterial.TextureEnable = FALSE;
 	m_swordProxyMaterial.Create(proxyMaterial);
 
-	// Optional player weapon attachment. Fallen Paladin's original FBX contains
-	// a separate loose sword component, so use the extracted, textured version
-	// for this model instead of the generic debug sword/proxy.
+	// プレイヤー武器の追加接続処理。Fallen Paladinの元FBXには分離した剣が含まれるため、
+	// 汎用デバッグ剣ではなく、抽出済みでテクスチャ付きのモデルを使う。
 	const bool usesEmbeddedSword = filename.find("SwordShieldPack_Player") != std::string::npos;
 	m_swordUsesPlayerAsset = filename.find("FallenPaladin_Player") != std::string::npos;
 	if (usesEmbeddedSword)
 	{
-		// The pack model already contains a skinned sword under Sword_joint.
-		// Do not load/draw a second loose sword; the embedded sword is rendered
-		// together with the character and its joint is used for collision.
+		// パックモデルにはSword_joint配下へスキニング済みの剣が含まれる。
+		// 分離した剣を二重に読み込まず、キャラクターと一緒に描画される内蔵剣の
+		// 関節を攻撃判定にも使う。
 		m_swordEmbeddedInPlayerAsset = true;
 		m_swordEnabled = false;
 		m_swordUsesPlayerAsset = false;
@@ -641,13 +646,12 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 	if (std::filesystem::exists(swordPath))
 	{
 		m_swordAssetPath = swordPath.string();
-		// Always use an absolute path. Visual Studio and a double-clicked EXE can
-		// have different current directories, which previously made Save appear
-		// to work while the next launch loaded a different relative file.
+		// 常に絶対パスを使う。Visual Studio実行とEXEのダブルクリックでは
+		// 作業フォルダが異なる場合があり、相対パスだと保存できたように見えて
+		// 次回起動時に別ファイルを読み込むことがある。
 		m_swordPresetPath = std::filesystem::absolute(swordPath).string() + ".attach.txt";
 		m_swordMesh = std::make_unique<CStaticMesh>();
-		// Apply importer node transforms so the extracted sword is not left at
-		// an importer-local offset.
+		// 読み込みノードの変換を適用し、抽出した剣が読み込み元のローカル位置に残らないようにする。
 		m_swordMesh->Load(swordPath.string(), "assets/model/", true);
 		m_swordRenderer.Init(*m_swordMesh);
 		if (!m_swordMesh->GetVertices().empty())
@@ -671,32 +675,24 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 			m_swordScale = playerExtent * 0.75f / swordLength;
 			if (m_swordUsesPlayerAsset)
 			{
-				// The extracted asset already uses the player's 2.9-unit scale.
-				// Center it on the hand, then move its grip (the upper end of the
-				// source sword) to the hand by roughly half of its length.
+				// 抽出した剣はプレイヤー用の2.9単位で作られている。
+				// 剣を手の中心に置いた後、柄側の端が手に来るよう長さの半分ほど移動する。
 				m_swordScale = 1.0f;
 				m_swordLocalHalfLength = swordLength * 0.5f;
-				// The source sword's local Z axis follows the forearm diagonally in
-				// the idle pose.  Rotate around local Y so the held weapon points
-				// downward instead of lying across the body.
+				// 元剣のローカルZ軸はアイドル姿勢で前腕に対して斜めになっている。
+				// ローカルY回転を加え、胴体を横切らず下向きに持たせる。
 				m_swordRotationDegrees = Vector3(81.50f, -46.50f, 76.75f);
-				// The runtime rig's hand.r is fitted to the visible palm.  The sword
-				// is centered on its bounds, and the grip needs a small +local-Z
-				// placement in this renderer's row-vector convention to sit inside
-				// that palm.  Keep this model-specific value proportional to the
-				// imported sword length.  Rendering and collision use the same matrix.
-				// Measured from FallenPaladin_Sword.glb after subtracting its bounds
-				// center.  It is the centroid of the handle/pommel region (source
-				// local Z > 1.45), so the automatic fit targets the grip itself.
+				// 実行時リグのhand.rは見た目の手のひらへ合わせている。
+				// 剣は境界中心を基準にしているため、この描画器の行ベクトル規約では
+				// 握りを手のひらへ入れるため少し+ローカルZへ置く。
+				// モデル固有値だが、読み込んだ剣の長さに比例させ、描画と攻撃判定で同じ行列を使う。
+				// 剣の境界中心を引いた後の柄・柄尻領域の重心から測定した値である。
 				m_swordGripLocalPoint = Vector3(-0.0484f, 0.0094f, 0.7171f);
-				// Keep the empirically fitted hand placement.  The grip-point
-				// auto-correction is intentionally not applied here because the
-				// imported DirectX row-vector transform already includes the model's
-				// node basis; applying that correction a second time moves the sword
-				// away from the hand.
-				// The current hand pose intersects the blade center.  Move the
-				// centered mesh toward its hilt along the attachment's local Z so
-				// the grip/guard, rather than the blade midpoint, is in the palm.
+				// 実際に合わせた手の位置を維持する。
+				// DirectXの行ベクトル変換にはモデルのノード基底が含まれるため、自動補正を
+				// もう一度適用すると剣が手から離れてしまう。
+				// 現在の手姿勢では手のひらが刃の中心と重なるため、接続ローカルZ方向へ
+				// 柄側を寄せ、刃の中央ではなく握り・鍔が手のひらに来るようにする。
 				m_swordHandOffset = Vector3(0.650f, -0.070f, 0.646f);
 				m_swordUseGuaranteedProxy = false;
 			}
@@ -838,7 +834,8 @@ void CAnimationMesh::UpdateBoneMatrix(
 void CAnimationMesh::BuildLocalPoseMap(
 	const aiAnimation* animationdata,
 	int& CurrentFrame,
-	std::unordered_map<std::string, SRTQ>& localposemap)
+	std::unordered_map<std::string, SRTQ>& localposemap,
+	float frameFraction, bool loopAnimation)
 {
 	// アニメーションデータ取得
 	const aiAnimation* animation = animationdata;
@@ -848,13 +845,24 @@ void CAnimationMesh::BuildLocalPoseMap(
 	{
 		aiNodeAnim* nodeAnim = animation->mChannels[c];
 
-		int f;
-
-		f = CurrentFrame % nodeAnim->mNumRotationKeys;				//簡易実装
-		aiQuaternion rot = nodeAnim->mRotationKeys[f].mValue;
-
-		f = CurrentFrame % nodeAnim->mNumPositionKeys;				//簡易実装
-		aiVector3D pos = nodeAnim->mPositionKeys[f].mValue;
+		if (!nodeAnim || nodeAnim->mNumRotationKeys == 0 || nodeAnim->mNumPositionKeys == 0)
+			continue;
+		const auto keyIndex = [&](unsigned int count, unsigned int offset) {
+			const unsigned int frame = static_cast<unsigned int>(std::max(CurrentFrame, 0));
+			return loopAnimation ? (frame + offset) % count : std::min(frame + offset, count - 1);
+		};
+		const float blend = std::clamp(frameFraction, 0.0f, 1.0f);
+		aiQuaternion rot;
+		aiQuaternion::Interpolate(rot,
+			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 0)].mValue,
+			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 1)].mValue, blend);
+		rot.Normalize();
+		// 敵のワールド位置と接地はGameScene側のSRTで管理している。
+		// 位置キーまで補間すると、ルートを含むアニメーションの上下移動が
+		// 描画SRTへ重なり、敵が地面へ埋まることがある。位置は従来どおり
+		// 現在のキーから読み、今回の補間対象は回転だけに限定する。
+		const aiVector3D pos =
+			nodeAnim->mPositionKeys[keyIndex(nodeAnim->mNumPositionKeys, 0)].mValue;
 
 		// assimp SRT=>DX版　SRT
 		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DX化
@@ -877,7 +885,8 @@ void CAnimationMesh::BuildLocalPoseMap(
 }
 
 // アニメーションの更新
-void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame)
+void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame,
+	float frameFraction, bool loopAnimation)
 {
 	m_DebugBoneMatrices.clear();
 	// アニメーションデータ取得
@@ -888,7 +897,7 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame)
 	BuildLocalPoseMap(
 		m_CurrentAnimation,
 		CurrentFrame,
-		localpose);
+		localpose, frameFraction, loopAnimation);
 
 	// localpose の中身を 1 件ずつ取り出す
 	for (auto& pair : localpose) {
@@ -917,32 +926,171 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame)
 	}
 }
 
-void CAnimationMesh::UpdateAnimationWithManualPose(
+void CAnimationMesh::UpdateBlendedRotationAnimation(
 	BoneCombMatrix& bonecombarray,
-	aiAnimation* animationdata,
-	int& CurrentFrame,
-	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
-	const std::vector<std::string>& animatedBoneNames)
+	const aiAnimation* fromAnimation,
+	int fromFrame,
+	float fromFrameFraction,
+	bool loopFromAnimation,
+	const aiAnimation* toAnimation,
+	int toFrame,
+	float toFrameFraction,
+	bool loopToAnimation,
+	float blendRate)
 {
 	m_DebugBoneMatrices.clear();
+
+	std::unordered_map<std::string, SRTQ> fromPose;
+	std::unordered_map<std::string, SRTQ> toPose;
+	if (fromAnimation != nullptr)
+	{
+		BuildLocalPoseMap(
+			fromAnimation,
+			fromFrame,
+			fromPose,
+			fromFrameFraction,
+			loopFromAnimation);
+	}
+	if (toAnimation != nullptr)
+	{
+		BuildLocalPoseMap(
+			toAnimation,
+			toFrame,
+			toPose,
+			toFrameFraction,
+			loopToAnimation);
+	}
+
+	const float rate = std::clamp(blendRate, 0.0f, 1.0f);
+	std::unordered_map<std::string, SRTQ> blendedPose;
+	blendedPose.reserve(std::max(fromPose.size(), toPose.size()));
+
+	// to側にあるボーンを基準にし、位置・スケールは補間せずto側を使う。
+	// 敵のワールド移動や接地はSRT側が管理するため、ここで位置を混ぜない。
+	for (const auto& [boneName, toSrtq] : toPose)
+	{
+		SRTQ blended = toSrtq;
+		const auto fromIt = fromPose.find(boneName);
+		if (fromIt != fromPose.end())
+			blended.quat = Quaternion::Slerp(fromIt->second.quat, toSrtq.quat, rate);
+		blendedPose.emplace(boneName, blended);
+	}
+
+	// to側にキーが無いボーンはfrom側を保持し、姿勢が欠けて原点へ戻らないようにする。
+	for (const auto& [boneName, fromSrtq] : fromPose)
+	{
+		if (blendedPose.find(boneName) == blendedPose.end())
+			blendedPose.emplace(boneName, fromSrtq);
+	}
+
+	for (const auto& [boneName, srtq] : blendedPose)
+	{
+		auto boneIt = m_BoneDictionary.find(boneName);
+		if (boneIt == m_BoneDictionary.end())
+			continue;
+
+		Matrix4x4 scalemtx = Matrix4x4::CreateScale(srtq.scale);
+		Matrix4x4 rotmtx = Matrix4x4::CreateFromQuaternion(srtq.quat);
+		Matrix4x4 transmtx = Matrix4x4::CreateTranslation(srtq.pos);
+		boneIt->second.AnimationMatrix = scalemtx * rotmtx * transmtx;
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& bone : m_BoneDictionary)
+		bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
+			bone.second.Matrix.Transpose();
+}
+
+float CAnimationMesh::GetAnimatedLocalMaxZ() const
+{
+	if (m_vertices.empty())
+		return 0.0f;
+
+	std::array<const BONE*, MAX_BONE> bonesByIndex{};
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		(void)name;
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonesByIndex[bone.idx] = &bone;
+	}
+
+	float maxZ = std::numeric_limits<float>::lowest();
+	bool hasVertex = false;
+	for (const VERTEX_3D& vertex : m_vertices)
+	{
+		Vector3 skinned{};
+		float weightSum = 0.0f;
+		for (int slot = 0; slot < 4; ++slot)
+		{
+			const int boneIndex = vertex.BoneIndex[slot];
+			const float weight = vertex.BoneWeight[slot];
+			if (boneIndex < 0 || boneIndex >= MAX_BONE || weight <= 0.0f)
+				continue;
+
+			const BONE* bone = bonesByIndex[boneIndex];
+			if (bone == nullptr)
+				continue;
+
+			skinned += Vector3::Transform(vertex.Position, bone->Matrix) * weight;
+			weightSum += weight;
+		}
+
+		if (weightSum > 0.0001f)
+		{
+			// GPU側と同じく、4ウェイトへ収まらなかった残りは恒等変換で補う。
+			if (weightSum < 1.0f)
+				skinned += vertex.Position * (1.0f - weightSum);
+		}
+		else
+		{
+			skinned = vertex.Position;
+		}
+
+		maxZ = std::max(maxZ, skinned.z);
+		hasVertex = true;
+	}
+
+	return hasVertex ? maxZ : 0.0f;
+}
+
+void CAnimationMesh::ApplyAnimationToBones(
+	aiAnimation* animationdata,
+	int currentFrame,
+	float frameFraction,
+	const std::vector<std::string>& animatedBoneNames,
+	bool loopAnimation,
+	const std::string& translationBone)
+{
 	const auto isAnimatedBone = [&animatedBoneNames](const std::string& name)
 	{
 		return std::find(animatedBoneNames.begin(), animatedBoneNames.end(), name) !=
 			animatedBoneNames.end();
 	};
 
-	// Start from the model rest pose.  Only the selected lower-body bones are
-	// replaced by the imported locomotion clip below.
-	for (auto& [name, bone] : m_BoneDictionary)
-	{
-		const auto rest = m_RestLocalMatrices.find(name);
-		bone.AnimationMatrix = rest != m_RestLocalMatrices.end()
-			? rest->second
-			: Matrix4x4::Identity;
-	}
-
 	if (animationdata != nullptr)
 	{
+		// FBX出力ではボーンごとのキー数が一致しないことがある。
+		// 剣モーションでは前腕のキーが胴体より多く、同じ生キー番号を使うと
+		// 腕が動いている間に胴体だけ先にループするため、クリップ内の正規化時間で
+		// 全チャンネルを同じ位置からサンプリングする。
+		unsigned int maxRotationKeys = 0;
+		for (unsigned int c = 0; c < animationdata->mNumChannels; ++c)
+			maxRotationKeys = std::max(
+				maxRotationKeys,
+				animationdata->mChannels[c]->mNumRotationKeys);
+		const unsigned int sampledFrame = maxRotationKeys > 0 && loopAnimation
+			? static_cast<unsigned int>(std::max(currentFrame, 0)) % maxRotationKeys
+			: static_cast<unsigned int>(std::max(currentFrame, 0));
+		// キー番号の小数部を足してからクリップ内の正規化時間を求める。
+		// これによりキーとキーの中間の時刻を表現でき、下でslerp補間できる。
+		const float sampledPosition =
+			static_cast<float>(sampledFrame) + std::clamp(frameFraction, 0.0f, 1.0f);
+		const float normalizedFrame = maxRotationKeys > 1
+			? std::clamp(
+				sampledPosition / static_cast<float>(maxRotationKeys - 1),
+				0.0f,
+				1.0f)
+			: 0.0f;
 		for (unsigned int c = 0; c < animationdata->mNumChannels; ++c)
 		{
 			aiNodeAnim* nodeAnim = animationdata->mChannels[c];
@@ -954,9 +1102,28 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 			if (boneIt == m_BoneDictionary.end())
 				continue;
 
-			const unsigned int rotationFrame =
-				static_cast<unsigned int>(CurrentFrame) % nodeAnim->mNumRotationKeys;
-			const aiQuaternion rotation = nodeAnim->mRotationKeys[rotationFrame].mValue;
+			// キー間をslerpで補間する。
+			// 以前は最も近いキーへ丸めていたため、元データ(約30fps)のキーが
+			// そのまま段階的に切り替わり、60Hz以上の描画では明確にカクついて見えていた。
+			// 球面線形補間にすることで、キーの間の姿勢を連続的に作る。
+			aiQuaternion rotation = nodeAnim->mRotationKeys[0].mValue;
+			if (nodeAnim->mNumRotationKeys > 1)
+			{
+				const float keyPosition =
+					normalizedFrame * static_cast<float>(nodeAnim->mNumRotationKeys - 1);
+				const unsigned int keyIndex = std::min(
+					nodeAnim->mNumRotationKeys - 2,
+					static_cast<unsigned int>(std::max(0.0f, std::floor(keyPosition))));
+				const float blend = std::clamp(
+					keyPosition - static_cast<float>(keyIndex), 0.0f, 1.0f);
+				// aiQuaternion::Interpolateは最短経路のslerpを行い、
+				// q と -q の符号違い(反対称性)も内部で処理してくれる。
+				aiQuaternion::Interpolate(
+					rotation,
+					nodeAnim->mRotationKeys[keyIndex].mValue,
+					nodeAnim->mRotationKeys[keyIndex + 1].mValue,
+					blend);
+			}
 			Quaternion quaternion{};
 			quaternion.x = rotation.x;
 			quaternion.y = rotation.y;
@@ -964,15 +1131,78 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 			quaternion.w = rotation.w;
 			const Matrix4x4 rotationMatrix = Matrix4x4::CreateFromQuaternion(quaternion);
 
-			// Keep the model's bind-pose translation.  The scene route owns world
-			// movement; importing root translation here would double-move the actor.
+			// モデルのバインド姿勢の平行移動を維持する。
+			// ワールド移動はシーン側が管理するため、ルート移動を読み込むと二重移動になる。
 			const auto rest = m_RestLocalMatrices.find(boneName);
 			if (rest != m_RestLocalMatrices.end())
 		{
-				const Vector3 restPosition(rest->second._41,
+				Vector3 restPosition(rest->second._41,
 					rest->second._42, rest->second._43);
-				boneIt->second.AnimationMatrix = rotationMatrix *
-					Matrix4x4::CreateTranslation(restPosition);
+
+				// 腰など、指定されたボーンは「平行移動だけ」をクリップから取り込む。
+				//
+				// 回転まで取り込むと体全体が傾く。腰の回転はキャラクターの向きそのもので、
+				// クリップ側の基準姿勢とモデルの休止姿勢が一致しないため、
+				// そのまま適用すると寝転んだような姿勢になる(実機で確認済み)。
+				// 欲しいのは沈み込みだけなので、回転は休止姿勢のまま維持する。
+				//
+				// 平行移動も絶対座標ではなく「クリップ先頭からの相対オフセット」にする。
+				// ワールド移動はゲーム側(SRT)が管理しているため、
+				// 絶対座標を入れると二重移動になる。
+				// この沈み込みが無いと、腰が下がる前提で作られた脚の角度だけが適用され、
+				// 脚が横へ開いて座り込んだ姿勢になる。
+				const bool translationOnlyBone =
+					!translationBone.empty() && boneName == translationBone;
+				if (translationOnlyBone && nodeAnim->mNumPositionKeys > 1)
+				{
+					const unsigned int positionKeyCount = nodeAnim->mNumPositionKeys;
+					const float positionKeyPosition =
+						normalizedFrame * static_cast<float>(positionKeyCount - 1);
+					const unsigned int positionIndex = std::min(
+						positionKeyCount - 2,
+						static_cast<unsigned int>(
+							std::max(0.0f, std::floor(positionKeyPosition))));
+					const float positionBlend = std::clamp(
+						positionKeyPosition - static_cast<float>(positionIndex),
+						0.0f, 1.0f);
+					const aiVector3D a = nodeAnim->mPositionKeys[positionIndex].mValue;
+					const aiVector3D b = nodeAnim->mPositionKeys[positionIndex + 1].mValue;
+					const aiVector3D sampled = a + (b - a) * positionBlend;
+					const aiVector3D origin = nodeAnim->mPositionKeys[0].mValue;
+
+					// 上下方向だけを使う。
+					// 前後左右の移動はゲーム側(SRT)が管理しているので、
+					// 取り込むと足が滑ったり、その場でずれていったりする。
+					//
+					// さらに、クリップとモデルで長さの単位が違う(FBXはcm単位のことが多い)。
+					// 差分をそのまま足すと過大になり、キャラクターが地面へ埋まっていく。
+					// そこで「クリップ内での腰の高さに対する割合」へ直してから、
+					// モデル側の腰の高さへ掛ける。これで単位に依存しなくなる。
+					const float clipHipHeight = std::abs(origin.y);
+					if (clipHipHeight > 0.0001f)
+					{
+						const float sinkRatio = (sampled.y - origin.y) / clipHipHeight;
+						// 元データに極端な値が入っていても破綻しないよう、
+						// 沈み込みは腰の高さの±12%までに制限する。
+						const float clampedRatio = std::clamp(sinkRatio, -0.12f, 0.12f);
+						restPosition.y += restPosition.y * clampedRatio;
+					}
+				}
+
+				if (translationOnlyBone)
+				{
+					// 回転は休止姿勢のものを使い、位置だけ差し替える。
+					Matrix4x4 pose = rest->second;
+					pose._41 = restPosition.x;
+					pose._42 = restPosition.y;
+					pose._43 = restPosition.z;
+					boneIt->second.AnimationMatrix = pose;
+				}
+				else
+				{
+					boneIt->second.AnimationMatrix = rotationMatrix *
+						Matrix4x4::CreateTranslation(restPosition);
+				}
 			}
 			else
 			{
@@ -981,8 +1211,37 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 		}
 	}
 
-	// Apply the title pose to the upper body only.  This prevents the walk
-	// clip's weapon-hand keys from changing the sword grip or contract hand.
+}
+void CAnimationMesh::UpdateAnimationWithManualPose(
+	BoneCombMatrix& bonecombarray,
+	aiAnimation* animationdata,
+	int& CurrentFrame,
+	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
+	const std::vector<std::string>& animatedBoneNames,
+	bool loopAnimation,
+	float frameFraction)
+{
+	m_DebugBoneMatrices.clear();
+	const auto isAnimatedBone = [&animatedBoneNames](const std::string& name)
+	{
+		return std::find(animatedBoneNames.begin(), animatedBoneNames.end(), name) !=
+			animatedBoneNames.end();
+	};
+
+	// モデルの休止姿勢から始め、下で選択したボーンだけを読み込んだクリップへ置き換える。
+	for (auto& [name, bone] : m_BoneDictionary)
+	{
+		const auto rest = m_RestLocalMatrices.find(name);
+		bone.AnimationMatrix = rest != m_RestLocalMatrices.end()
+			? rest->second
+			: Matrix4x4::Identity;
+	}
+
+	ApplyAnimationToBones(
+		animationdata, CurrentFrame, frameFraction, animatedBoneNames, loopAnimation);
+
+	// タイトル姿勢は上半身だけへ適用する。
+	// 歩きクリップの手のキーで剣の握りや契約書を持つ手が変わらないようにする。
 	for (const auto& [boneName, localPose] : manualLocalRotations)
 	{
 		if (isAnimatedBone(boneName))
@@ -1002,6 +1261,65 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 	}
 }
 
+void CAnimationMesh::UpdateLayeredAnimation(
+	BoneCombMatrix& bonecombarray,
+	aiAnimation* baseAnimation,
+	int baseFrame,
+	float baseFrameFraction,
+	const std::vector<std::string>& baseBones,
+	bool loopBaseAnimation,
+	aiAnimation* overlayAnimation,
+	int overlayFrame,
+	float overlayFrameFraction,
+	const std::vector<std::string>& overlayBones,
+	bool loopOverlayAnimation,
+	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
+	const std::string& baseTranslationBone)
+{
+	m_DebugBoneMatrices.clear();
+
+	// 休止姿勢から始める。
+	for (auto& [name, bone] : m_BoneDictionary)
+	{
+		const auto rest = m_RestLocalMatrices.find(name);
+		bone.AnimationMatrix = rest != m_RestLocalMatrices.end()
+			? rest->second
+			: Matrix4x4::Identity;
+	}
+
+	// 下半身(ベース)を先に適用し、その上へ上半身(オーバーレイ)を重ねる。
+	// 同じボーンが両方の一覧にある場合は、後から書くオーバーレイが勝つ。
+	ApplyAnimationToBones(
+		baseAnimation, baseFrame, baseFrameFraction, baseBones, loopBaseAnimation,
+		baseTranslationBone);
+	ApplyAnimationToBones(
+		overlayAnimation, overlayFrame, overlayFrameFraction, overlayBones,
+		loopOverlayAnimation);
+
+	// どちらのクリップにも含まれないボーンだけ、指定された姿勢で上書きする。
+	const auto isDriven = [&baseBones, &overlayBones](const std::string& name)
+	{
+		return std::find(baseBones.begin(), baseBones.end(), name) != baseBones.end() ||
+			std::find(overlayBones.begin(), overlayBones.end(), name) != overlayBones.end();
+	};
+	for (const auto& [boneName, localPose] : manualLocalRotations)
+	{
+		if (isDriven(boneName))
+			continue;
+		auto boneIt = m_BoneDictionary.find(boneName);
+		auto rest = m_RestLocalMatrices.find(boneName);
+		if (boneIt != m_BoneDictionary.end() && rest != m_RestLocalMatrices.end())
+			boneIt->second.AnimationMatrix = localPose * rest->second;
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& bone : m_BoneDictionary)
+	{
+		if (bone.second.idx >= 0 && bone.second.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
+				bone.second.Matrix.Transpose();
+	}
+}
 void CAnimationMesh::UpdateManualPose(
 	BoneCombMatrix& bonecombarray,
 	const std::unordered_map<std::string, Matrix4x4>& localRotations)
@@ -1036,6 +1354,30 @@ void CAnimationMesh::UpdateManualPose(
 	}
 }
 
+void CAnimationMesh::ApplyModelProfile(const CharacterModelProfile& profile)
+{
+	if (!profile.weaponBone.empty())
+		m_swordBoneName = profile.weaponBone;
+	m_swordRotationDegrees = profile.weaponRotationDegrees;
+	m_swordHandOffset = profile.weaponHandOffset;
+	m_swordScale = profile.weaponScale;
+}
+
+static void CollectDebugBoneParents(
+	const CTreeNode<std::string>* node,
+	std::unordered_map<std::string, std::string>& parents)
+{
+	if (!node)
+		return;
+
+	for (const auto& child : node->m_children)
+	{
+		if (child && !node->m_nodedata.empty() && !child->m_nodedata.empty())
+			parents[child->m_nodedata] = node->m_nodedata;
+		CollectDebugBoneParents(child.get(), parents);
+	}
+}
+
 std::vector<std::string> CAnimationMesh::GetBoneNames() const
 {
 	std::vector<std::string> names;
@@ -1048,4 +1390,11 @@ std::vector<std::string> CAnimationMesh::GetBoneNames() const
 		}
 	}
 	return names;
+}
+
+std::unordered_map<std::string, std::string> CAnimationMesh::GetDebugBoneParentNames() const
+{
+	std::unordered_map<std::string, std::string> parents;
+	CollectDebugBoneParents(&m_AssimpNodeNameTree, parents);
+	return parents;
 }

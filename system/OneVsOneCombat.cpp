@@ -64,9 +64,9 @@ namespace
         result.axisY = axisY;
         result.axisZ = axisZ;
         result.lengthx = thickness;
-        // length is the exact hilt-to-tip span. Adding thickness here made the
-        // OBB extend past both endpoints, so the debug box no longer matched
-        // the visible sword even when the segment direction was correct.
+        // 長さは柄から剣先までの実際の距離にする。
+        // ここへ厚みを足すとOBBが両端からはみ出し、方向が正しくても
+        // デバッグ表示と見た目の剣が一致しなくなる。
         result.lengthy = std::max(length, 0.001f);
         result.lengthz = thickness;
         return result;
@@ -159,19 +159,74 @@ void OneVsOneCombat::Reset()
     m_playerHp = MAX_HP;
     m_enemyHp = MAX_HP;
     m_enemyCooldown = 0.7f;
+    m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
     m_playerAttack = {};
     m_enemyAttack = {};
     m_collisionDebug = {};
 	m_playerHitGrace = 0.0f;
 }
 
+void OneVsOneCombat::ClearEnemyCollisionDebug()
+{
+	m_collisionDebug.broadPhaseOverlap = false;
+	m_collisionDebug.narrowPhaseTested = false;
+	m_collisionDebug.narrowPhaseHit = false;
+	m_collisionDebug.enemyBroadPhase = {};
+	m_collisionDebug.enemyObb = {};
+}
+
+void OneVsOneCombat::UpdatePlayerCollisionDebug(
+	const Vector3& swordBase,
+	const Vector3& swordTip,
+	const Vector3& previousSwordTip,
+	bool swordTransformValid,
+	const BoundingBoxOBB& playerObb)
+{
+	ClearEnemyCollisionDebug();
+	m_collisionDebug.swordTransformValid = swordTransformValid;
+	m_collisionDebug.playerObb = playerObb;
+	m_collisionDebug.playerBroadPhase =
+		GM31::GE::Collision::BuildWorldAABBFromOBB(playerObb);
+	m_collisionDebug.attackBroadPhase = {};
+	m_collisionDebug.bladeObb = {};
+	m_collisionDebug.tipSweepObb = {};
+	if (!swordTransformValid)
+		return;
+
+	m_collisionDebug.bladeObb = MakeSegmentObb(swordBase, swordTip, 1.4f);
+	m_collisionDebug.tipSweepObb = MakeSegmentObb(
+		previousSwordTip, swordTip, 2.2f);
+	m_collisionDebug.attackBroadPhase = MakePointCloudAabb(
+		swordBase, swordTip, previousSwordTip, 1.1f);
+}
+
+bool OneVsOneCombat::CanCancelPlayerAttack(int cancelEndFrame) const
+{
+	if (!IsPlayerAttacking() || IsPlayerDefeated() || IsEnemyDefeated())
+		return false;
+	return GetPlayerAttackFrame() <= cancelEndFrame;
+}
+
+void OneVsOneCombat::CancelPlayerAttack()
+{
+	if (IsPlayerAttacking())
+		m_playerAttack = {};
+}
+
+int OneVsOneCombat::GetPlayerAttackFrame() const
+{
+	return static_cast<int>(m_playerAttack.totalElapsed * 60.0f);
+}
+
 void OneVsOneCombat::Update(
     uint64_t deltaMicroseconds,
     const Vector3& playerPosition,
     const Vector3& enemyPosition,
-    bool playerAttackTriggered,
+	bool playerAttackTriggered,
+	bool playerHeavyAttackTriggered,
 	bool enemyAttackTriggered,
-    const Vector3& swordBase,
+	bool playerInvincible,
+	const Vector3& swordBase,
     const Vector3& swordTip,
     const Vector3& previousSwordTip,
     bool swordTransformValid,
@@ -195,9 +250,9 @@ void OneVsOneCombat::Update(
 		m_playerAttack.phase == Phase::Active) &&
 		m_collisionDebug.narrowPhaseHit)
 	{
-		// Preserve a very short contact that occurs at a phase boundary. Without
-		// this, a 60 Hz frame can see the blade intersect during windup and miss
-		// it one frame later when the damaging phase begins.
+		// フェーズ境界で発生した短い接触を少しだけ保持する。
+		// 60Hz更新では、振りかぶり中に剣が交差して次のダメージ開始フレームで
+		// すでに離れていることがあるためである。
 		m_playerHitGrace = 0.12f;
 	}
 
@@ -213,18 +268,49 @@ void OneVsOneCombat::Update(
     }
     else
     {
-        if (playerAttackTriggered && m_playerAttack.phase == Phase::Ready)
-            m_playerAttack = { Phase::Windup, 0.0f, false };
+		if ((playerAttackTriggered || playerHeavyAttackTriggered) && m_playerAttack.phase == Phase::Ready)
+		{
+			m_playerAttack = {};
+			m_playerAttack.phase = Phase::Windup;
+			m_playerAttack.kind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
+			m_playerAttack.comboStep = 1;
+		}
+		else if ((playerAttackTriggered || playerHeavyAttackTriggered) &&
+			m_playerAttack.phase != Phase::Ready &&
+			m_playerAttack.phase != Phase::Defeated)
+		{
+			const AttackKind requestedKind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
+			const bool sameKind = requestedKind == m_playerAttack.kind;
+			// 現在の攻撃中に次の入力を受け付ける。
+			// 有効時間や硬直の境界直前に押してもコンボが途切れないようにする。
+			const bool canBuffer = m_playerAttack.phase == Phase::Windup ||
+				m_playerAttack.phase == Phase::Active ||
+				m_playerAttack.phase == Phase::Recovery;
+			if (sameKind && canBuffer && m_playerAttack.comboStep < 3)
+				m_playerAttack.comboQueued = std::min(2, m_playerAttack.comboQueued + 1);
+		}
+
+		// 敵の攻撃の時間・威力・射程は、敵AIが選んだ攻撃データから引く。
+		// これにより攻撃の種類ごとに「予兆の長さ」「隙の大きさ」が変わり、
+		// プレイヤーは予兆を見て回避するか踏み込むかを選べる。
+		const Combat::AttackData& enemyAttack = Combat::EnemyAttackOf(m_enemyAttackKind);
+		const float enemyWindup = enemyAttack.frames.anticipationSeconds;
+		const float enemyActive = enemyAttack.frames.activeSeconds;
+		const float enemyRecovery = enemyAttack.frames.recoverySeconds;
 
 		if (enemyAttackTriggered && m_enemyAttack.phase == Phase::Ready)
         {
             m_enemyAttack = { Phase::Windup, 0.0f, false };
-            m_enemyCooldown = ENEMY_COOLDOWN;
+            m_enemyCooldown = enemyAttack.frames.cooldownSeconds;
         }
 
-        m_playerAttack.elapsed += deltaSeconds;
-        if (m_playerAttack.phase == Phase::Windup &&
-            m_playerAttack.elapsed >= PLAYER_WINDUP)
+		m_playerAttack.elapsed += deltaSeconds;
+		m_playerAttack.totalElapsed += deltaSeconds;
+		const float playerWindup = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_WINDUP : PLAYER_WINDUP;
+		const float playerActive = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_ACTIVE : PLAYER_ACTIVE;
+		const float playerRecovery = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_RECOVERY : PLAYER_RECOVERY;
+		if (m_playerAttack.phase == Phase::Windup &&
+		    m_playerAttack.elapsed >= playerWindup)
         {
             m_playerAttack.phase = Phase::Active;
             m_playerAttack.elapsed = 0.0f;
@@ -234,49 +320,68 @@ void OneVsOneCombat::Update(
 			if (!m_playerAttack.hit &&
 				(m_collisionDebug.narrowPhaseHit || m_playerHitGrace > 0.0f))
 			{
-				m_enemyHp = std::max(0.0f, m_enemyHp - PLAYER_DAMAGE);
+				const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
+				m_enemyHp = std::max(0.0f, m_enemyHp - damage);
 				m_playerAttack.hit = true;
 				m_playerHitGrace = 0.0f;
             }
-            if (m_playerAttack.elapsed >= PLAYER_ACTIVE)
+			if (m_playerAttack.elapsed >= playerActive)
             {
                 m_playerAttack.phase = Phase::Recovery;
                 m_playerAttack.elapsed = 0.0f;
             }
         }
-        else if (m_playerAttack.phase == Phase::Recovery &&
-            m_playerAttack.elapsed >= PLAYER_RECOVERY)
+		else if (m_playerAttack.phase == Phase::Recovery &&
+		    m_playerAttack.elapsed >= playerRecovery)
         {
-            m_playerAttack = {};
+			if (m_playerAttack.comboQueued && m_playerAttack.comboStep < 3)
+			{
+				const AttackKind kind = m_playerAttack.kind;
+				const int nextStep = m_playerAttack.comboStep + 1;
+				const int queuedInputs = m_playerAttack.comboQueued;
+				m_playerAttack = {};
+				m_playerAttack.phase = Phase::Windup;
+				m_playerAttack.kind = kind;
+				m_playerAttack.comboStep = nextStep;
+				m_playerAttack.comboQueued = std::max(0, queuedInputs - 1);
+			}
+			else
+				m_playerAttack = {};
         }
 
         m_enemyAttack.elapsed += deltaSeconds;
         if (m_enemyAttack.phase == Phase::Windup &&
-            m_enemyAttack.elapsed >= ENEMY_WINDUP)
+            m_enemyAttack.elapsed >= enemyWindup)
         {
             m_enemyAttack.phase = Phase::Active;
             m_enemyAttack.elapsed = 0.0f;
         }
         else if (m_enemyAttack.phase == Phase::Active)
         {
-			// Only the initial head slam deals damage. The later forward lunge is
-			// movement/animation only and must not create a second hit.
-			static constexpr float ENEMY_HIT_TIMES[ENEMY_MAX_HITS] = { 0.18f };
+			// ダメージを与えるのは最初の一撃だけにする。
+			// その後の踏み込みは移動・アニメーション専用で、二重にヒットさせない。
+			const float firstHitTime = Combat::EnemyFirstHitTimeOf(m_enemyAttackKind);
 			if (m_enemyAttack.hitCount < ENEMY_MAX_HITS &&
-				m_enemyAttack.elapsed >= ENEMY_HIT_TIMES[m_enemyAttack.hitCount])
+				m_enemyAttack.elapsed >= firstHitTime)
 			{
-				if (distance <= ENEMY_ATTACK_RANGE)
-					m_playerHp = std::max(0.0f, m_playerHp - ENEMY_DAMAGE);
+				// 射程は攻撃の種類ごとに違う。噛みつきは近距離だけ、薙ぎ払いは広い。
+				const float hitRange = enemyAttack.broadPhaseFilter.maxDistance;
+				if (distance <= hitRange && !playerInvincible)
+				{
+					m_playerHp = std::max(
+						0.0f,
+						m_playerHp - static_cast<float>(enemyAttack.damage));
+				}
 				++m_enemyAttack.hitCount;
 			}
-            if (m_enemyAttack.elapsed >= ENEMY_ACTIVE)
+            if (m_enemyAttack.elapsed >= enemyActive)
             {
                 m_enemyAttack.phase = Phase::Recovery;
                 m_enemyAttack.elapsed = 0.0f;
             }
         }
         else if (m_enemyAttack.phase == Phase::Recovery &&
-            m_enemyAttack.elapsed >= ENEMY_RECOVERY)
+            m_enemyAttack.elapsed >= enemyRecovery)
         {
             m_enemyAttack = {};
         }

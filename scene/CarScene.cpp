@@ -99,7 +99,7 @@ namespace {
 				"assets/model/jack1/")						// テクスチャのパス
 	};
 
-	// for debug
+	// デバッグ用の処理。
 	void debugMeshinfo(std::string meshID) {
 
 		CStaticMesh* smesh = MeshManager::getMesh<CStaticMesh>(meshID);

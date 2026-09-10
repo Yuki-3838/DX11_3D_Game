@@ -6,14 +6,7 @@
 #include	"../system/commontypes.h"	
 
 class player : public gameobject {
-	//	
-	/* 譛ｬ譚･縺ｮ繧ｳ繝ｼ繝・
-	static constexpr float VALUE_MOVE_MODEL = 2.0f;				// 遘ｻ蜍暮㍼
-	static constexpr float VALUE_ROTATE_MODEL = PI * 0.02f;		// 蝗櫁ｻ｢驥・
-	static constexpr float RATE_ROTATE_MODEL = 0.4f;			// 蝗櫁ｻ｢蜑ｲ蜷・
-	static constexpr float RATE_MOVE_MODEL = 0.2f;					// 遘ｻ蜍墓ｸ幄｡ｰ蜑ｲ蜷・
-	*/
-	// debug逕ｨ
+	// 旧来の移動調整値（現在は未使用）。
 public:
 	inline static float VALUE_MOVE_MODEL = 70.0f;				// 遘ｻ蜍暮㍼
 	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// 蝗櫁ｻ｢驥・
@@ -25,37 +18,36 @@ public:
 	{
 		Idle,
 		Walk,
+		Run,
+		Dodge,
 		Jump,
 	};
 	
-	// IScene縺ｮ繝昴う繝ｳ繧ｿ繧貞女縺大叙繧九さ繝ｳ繧ｹ繝医Λ繧ｯ繧ｿ繧定ｿｽ蜉
-	player(IScene* scene) :gameobject(scene) {}
+	// 所属シーンを受け取るゲームオブジェクトのコンストラクタ。
+	explicit player(IScene* scene);
 
 	void update(uint64_t delta) override;
 	void update(uint64_t delta, float cameraYaw);
 	void update(uint64_t delta, float cameraYaw, bool movementLocked);
+	void update(uint64_t delta, float cameraYaw, bool movementLocked, bool sprinting, bool dodgeTriggered);
 	void draw(uint64_t delta) override;
 	void init() override;
 	void dispose() override;
 
-	Vector3 getVel() const {
-		return m_move;
-	}
-
-	Vector3 getPos() const {
-		return m_srt.pos;
-	}
+	Vector3 getVel() const;
+	Vector3 getPos() const;
 
 	SRT getRenderSRT() const;
-	void setVisualGroundOffsetY(float offsetY) { m_visualGroundOffsetY = offsetY; }
-	MotionState getMotionState() const { return m_motionState; }
+	void setVisualGroundOffsetY(float offsetY);
+	MotionState getMotionState() const;
 	const char* getMotionStateName() const;
-	float getMotionTime() const { return m_motionTime; }
+	float getMotionTime() const;
+	bool isDodging() const;
+	bool isInvincible() const;
+	int getDodgeFrame() const;
 	void resetMotion();
 
-	void setVel(const Vector3& vel) {
-		m_move = vel;
-	}
+	void setVel(const Vector3& vel);
 
 private:
 	Vector3 m_move{0,0,0};				// 遘ｻ蜍暮㍼
@@ -65,8 +57,11 @@ private:
 	float m_jumpVelocity = 0.0f;
 	bool m_jumpWasPressed = false;
 	bool m_isJumping = false;
-	// Render-only correction for imported models whose local origin is not at
-	// the feet. Gameplay movement and jump physics continue to use m_srt.
+	bool m_isDodging = false;
+	float m_dodgeTime = 0.0f;
+	Vector3 m_dodgeDirection{0, 0, 0};
+	// 読み込んだモデルの原点が足元にない場合に描画だけへ加える補正値。
+	// ゲーム内の移動とジャンプ物理は従来どおりm_srtを使用する。
 	float m_visualGroundOffsetY = 0.0f;
 
 };

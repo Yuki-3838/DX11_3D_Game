@@ -10,6 +10,7 @@
 #include "CMeshRenderer.h"
 #include "CMaterial.h"
 #include "CStaticMeshRenderer.h"
+#include "CharacterModelProfile.h"
 #include <vector>
 
 class CAnimationMesh : public CStaticMesh
@@ -44,16 +45,15 @@ protected:
 	float m_swordLocalHalfLength = 0.5f;
 	float m_swordProxyLength = 75.0f;
 	Vector3 m_swordModelCenter{};
-	// Longest local axis of the imported sword vertices.  Collision endpoints
-	// are generated from this axis instead of assuming the asset is +Z.
+	// 読み込んだ剣頂点のローカル空間で最も長い軸。
+	// +Z固定と仮定せず、この軸から攻撃判定の両端を作る。
 	Vector3 m_swordCollisionLocalAxis{ 0.0f, 0.0f, 1.0f };
-	// Centered local coordinate of the Fallen Paladin sword grip.  This is
-	// measured from the extracted mesh's handle region, not guessed from its
-	// overall bounding-box center.
+	// Fallen Paladinの剣の握り位置を表すローカル座標。
+	// 全体の境界中心ではなく、抽出した柄の領域から測定した値を使う。
 	Vector3 m_swordGripLocalPoint{};
 	Vector3 m_swordTestPosition{ 30.0f, 55.0f, 0.0f };
-	// Fitted interactively in GameScene and kept as the safe fallback when no
-	// preset exists yet.  These are the values from the designer's good fit.
+	// GameSceneの調整画面で合わせた値。
+	// プリセットがない場合の安全な初期値として使用する。
 	Vector3 m_swordRotationDegrees{ 81.50f, -46.50f, 76.75f };
 	Vector3 m_swordHandOffset{ 0.650f, -0.070f, 0.646f };
 	Vector3 m_swordWorldBase{};
@@ -70,6 +70,19 @@ protected:
 
 	void LoadSwordAttachmentPreset();
 	void SaveSwordAttachmentPreset();
+
+	// 1本のクリップを、指定したボーンだけへ適用する。
+	// ボーン辞書を休止姿勢へ戻す処理は呼び出し側で行う(複数回重ねられるようにするため)。
+	void ApplyAnimationToBones(
+		aiAnimation* animationdata,
+		int currentFrame,
+		float frameFraction,
+		const std::vector<std::string>& animatedBoneNames,
+		bool loopAnimation,
+		// このボーンだけはクリップの平行移動も取り込む(通常は腰)。
+		// 絶対座標ではなくクリップ先頭からの相対オフセットとして扱うため、
+		// ゲーム側が管理するワールド移動と二重にならない。
+		const std::string& translationBone = std::string());
 	bool BuildEmbeddedSwordWorldSegment(
 		const Matrix4x4& parentWorld,
 		Vector3& base,
@@ -79,27 +92,76 @@ protected:
 	void BuildLocalPoseMap(
 		const aiAnimation* animationdata,
 		int& CurrentFrame,
-		std::unordered_map<std::string, SRTQ>& localposemap);
+		std::unordered_map<std::string, SRTQ>& localposemap,
+		float frameFraction = 0.0f, bool loopAnimation = true);
 
 public:
 	void SetCurentAnimation(aiAnimation* currentanimation);
 
 	void Load(std::string filename, std::string texturedirectory = "");
+	void ApplyModelProfile(const CharacterModelProfile& profile);
 
 	// 階層構造を考慮したボーンコンビネーション行列を更新
 	void UpdateBoneMatrix(CTreeNode<std::string>* ptree, Matrix4x4 matrix);		// 20240714 DX化	
 
 	// アニメーションの更新
-	void Update(BoneCombMatrix& bonecombarray, int& CurrentFrame);
+	void Update(BoneCombMatrix& bonecombarray, int& CurrentFrame,
+		float frameFraction = 0.0f, bool loopAnimation = true);
 
-	// Imported locomotion can drive selected bones while the title pose keeps
-	// control of the weapon and contract hand.
+	// 2つのアニメーションを回転だけクロスフェードして更新する。
+	// 位置・スケールはto側を使い、ルート移動や接地が二重適用されないようにする。
+	void UpdateBlendedRotationAnimation(
+		BoneCombMatrix& bonecombarray,
+		const aiAnimation* fromAnimation,
+		int fromFrame,
+		float fromFrameFraction,
+		bool loopFromAnimation,
+		const aiAnimation* toAnimation,
+		int toFrame,
+		float toFrameFraction,
+		bool loopToAnimation,
+		float blendRate);
+
+	// 読み込んだ移動モーションは選択したボーンだけを動かし、
+	// タイトル姿勢は剣を持つ手と契約書を持つ手を引き続き制御する。
 	void UpdateAnimationWithManualPose(
 		BoneCombMatrix& bonecombarray,
 		aiAnimation* animationdata,
 		int& CurrentFrame,
 		const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
-		const std::vector<std::string>& animatedBoneNames);
+		const std::vector<std::string>& animatedBoneNames,
+		bool loopAnimation = true,
+		// キー番号の小数部。0.0〜1.0で、CurrentFrameと次のキーの間のどこにいるかを表す。
+		// これを渡すとキー間をslerp補間するため、動きが滑らかになる。
+		// 元データは30fps前後で焼かれており、60Hz以上で再生すると
+		// 補間なしでは同じ姿勢が数フレーム続いてから飛ぶ、カクついた動きになる。
+		float frameFraction = 0.0f);
+
+	/**
+	 * @brief 2つのクリップをボーンごとに使い分けて合成する(上半身・下半身のレイヤー分け)。
+	 *
+	 * @details
+	 * 下半身に移動・待機クリップ、上半身に攻撃クリップ、という使い分けを想定している。
+	 * これにより「歩きながら攻撃」が表現でき、さらに攻撃中も脚が
+	 * 移動クリップで正しく動き続けるため、脚が静止する問題を回避できる。
+	 *
+	 * overlayBones は baseBones より優先される(同じボーンが両方にある場合は overlay 側)。
+	 */
+	void UpdateLayeredAnimation(
+		BoneCombMatrix& bonecombarray,
+		aiAnimation* baseAnimation,
+		int baseFrame,
+		float baseFrameFraction,
+		const std::vector<std::string>& baseBones,
+		bool loopBaseAnimation,
+		aiAnimation* overlayAnimation,
+		int overlayFrame,
+		float overlayFrameFraction,
+		const std::vector<std::string>& overlayBones,
+		bool loopOverlayAnimation,
+		const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
+		// ベース側で平行移動も取り込むボーン(通常は腰)。
+		const std::string& baseTranslationBone = std::string());
 
 	// レスト姿勢に対して指定ボーンのローカル回転を加えたポーズを更新
 	void UpdateManualPose(
@@ -107,10 +169,15 @@ public:
 		const std::unordered_map<std::string, Matrix4x4>& localRotations);
 
 	std::vector<std::string> GetBoneNames() const;
+	std::unordered_map<std::string, std::string> GetDebugBoneParentNames() const;
 	const std::unordered_map<std::string, Matrix4x4>& GetDebugBoneMatrices() const
 	{
 		return m_DebugBoneMatrices;
 	}
+	// 現在のボーン行列でスキニングした頂点のローカルZ最大値を返す。
+	// ドラゴンは描画時にX軸へ+90度回転するため、接地判定ではこの値が
+	// ワールドYの最下点に対応する。
+	float GetAnimatedLocalMaxZ() const;
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);

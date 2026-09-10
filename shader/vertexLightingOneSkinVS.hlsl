@@ -4,11 +4,11 @@ PS_IN main(in VSONESKIN_IN In)
 {
     PS_IN Out;
 
-	// ƒƒ“ƒXƒLƒ“’¸“_ƒuƒŒƒ“ƒh‚Ìˆ—
+	// ï¿½ï¿½ï¿½ï¿½ï¿½Xï¿½Lï¿½ï¿½ï¿½ï¿½ï¿½_ï¿½uï¿½ï¿½ï¿½ï¿½ï¿½hï¿½Ìï¿½ï¿½ï¿½
     float4x4 comb = (float4x4) 0;
     for (int i = 0; i < 4; i++)
     {
-		// d‚Ý‚ðŒvŽZ‚µ‚È‚ª‚çs—ñ¶¬
+		// ï¿½dï¿½Ý‚ï¿½ï¿½vï¿½Zï¿½ï¿½ï¿½È‚ï¿½ï¿½ï¿½sï¿½ñ¶ï¿½
         comb += BoneMatrix[In.BoneIndex[i]] * In.BoneWeight[i];
     }
 
@@ -28,7 +28,7 @@ PS_IN main(in VSONESKIN_IN In)
     worldNormal = normalize(worldNormal);
 
     float light = -(dot(Light.Direction.xyz, worldNormal.xyz))* 0.5 + 0.5;
-    light = saturate(light);  // ƒ‰ƒ“ƒo[ƒg”½ŽË‚ÌŒvŽZ
+    light = saturate(light);  // ï¿½ï¿½ï¿½ï¿½ï¿½oï¿½[ï¿½gï¿½ï¿½ï¿½Ë‚ÌŒvï¿½Z
 
     Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
     Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
@@ -37,6 +37,7 @@ PS_IN main(in VSONESKIN_IN In)
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
+    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
 
-    return Out;    
+    return Out;
 }

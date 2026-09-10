@@ -8,14 +8,14 @@ PS_IN main(in VS_IN In)
 	wvp = mul(World, View);
 	wvp = mul(wvp, Projection);
 	
-    // –@ü•ÏŠ·s—ñ‚ğŒvZiŠgk¬•ª‚ğæ‚èœ‚­j
+    // ï¿½@ï¿½ï¿½ï¿½ÏŠï¿½ï¿½sï¿½ï¿½ï¿½ï¿½vï¿½Zï¿½iï¿½gï¿½kï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½èœï¿½ï¿½ï¿½j
     float3x3 normalMatrix = Inverse3x3(float3x3(World._11, World._12, World._13,
                                              World._21, World._22, World._23,
                                              World._31, World._32, World._33));
-    // “]’u
+    // ï¿½]ï¿½u
     normalMatrix = transpose(normalMatrix);
 
-    // –@üƒxƒNƒgƒ‹‚Ì•ûŒü‚ğƒ[ƒ‹ƒhÀ•WŒn‚É•ÏŠ·
+    // ï¿½@ï¿½ï¿½ï¿½xï¿½Nï¿½gï¿½ï¿½ï¿½Ì•ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½[ï¿½ï¿½ï¿½hï¿½ï¿½ï¿½Wï¿½nï¿½É•ÏŠï¿½
 	float3 worldNormal, normal;
 	normal = In.Normal.xyz;
     
@@ -33,7 +33,9 @@ PS_IN main(in VS_IN In)
 	
 	Out.Position = mul( In.Position, wvp );
 	Out.TexCoord = In.TexCoord;
-	
+	// å½±ã®åˆ¤å®šç”¨ã«ã€ãƒ©ã‚¤ãƒˆã‹ã‚‰è¦‹ãŸä½ç½®ã‚‚æ¸¡ã™ã€‚
+	Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+
     return Out;
 }
 
