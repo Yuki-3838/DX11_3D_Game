@@ -277,15 +277,15 @@ const char* player::getMotionStateName() const
 	switch (m_motionState)
 	{
 	case MotionState::Walk:
-		return "Walk";
+		return "歩行";
 	case MotionState::Run:
-		return "Run";
+		return "ダッシュ";
 	case MotionState::Dodge:
-		return "Dodge";
+		return "回避";
 	case MotionState::Jump:
-		return "Jump";
+		return "ジャンプ";
 	default:
-		return "Idle";
+		return "待機";
 	}
 }
 

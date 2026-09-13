@@ -92,20 +92,64 @@ namespace
 			Matrix4x4::CreateTranslation(key.position.x, key.position.y, key.position.z);
 	}
 
+	Matrix4x4 BlendLocalSrt(
+		const Matrix4x4& from,
+		const Matrix4x4& to,
+		float amount)
+	{
+		const float rate = std::clamp(amount, 0.0f, 1.0f);
+		if (rate <= 0.0f)
+			return from;
+		if (rate >= 1.0f)
+			return to;
+
+		const auto extractScale = [](const Matrix4x4& matrix)
+		{
+			return Vector3(
+				Vector3(matrix._11, matrix._12, matrix._13).Length(),
+				Vector3(matrix._21, matrix._22, matrix._23).Length(),
+				Vector3(matrix._31, matrix._32, matrix._33).Length());
+		};
+		const auto removeScale = [&extractScale](const Matrix4x4& matrix)
+		{
+			Matrix4x4 rotation = matrix;
+			const Vector3 scale = extractScale(matrix);
+			const float sx = std::max(scale.x, 0.0001f);
+			const float sy = std::max(scale.y, 0.0001f);
+			const float sz = std::max(scale.z, 0.0001f);
+			rotation._11 /= sx; rotation._12 /= sx; rotation._13 /= sx;
+			rotation._21 /= sy; rotation._22 /= sy; rotation._23 /= sy;
+			rotation._31 /= sz; rotation._32 /= sz; rotation._33 /= sz;
+			rotation._41 = 0.0f;
+			rotation._42 = 0.0f;
+			rotation._43 = 0.0f;
+			rotation._44 = 1.0f;
+			return rotation;
+		};
+
+		const Vector3 fromScale = extractScale(from);
+		const Vector3 toScale = extractScale(to);
+		const Quaternion fromRotation =
+			Quaternion::CreateFromRotationMatrix(removeScale(from));
+		const Quaternion toRotation =
+			Quaternion::CreateFromRotationMatrix(removeScale(to));
+		const Quaternion rotation = Quaternion::Slerp(fromRotation, toRotation, rate);
+		const Vector3 scale = Vector3::Lerp(fromScale, toScale, rate);
+		const Vector3 position = Vector3::Lerp(
+			Vector3(from._41, from._42, from._43),
+			Vector3(to._41, to._42, to._43),
+			rate);
+		return Matrix4x4::CreateScale(scale) *
+			Matrix4x4::CreateFromQuaternion(rotation) *
+			Matrix4x4::CreateTranslation(position);
+	}
+
 	Matrix4x4 BlendLocalPose(
 		const Matrix4x4& from,
 		const Matrix4x4& to,
 		float amount)
 	{
-		amount = std::clamp(amount, 0.0f, 1.0f);
-		const Quaternion fromRotation = Quaternion::CreateFromRotationMatrix(from);
-		const Quaternion toRotation = Quaternion::CreateFromRotationMatrix(to);
-		const Quaternion rotation = Quaternion::Slerp(fromRotation, toRotation, amount);
-		const Vector3 fromPosition(from._41, from._42, from._43);
-		const Vector3 toPosition(to._41, to._42, to._43);
-		const Vector3 position = fromPosition + (toPosition - fromPosition) * amount;
-		return Matrix4x4::CreateFromQuaternion(rotation) *
-			Matrix4x4::CreateTranslation(position.x, position.y, position.z);
+		return BlendLocalSrt(from, to, amount);
 	}
 }
 
@@ -461,6 +505,10 @@ void CCharacterAnimator::BeginAttackBlend()
 {
 	m_attackBlendFromPose = m_lastRenderedPose;
 	m_attackBlendTime = 0.0f;
+	m_locomotionBlendActive = false;
+	// PlayAttackMotion()の時点ではmeshを受け取れないため、実際の現在姿勢は
+	// 次のUpdateで取得する。これにより歩行中の上半身姿勢を正確にfrom側へ使える。
+	m_attackBlendPending = true;
 }
 
 void CCharacterAnimator::PlayImportedAttackAnimation(
@@ -496,6 +544,8 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 	m_attackMotionFilename = name;
 	m_motionLoop = false;
 	m_motionPlaying = true;
+	// FBX攻撃経路でも、歩行姿勢から攻撃姿勢へ短くクロスフェードする。
+	m_attackBlendDuration = 0.10f;
 	// 読み込んだFBXは一致するMixamoボーンへ直接適用し、
 	// 旧来の手作業による.motion姿勢レイヤーは通さない。
 	m_useCustomMotion = false;
@@ -509,6 +559,8 @@ void CCharacterAnimator::PlayDodgeMotion()
 	m_importedAttackAnimation = nullptr;
 	m_importedAnimationFrame = 0;
 	m_importedAnimationFrameAccumulator = 0.0f;
+	m_attackBlendPending = false;
+	m_locomotionBlendActive = false;
 	BuildFallbackDodgeMotion();
 	m_motionTime = 0.0f;
 	m_motionLoop = false;
@@ -779,13 +831,15 @@ void CCharacterAnimator::Update(
 	BoneCombMatrix& boneComb,
 	const CharacterAnimationState& state)
 {
+	const float deltaSeconds = std::clamp(state.deltaSeconds, 0.0f, 0.1f);
+	const float frameScale = deltaSeconds * 60.0f;
 	// モーション専用シーンではUIのPlayを使い、GameSceneでは左クリックで
 	// 保存済みattack.motionを先頭から1回再生する。
 	if (m_hitStopSeconds > 0.0f)
 	{
 		// 数回の固定更新で姿勢を完全に止め、剣がすり抜けて見えず
 		// 接触の瞬間が分かるようにする。
-		m_hitStopSeconds = std::max(0.0f, m_hitStopSeconds - 1.0f / 60.0f);
+		m_hitStopSeconds = std::max(0.0f, m_hitStopSeconds - deltaSeconds);
 		if (m_useCustomMotion && !m_motionKeys.empty())
 		{
 			std::unordered_map<std::string, Matrix4x4> deltas;
@@ -824,6 +878,16 @@ void CCharacterAnimator::Update(
 	{
 		if (m_motionPlaying && m_motionTime < m_motionDuration)
 		{
+			if (m_attackBlendPending)
+			{
+				// 直前のUpdateで確定した歩行/走行のローカル姿勢を保存する。
+				// 上半身のfrom姿勢だけを使い、下半身は今フレームの移動クリップを
+				// そのまま適用することで、歩行の接地を崩さない。
+				m_attackBlendFromPose = mesh.CaptureCurrentLocalPose();
+				m_attackBlendPending = false;
+				m_attackBlendTime = 0.0f;
+			}
+
 			// 外部クリップはプレイヤーと同じMixamoスケルトンを使うため、
 			// 一致する身体チャンネルを適用する。ただし移動はゲーム側が管理するので
 			// ルートの平行移動は取り込まない。
@@ -851,14 +915,24 @@ void CCharacterAnimator::Update(
 				: nullptr;
 			if (state.walking)
 			{
-				m_walkFrameAccumulator += useRunForAttack
+				m_walkFrameAccumulator += (useRunForAttack
 					? m_runPlaybackRate
-					: m_walkPlaybackRate;
+					: m_walkPlaybackRate) * frameScale;
 				m_walkFrame = static_cast<int>(m_walkFrameAccumulator);
 			}
 			const int lowerBodyFrame = m_walkFrame;
 			const float lowerBodyFraction =
 				m_walkFrameAccumulator - std::floor(m_walkFrameAccumulator);
+			float attackBlendRate = 1.0f;
+			if (m_attackBlendTime < m_attackBlendDuration)
+			{
+				m_attackBlendTime += deltaSeconds;
+				const float linearBlend = std::clamp(
+					m_attackBlendTime / std::max(m_attackBlendDuration, 0.001f),
+					0.0f,
+					1.0f);
+				attackBlendRate = linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+			}
 
 			if (lowerBodyAnimation != nullptr)
 			{
@@ -868,7 +942,10 @@ void CCharacterAnimator::Update(
 					LowerBodyBones(), true,
 					m_importedAttackAnimation, m_importedAnimationFrame,
 					attackFrameFraction, m_importedAttackBones, false,
-					m_idlePose);
+					m_idlePose,
+					std::string(),
+					&m_attackBlendFromPose,
+					attackBlendRate);
 			}
 			else
 			{
@@ -881,10 +958,13 @@ void CCharacterAnimator::Update(
 					noManualPose,
 					m_importedAttackBones,
 					false,
-					attackFrameFraction);
+					attackFrameFraction,
+					&m_attackBlendFromPose,
+					attackBlendRate);
 			}
-			m_motionTime += 1.0f / 60.0f;
-			m_importedAnimationFrameAccumulator += m_importedAnimationFrameRate;
+			m_motionTime += deltaSeconds;
+			m_importedAnimationFrameAccumulator +=
+				m_importedAnimationFrameRate * frameScale;
 			m_importedAnimationFrame = static_cast<int>(m_importedAnimationFrameAccumulator);
 			return;
 		}
@@ -892,14 +972,21 @@ void CCharacterAnimator::Update(
 		m_importedAttackAnimation = nullptr;
 		m_importedAnimationFrame = 0;
 		m_importedAnimationFrameAccumulator = 0.0f;
+		m_attackBlendPending = false;
+		// 攻撃の最後の姿勢も保存し、次の待機/歩行へ戻るときに同じように
+		// クロスフェードする。開始時だけ滑らかでも、終了時にスナップすれば
+		// 一連の動きとしては不自然になるためである。
+		m_locomotionBlendFromPose = mesh.CaptureCurrentLocalPose();
+		m_locomotionBlendTime = 0.0f;
+		m_locomotionBlendActive = true;
 		m_motionPlaying = false;
 	}
 
 	if (m_motionPlaying)
 	{
-		// 現在のシーンAPIはアニメーターへフレーム時間を渡さないため、
-		// エディター再生はゲームの固定60Hzで進める。
-		m_motionTime += 1.0f / 60.0f;
+		// GameSceneから渡された実時間で進める。固定1/60だけに依存すると、
+		// 可変フレーム時に攻撃の再生速度と判定タイミングがずれる。
+		m_motionTime += deltaSeconds;
 		if (m_motionTime > m_motionDuration)
 		{
 			if (m_motionLoop)
@@ -924,6 +1011,21 @@ void CCharacterAnimator::Update(
 			return;
 		}
 		m_comboPreviewActive = false;
+	}
+
+	float locomotionBlendRate = 1.0f;
+	const std::unordered_map<std::string, Matrix4x4>* locomotionBlendFromPose = nullptr;
+	if (m_locomotionBlendActive)
+	{
+		m_locomotionBlendTime += deltaSeconds;
+		const float linearBlend = std::clamp(
+			m_locomotionBlendTime / std::max(m_locomotionBlendDuration, 0.001f),
+			0.0f,
+			1.0f);
+		locomotionBlendRate = linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+		locomotionBlendFromPose = &m_locomotionBlendFromPose;
+		if (linearBlend >= 1.0f)
+			m_locomotionBlendActive = false;
 	}
 
 	// 再生停止中でもタイムラインの現在位置の姿勢をエディターへ表示する。
@@ -957,7 +1059,7 @@ void CCharacterAnimator::Update(
 		}
 		if (m_motionPlaying && m_attackBlendTime < m_attackBlendDuration)
 		{
-			m_attackBlendTime += 1.0f / 60.0f;
+			m_attackBlendTime += deltaSeconds;
 			const float linearBlend = std::clamp(
 				m_attackBlendTime / std::max(m_attackBlendDuration, 0.001f),
 				0.0f,
@@ -986,9 +1088,9 @@ void CCharacterAnimator::Update(
 			m_spine, m_spine01, m_spine02,
 			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
 		};
-		m_walkFrameAccumulator += useRunAnimation
+		m_walkFrameAccumulator += (useRunAnimation
 			? m_runPlaybackRate
-			: m_walkPlaybackRate;
+			: m_walkPlaybackRate) * frameScale;
 		m_walkFrame = static_cast<int>(m_walkFrameAccumulator);
 		// 歩き・走りも1キーずつ切り替えるとカクつくため、キー間を補間する。
 		const float walkFrameFraction =
@@ -1002,7 +1104,7 @@ void CCharacterAnimator::Update(
 			walkBones.end(), walkLowerBones.begin(), walkLowerBones.end());
 		mesh.UpdateAnimationWithManualPose(
 			boneComb, locomotionAnimation, m_walkFrame, m_idlePose, walkBones,
-			true, walkFrameFraction);
+			true, walkFrameFraction, locomotionBlendFromPose, locomotionBlendRate);
 		return;
 	}
 	if (!state.walking)
@@ -1026,7 +1128,7 @@ void CCharacterAnimator::Update(
 			m_spine, m_spine01, m_spine02,
 			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
 		};
-		m_idleFrameAccumulator += m_idlePlaybackRate;
+		m_idleFrameAccumulator += m_idlePlaybackRate * frameScale;
 		m_idleFrame = static_cast<int>(m_idleFrameAccumulator);
 		const float idleFrameFraction =
 			m_idleFrameAccumulator - std::floor(m_idleFrameAccumulator);
@@ -1037,7 +1139,7 @@ void CCharacterAnimator::Update(
 		// 攻撃に入る瞬間に脚が飛ぶこともない。
 		mesh.UpdateAnimationWithManualPose(
 			boneComb, m_idleAnimation, m_idleFrame, m_idlePose, idleBones,
-			true, idleFrameFraction);
+			true, idleFrameFraction, locomotionBlendFromPose, locomotionBlendRate);
 		return;
 	}
 

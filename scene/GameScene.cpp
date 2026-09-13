@@ -762,20 +762,22 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 
 void GameScene::DebugAudio()
 {
-	ImGui::Begin("Audio Settings");
+	if (!ImGui::BeginTabItem("音量"))
+		return;
+
 	float bgmVolume = SoundManager::GetBgmVolume();
-	if (ImGui::SliderFloat("Battle BGM", &bgmVolume, 0.0f, 1.0f, "%.2f"))
+	if (ImGui::SliderFloat("戦闘BGM", &bgmVolume, 0.0f, 1.0f, "%.2f"))
 		SoundManager::SetBgmVolume(bgmVolume);
 
 	float sfxVolume = SoundManager::GetSfxVolume();
-	if (ImGui::SliderFloat("Sound Effects", &sfxVolume, 0.0f, 1.0f, "%.2f"))
+	if (ImGui::SliderFloat("効果音", &sfxVolume, 0.0f, 1.0f, "%.2f"))
 		SoundManager::SetSfxVolume(sfxVolume);
 
-	ImGui::Text("Saved automatically for the next run.");
-	ImGui::Text("File: audio_settings.ini");
-	if (ImGui::Button("Reset Audio Volumes"))
+	ImGui::Text("次回の起動へ自動で保存されます");
+	ImGui::Text("保存先: audio_settings.ini");
+	if (ImGui::Button("音量を初期値へ戻す"))
 		SoundManager::ResetVolumes();
-	ImGui::End();
+	ImGui::EndTabItem();
 }
 
 void GameScene::update(uint64_t deltatime)
@@ -822,19 +824,24 @@ void GameScene::update(uint64_t deltatime)
 		input.IsMouseTriggered(CInputManager::MOUSE_LEFT);
 	const bool heavyAttackTriggered = !ImGui::GetIO().WantCaptureMouse &&
 		input.IsMouseTriggered(CInputManager::MOUSE_RIGHT);
+	const bool playerDodgeActive = m_player->isDodging();
 	// コンボ入力はボタンを押した瞬間だけ受け付ける。
 	// ボタンを押し続けても次の攻撃を予約せず、追加段数には再クリックを必要とする。
-	const bool attackInput = attackTriggered;
-	const bool heavyAttackInput = heavyAttackTriggered;
-	const bool attackStarted = (attackTriggered || heavyAttackTriggered) && m_combat.CanStartPlayerAttack();
+	// 回避中のクリックは戦闘システムへ渡さない。回避中に攻撃を開始すると、
+	// player::update()が回避移動を優先してreturnするため、回避の移動量を
+	// 持ったまま攻撃モーションだけが始まる状態になる。
+	const bool attackInput = attackTriggered && !playerDodgeActive;
+	const bool heavyAttackInput = heavyAttackTriggered && !playerDodgeActive;
+	const bool attackStarted = (attackInput || heavyAttackInput) &&
+		m_combat.CanStartPlayerAttack();
 	if (attackStarted)
 	{
-		if (heavyAttackTriggered)
+		if (heavyAttackInput)
 			m_playerAnimator.PlayHeavyAttackMotion(1);
 		else
 			m_playerAnimator.PlayAttackMotion(1);
 		m_lastPlayerComboStep = 1;
-		m_lastPlayerHeavyAttack = heavyAttackTriggered;
+		m_lastPlayerHeavyAttack = heavyAttackInput;
 	}
 	const bool dodgeTriggered = !ImGui::GetIO().WantCaptureKeyboard && input.IsKeyTriggered(DIK_SPACE);
 	const bool sprinting = !ImGui::GetIO().WantCaptureKeyboard &&
@@ -858,9 +865,10 @@ void GameScene::update(uint64_t deltatime)
 			m_combat.CancelPlayerAttack();
 		m_playerAnimator.PlayDodgeMotion();
 	}
-	// 攻撃の戦闘フェーズだけでなく、攻撃モーション全体でルートを固定する。
-	// フェーズ切り替え時の1フレームの移動を防ぎ、移動できる手段は
-	// 明示的な回避・キャンセルだけにする。
+	// 攻撃中は移動キーを押していても移動させない。攻撃中の下半身へ
+	// ロコモーションを重ねる実装は残すが、プレイヤーのワールド移動は許可しない。
+	// これにより「歩行アニメーションを攻撃へ重ねる」ことと「歩きながら攻撃する」
+	// ことを分離し、今回の仕様ではその場で攻撃する。
 	const bool attackAnimationPlaying = m_playerAnimator.IsMotionPlaying() &&
 		!m_player->isDodging() && !canDodge;
 	const bool lockPlayerMovement =
@@ -912,7 +920,8 @@ void GameScene::update(uint64_t deltatime)
 				m_player->getVel().Length() > 0.01f,
 				m_player->getMotionState() == player::MotionState::Run,
 				m_player->getMotionState() == player::MotionState::Jump,
-				m_player->getMotionTime()
+				m_player->getMotionTime(),
+				deltaSeconds
 			});
 	}
 
@@ -1025,6 +1034,9 @@ void GameScene::update(uint64_t deltatime)
 		// 敵AIが選んだ攻撃を戦闘システムへ渡す。
 		// 予兆として見えているモーションと、実際のダメージ・射程・タイミングを一致させるため。
 		m_combat.SetEnemyAttackKind(m_enemies.front()->getAttackKind());
+		// 攻撃判定を正面からの角度で絞るため、敵の向きも渡す。
+		// 描画用SRTには演出のひねりが入っているので、必ず物理SRTの向きを使う。
+		m_combat.SetEnemyFacingYaw(m_enemies.front()->getSRT().rot.y);
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
@@ -1284,14 +1296,15 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	{
 		constexpr float enemyGroundY = -0.3f;
 		constexpr float groundingSafetyMargin = 0.01f;
-		const float animatedMaxZ = m_enemyAnimationMesh->GetAnimatedLocalMaxZ();
-		const bool animationExtendsBelowStaticGround =
-			animatedMaxZ > m_localEnemyMeshBounds.max.z;
-		const float groundedMaxZ = std::max(
-			m_localEnemyMeshBounds.max.z, animatedMaxZ) +
-			(animationExtendsBelowStaticGround ? groundingSafetyMargin : 0.0f);
+		// 攻撃の演出で本体を前後へ傾けているため、最下点は「ローカルZの最大値」では
+		// なくなる。傾きを織り込まずに接地させると、傾けた分だけ敵が地面へ埋まる。
+		const Combat::EnemyPoseOffset enemyPose =
+			m_enemies.front()->getAttackPoseOffset();
+		const float lowestHeight =
+			m_enemyAnimationMesh->GetAnimatedLowestLocalHeight(enemyPose.pitch) -
+			groundingSafetyMargin;
 		const float visualGroundOffsetY =
-			enemyGroundY + groundedMaxZ * ENEMY_MODEL_SCALE;
+			enemyGroundY - lowestHeight * ENEMY_MODEL_SCALE;
 		for (const auto& enemyObject : m_enemies)
 		{
 			if (enemyObject)
@@ -1749,6 +1762,17 @@ void GameScene::init()
 	// 待機モーション。idleクリップは4種類あるので、これもiniで差し替えられるようにする。
 	m_playerAnimationData.LoadAnimation(
 		GetDevSetting("idle", "assets/motion/sword and shield idle.fbx"), "idle");
+	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep)。
+	// 3種類の構えを見比べるとき、通常の選択では狙った攻撃が出るまで待つことになるため。
+	// 未指定なら通常どおり敵AIが選ぶ。デバッグ表示のチェックボックスからも切り替えられる。
+	{
+		const std::string forced = GetDevSetting("force_enemy_attack", "");
+		if (forced == "slam" || forced == "bite" || forced == "sweep")
+		{
+			m_forceEnemyAttack = true;
+			m_forcedEnemyAttackIndex = forced == "bite" ? 1 : forced == "sweep" ? 2 : 0;
+		}
+	}
 	// コンボの各段には別々のクリップを割り当てる。
 	// 以前は3段とも同じファイルを指定していたため、連続入力しても
 	// 同じ振りが3回繰り返されるだけで「繋がっている」感が出なかった。
@@ -1935,28 +1959,43 @@ void GameScene::init()
 				enemyGroundY + m_localEnemyMeshBounds.max.z * ENEMY_MODEL_SCALE);
 		}
 	}
-	// 敵のパラメータを設宁E
+	// デバッグ表示はまとめて1つのウィンドウへ登録する。
+	// 個別に登録すると、それぞれが独立したウィンドウとして開いてしまう。
 	DebugUI::RedistDebugFunction([this]() {
-		DebugEnemies();
+		DrawDebugWindow();
 		});
 
-	// プレイヤのパラメータを設宁E
-	DebugUI::RedistDebugFunction([this]() {
-		DebugPlayerSRT();
-		});
+}
 
-	DebugUI::RedistDebugFunction([this]() {
-		DebugCamera();
-		});
+void GameScene::DrawDebugWindow()
+{
+	// マルチビューポートが有効なので、ImGuiのウィンドウ位置は「画面全体の座標」である。
+	// (10,120)のように小さな値を渡すと、ゲームウィンドウの外側に別のOSウィンドウとして
+	// 開いてしまう。ゲーム画面の左上を基準に置くこと。
+	const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(
+		ImVec2(mainViewport->WorkPos.x + 10.0f, mainViewport->WorkPos.y + 120.0f),
+		ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(440.0f, 520.0f), ImGuiCond_FirstUseEver);
+	if (ImGui::Begin("デバッグ"))
+	{
+		if (ImGui::BeginTabBar("デバッグタブ"))
+		{
+			DebugCombat();
+			DebugCollision();
+			DebugEnemies();
+			DebugPlayerSRT();
+			DebugCamera();
+			DebugAudio();
+			DebugWalls();
+			ImGui::EndTabBar();
+		}
+	}
+	ImGui::End();
 
-	DebugUI::RedistDebugFunction([this]() {
-		DebugCombat();
-		});
-
-	DebugUI::RedistDebugFunction([this]() {
-		DebugAudio();
-		});
-
+	// 3D空間へ重ねるラベルは、当たり判定タブを開いていなくても描く。
+	// 見たいのは画面の中のキャラクターであって、タブの中身ではないため。
+	DrawCollisionWorldLabels();
 }
 	
 void GameScene::dispose()
@@ -1970,9 +2009,10 @@ void GameScene::DebugWalls()
 {
 	static int selected_model = 0;
 
-	ImGui::Begin("debug Walls");
+	if (!ImGui::BeginTabItem("壁"))
+		return;
 
-	if (ImGui::Button("Add Wall"))
+	if (ImGui::Button("壁を追加"))
 	{
 		std::unique_ptr<wall> newWall = std::make_unique<wall>(this);
 		newWall->init();
@@ -1989,8 +2029,8 @@ void GameScene::DebugWalls()
 
 	if (m_walls.empty())
 	{
-		ImGui::Text("No walls");
-		ImGui::End();
+		ImGui::Text("壁がありません");
+		ImGui::EndTabItem();
 		return;
 	}
 
@@ -2004,7 +2044,7 @@ void GameScene::DebugWalls()
 	std::string preview_name = "Wall_" + preview_str;
 
 	// BeginComboを使ってドロチE・ダウンを作諱E
-	if (ImGui::BeginCombo("Wall", preview_name.c_str()))
+	if (ImGui::BeginCombo("対象の壁", preview_name.c_str()))
 	{
 		for (int i = 0; i < static_cast<int>(m_walls.size()); ++i)
 		{
@@ -2034,7 +2074,7 @@ void GameScene::DebugWalls()
 		ImGui::EndCombo();
 	}
 
-	if (ImGui::Button("Delete Wall") && !m_walls.empty())
+	if (ImGui::Button("この壁を削除") && !m_walls.empty())
 	{
 		m_walls.erase(m_walls.begin() + selected_model);
 		if (m_walls.empty()) {
@@ -2047,8 +2087,8 @@ void GameScene::DebugWalls()
 
 	if (m_walls.empty())
 	{
-		ImGui::Text("No walls");
-		ImGui::End();
+		ImGui::Text("壁がありません");
+		ImGui::EndTabItem();
 		return;
 	}
 
@@ -2059,7 +2099,7 @@ void GameScene::DebugWalls()
 	auto& currentWall = m_walls[selected_model];
 	if (!currentWall)
 	{
-		ImGui::End();
+		ImGui::EndTabItem();
 		return;
 	}
 
@@ -2073,10 +2113,10 @@ void GameScene::DebugWalls()
 	bool isChanged = false;
 
 	// スライダーが操作されて値が変わった場合、isChanged ぁEtrue になめE
-	isChanged |= ImGui::SliderFloat("height", &wallheight, 1.0f, 500.0f);
-	isChanged |= ImGui::SliderFloat("width", &wallwidth, 1.0f, 1000.0f);
-	isChanged |= ImGui::SliderFloat("rotation Y", &wallrotationy, -PI, PI);
-	isChanged |= ImGui::SliderFloat3("position", &wallposition.x, -1000.0f, 1000.0f);
+	isChanged |= ImGui::SliderFloat("高さ", &wallheight, 1.0f, 500.0f);
+	isChanged |= ImGui::SliderFloat("幅", &wallwidth, 1.0f, 1000.0f);
+	isChanged |= ImGui::SliderFloat("Y軸の回転", &wallrotationy, -PI, PI);
+	isChanged |= ImGui::SliderFloat3("位置", &wallposition.x, -1000.0f, 1000.0f);
 
 	// 4. パラメータに変更があった場合縺Eみ、E∈択中の壁に変更を反映
 	if (isChanged)
@@ -2092,7 +2132,7 @@ void GameScene::DebugWalls()
 		currentWall->calcEqation();	// 変更があった縺Eで平面の方程式を再計算すめE
 	}
 
-	ImGui::End();
+	ImGui::EndTabItem();
 }
 
 // 敵パラメータ調整
@@ -2100,9 +2140,11 @@ void GameScene::DebugEnemies()
 {
 	static int selected_model = 0;
 
-	ImGui::Begin("debug Enemies");
+	if (!ImGui::BeginTabItem("敵"))
+		return;
 
-	if (ImGui::Button("Add Enemy"))
+
+	if (ImGui::Button("敵を追加"))
 	{
 		Vector3 enemyPos = m_player->getSRT().pos + Vector3(120.0f, 0, 0);
 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, 0.0f, ENEMY_MODEL_SCALE));
@@ -2111,8 +2153,8 @@ void GameScene::DebugEnemies()
 
 	if (m_enemies.empty())
 	{
-		ImGui::Text("No enemies");
-		ImGui::End();
+		ImGui::Text("敵がいません");
+		ImGui::EndTabItem();
 		return;
 	}
 
@@ -2124,7 +2166,7 @@ void GameScene::DebugEnemies()
 	}
 	std::string preview_name = "Enemy_" + preview_str;
 
-	if (ImGui::BeginCombo("Enemy", preview_name.c_str()))
+	if (ImGui::BeginCombo("対象の敵", preview_name.c_str()))
 	{
 		for (int i = 0; i < static_cast<int>(m_enemies.size()); ++i)
 		{
@@ -2148,7 +2190,7 @@ void GameScene::DebugEnemies()
 		ImGui::EndCombo();
 	}
 
-	if (ImGui::Button("Delete Enemy") && !m_enemies.empty())
+	if (ImGui::Button("この敵を削除") && !m_enemies.empty())
 	{
 		m_enemies.erase(m_enemies.begin() + selected_model);
 		m_combat.ClearEnemyCollisionDebug();
@@ -2162,8 +2204,8 @@ void GameScene::DebugEnemies()
 
 	if (m_enemies.empty())
 	{
-		ImGui::Text("No enemies");
-		ImGui::End();
+		ImGui::Text("敵がいません");
+		ImGui::EndTabItem();
 		return;
 	}
 
@@ -2176,9 +2218,9 @@ void GameScene::DebugEnemies()
 	float enemyscale = srt.scale.x;
 
 	bool isChanged = false;
-	isChanged |= ImGui::SliderFloat3("position", &enemyposition.x, -1000.0f, 1000.0f);
-	isChanged |= ImGui::SliderFloat("rotation Y", &enemyrotationy, -PI, PI);
-	isChanged |= ImGui::SliderFloat("scale", &enemyscale, 0.2f, 3.0f);
+	isChanged |= ImGui::SliderFloat3("位置", &enemyposition.x, -1000.0f, 1000.0f);
+	isChanged |= ImGui::SliderFloat("Y軸の回転", &enemyrotationy, -PI, PI);
+	isChanged |= ImGui::SliderFloat("大きさ", &enemyscale, 0.2f, 3.0f);
 
 	if (isChanged)
 	{
@@ -2188,12 +2230,14 @@ void GameScene::DebugEnemies()
 		currentEnemy->setSRT(srt);
 	}
 
-	ImGui::End();
+	ImGui::EndTabItem();
 }
 
 void GameScene::DebugPlayerSRT()
 {
-	ImGui::Begin("debug Player SRT");
+	if (!ImGui::BeginTabItem("プレイヤー"))
+		return;
+
 
 	SRT playercurrentsrt = m_player->getSRT();
 	Vector3 scale = playercurrentsrt.scale;
@@ -2203,10 +2247,10 @@ void GameScene::DebugPlayerSRT()
 	bool isChanged = false;
 
 	// スライダーが操作されて値が変わった場合、isChanged ぁEtrue になめE
-	isChanged |= ImGui::SliderFloat3("rotation", &rot.x, -PI, PI);
-	isChanged |= ImGui::SliderFloat3("scale", &scale.x, 0.01f, 10.0f);
-	isChanged |= ImGui::SliderFloat3("position", &position.x, -1000.0f, 1000.0f);
-	if (ImGui::Button("Reset Player Transform"))
+	isChanged |= ImGui::SliderFloat3("回転", &rot.x, -PI, PI);
+	isChanged |= ImGui::SliderFloat3("大きさ", &scale.x, 0.01f, 10.0f);
+	isChanged |= ImGui::SliderFloat3("位置", &position.x, -1000.0f, 1000.0f);
+	if (ImGui::Button("位置と姿勢を初期値へ戻す"))
 	{
 		position = Vector3(0.0f, 0.0f, 0.0f);
 		rot = Vector3(0.0f, 0.0f, 0.0f);
@@ -2223,7 +2267,7 @@ void GameScene::DebugPlayerSRT()
 		m_player->setSRT(playercurrentsrt);
 	}
 
-	ImGui::End();
+	ImGui::EndTabItem();
 }
 
 void GameScene::UpdateArenaCameraCollision()
@@ -2360,7 +2404,21 @@ Matrix4x4 GameScene::BuildLightViewProjection() const
 	// 闘技場全体ではなくプレイヤーを中心にすることで、
 	// 限られた解像度を必要な場所へ集中させ、影の輪郭を細かく保つ。
 	Vector3 center(0.0f, 0.0f, 0.0f);
-	if (m_player)
+	// 影を掛ける範囲。広げるほど影が粗くなるので、
+	// プレイヤーと敵が収まる程度に絞る。
+	float orthoSize = 260.0f;
+	// 登場カットシーンの間はカメラがドラゴンを映しており、プレイヤーは画面外にいる。
+	// プレイヤー中心のままだと、着地地点(z=-120付近)のドラゴンが範囲の縁へ来て
+	// 影が切れる。さらに落下中は高い位置にいるため、平行光源の向きの分だけ
+	// 影の落ちる位置が本体から大きく離れ、範囲外へ出てしまう。
+	// カットシーン中はドラゴンを中心にし、範囲も広げて影を収める。
+	if (m_enemyIntroActive && !m_enemies.empty() && m_enemies.front())
+	{
+		const Vector3 enemyPos = m_enemies.front()->getSRT().pos;
+		center = Vector3(enemyPos.x, 0.0f, enemyPos.z);
+		orthoSize = 460.0f;
+	}
+	else if (m_player)
 	{
 		const Vector3 playerPos = m_player->getSRT().pos;
 		center = Vector3(playerPos.x, 0.0f, playerPos.z);
@@ -2378,11 +2436,8 @@ Matrix4x4 GameScene::BuildLightViewProjection() const
 
 	const Matrix4x4 view = Matrix4x4::CreateLookAt(eye, center, up);
 
-	// 影を掛ける範囲。広げるほど影が粗くなるので、
-	// プレイヤーと敵が収まる程度に絞る。
-	constexpr float ORTHO_SIZE = 260.0f;
 	const Matrix4x4 projection = Matrix4x4::CreateOrthographic(
-		ORTHO_SIZE, ORTHO_SIZE, 1.0f, LIGHT_DISTANCE * 2.0f);
+		orthoSize, orthoSize, 1.0f, LIGHT_DISTANCE * 2.0f);
 
 	return view * projection;
 }
@@ -2483,16 +2538,18 @@ void GameScene::UpdateGameplayCamera(float deltaSeconds)
 
 void GameScene::DebugCamera()
 {
-	ImGui::Begin("Third Person Camera");
+	if (!ImGui::BeginTabItem("カメラ"))
+		return;
+
 	bool mouseLookEnabled = m_camera.IsMouseLookEnabled();
-	if (ImGui::Checkbox("Mouse movement controls camera", &mouseLookEnabled))
+	if (ImGui::Checkbox("マウスでカメラを操作する", &mouseLookEnabled))
 	{
 		m_camera.SetMouseLookEnabled(mouseLookEnabled);
 	}
-	ImGui::Text("Third-person camera: always active");
-	ImGui::Text("Middle drag: orbit / WASD: move player");
-	ImGui::Text("Lock-on keeps player and enemy in frame");
-	ImGui::Text("Tab: lock on / release target");
+	ImGui::Text("三人称カメラ: 常に有効");
+	ImGui::Text("中ボタンのドラッグ: 周回  /  WASD: 移動");
+	ImGui::Text("ロックオン中は自分と敵を同時に画面へ収める");
+	ImGui::Text("Tab: ロックオンの切り替え");
 
 	const ImVec2 viewportSize(360.0f, 200.0f);
 	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
@@ -2502,74 +2559,102 @@ void GameScene::DebugCamera()
 	drawList->AddRectFilled(viewportMin, viewportMax, IM_COL32(28, 34, 42, 255));
 	drawList->AddRect(viewportMin, viewportMax, IM_COL32(90, 150, 220, 255));
 	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 12.0f),
-		IM_COL32(230, 235, 245, 255), "CAMERA VIEWPORT");
+		IM_COL32(230, 235, 245, 255), "カメラ表示域");
 	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 38.0f),
-		IM_COL32(190, 200, 215, 255), "Middle-drag in game window to orbit");
+		IM_COL32(190, 200, 215, 255), "ゲーム画面を中ボタンでドラッグすると周回します");
 
-	if (ImGui::Button("Reset Camera"))
+	if (ImGui::Button("カメラを初期位置へ戻す"))
 	{
 		m_camera.Reset(m_player->getSRT().pos, m_player->getSRT().rot.y);
 	}
-	ImGui::End();
+	ImGui::EndTabItem();
 }
 
 void GameScene::DebugCombat()
 {
-    ImGui::Begin("1v1 Combat");
-    ImGui::Text("State: %s", m_combat.GetStateName().data());
-    ImGui::Text("Player Motion: %s", m_player->getMotionStateName());
+	if (!ImGui::BeginTabItem("戦闘"))
+		return;
+
+    ImGui::Text("戦闘の状態: %s", m_combat.GetStateName().data());
+    ImGui::Text("プレイヤーの動作: %s", m_player->getMotionStateName());
 	if (!m_enemies.empty())
-		ImGui::Text("Enemy AI: %s (%.2fs)",
+	{
+		ImGui::Text("敵AIの状態: %s (%.2f秒)",
 			m_enemies.front()->getMotionStateName(),
 			m_enemies.front()->getStateTime());
-	ImGui::Text("WASD: Move / Left Shift: Run / Space: Dodge");
-	ImGui::Text("Left click: Normal Attack / Right click: Heavy Attack");
-	ImGui::Text("Tab: %s", m_lockOnTarget ? "Lock-on active" : "Lock-on off");
-	ImGui::SeparatorText("Dodge Invincibility Frames (60 FPS)");
-	ImGui::SliderInt("Invincible start", &m_dodgeInvincibleStartFrame, 0, 24);
-	ImGui::SliderInt("Invincible end", &m_dodgeInvincibleEndFrame, 0, 24);
+		ImGui::Text("敵の攻撃: %s",
+			Combat::EnemyAttackDebugName(m_enemies.front()->getAttackKind()));
+		// 3種類の構えを見比べるための調整用。通常は距離と直前の攻撃で選ばれるため、
+		// 狙った攻撃が出るまで待つことになり、予兆の形を詰めにくい。
+		ImGui::Checkbox("敵の攻撃を固定する", &m_forceEnemyAttack);
+		if (m_forceEnemyAttack)
+		{
+			ImGui::Indent();
+			ImGui::RadioButton("叩き付け", &m_forcedEnemyAttackIndex, 0);
+			ImGui::RadioButton("噛みつき", &m_forcedEnemyAttackIndex, 1);
+			ImGui::RadioButton("薙ぎ払い", &m_forcedEnemyAttackIndex, 2);
+			ImGui::Unindent();
+		}
+		const Combat::EnemyAttackKind forced =
+			m_forcedEnemyAttackIndex == 1 ? Combat::EnemyAttackKind::Bite :
+			m_forcedEnemyAttackIndex == 2 ? Combat::EnemyAttackKind::Sweep :
+			Combat::EnemyAttackKind::Slam;
+		m_enemies.front()->setForcedAttackKind(m_forceEnemyAttack ? &forced : nullptr);
+	}
+	ImGui::SeparatorText("操作");
+	ImGui::Text("WASD: 移動  /  左Shift: ダッシュ  /  Space: 回避");
+	ImGui::Text("左クリック: 通常攻撃  /  右クリック: 強攻撃");
+	ImGui::Text("Tab: %s", m_lockOnTarget ? "ロックオン中" : "ロックオン解除中");
+	ImGui::Text("R: 仕切り直し");
+	ImGui::SeparatorText("回避の無敵時間 (60フレーム/秒)");
+	ImGui::SliderInt("無敵の開始", &m_dodgeInvincibleStartFrame, 0, 24);
+	ImGui::SliderInt("無敵の終了", &m_dodgeInvincibleEndFrame, 0, 24);
 	if (m_dodgeInvincibleEndFrame < m_dodgeInvincibleStartFrame)
 		m_dodgeInvincibleEndFrame = m_dodgeInvincibleStartFrame;
-	ImGui::Text("Active window: %d - %d frames", m_dodgeInvincibleStartFrame, m_dodgeInvincibleEndFrame);
-	ImGui::SeparatorText("Attack Movement / Dodge Cancel (60 FPS)");
-	ImGui::SliderInt("Dodge cancel end", &m_attackCancelEndFrame, 0, 60);
-	ImGui::Text("Attack movement: locked / Dodge cancel: 0 - %d frames",
+	ImGui::Text("無敵の区間: %d 〜 %d フレーム目",
+		m_dodgeInvincibleStartFrame, m_dodgeInvincibleEndFrame);
+	ImGui::SeparatorText("攻撃中の移動・回避キャンセル (60フレーム/秒)");
+	ImGui::SliderInt("回避キャンセルの終了", &m_attackCancelEndFrame, 0, 60);
+	ImGui::Text("攻撃中の移動: 不可  /  回避キャンセル: 0 〜 %d フレーム目",
 		m_attackCancelEndFrame);
-    ImGui::Text("R: Reset Match");
     ImGui::Separator();
-    ImGui::Text("Player HP");
+    ImGui::Text("プレイヤーの体力");
     ImGui::ProgressBar(m_combat.GetPlayerHp() / 100.0f, ImVec2(-1.0f, 0.0f));
-    ImGui::Text("Enemy HP (Debug)");
+    ImGui::Text("敵の体力");
     ImGui::ProgressBar(m_combat.GetEnemyHp() / 100.0f, ImVec2(-1.0f, 0.0f));
-    ImGui::End();
+    ImGui::EndTabItem();
+}
 
-	ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 320.0f), ImVec2(900.0f, 900.0f));
-    ImGui::Begin("Attack Collision Debug");
-    ImGui::Checkbox("Draw collision volumes", &m_drawAttackCollisionDebug);
+void GameScene::DebugCollision()
+{
+	if (!ImGui::BeginTabItem("当たり判定"))
+		return;
+
+    ImGui::Checkbox("当たり判定の形を描く", &m_drawAttackCollisionDebug);
 	if (m_drawAttackCollisionDebug)
 	{
 		ImGui::Indent();
-		ImGui::Checkbox("X-ray (ignore depth)", &m_drawAttackCollisionXray);
-		ImGui::SeparatorText("Collision volume visibility");
-		ImGui::Checkbox("Player OBB", &m_drawPlayerObb);
-		ImGui::Checkbox("Enemy OBB", &m_drawEnemyObb);
-		ImGui::Checkbox("Enemy AABB [broad]", &m_drawEnemyAabb);
-		ImGui::Checkbox("Sword OBB", &m_drawSwordObb);
-		ImGui::Checkbox("Attack AABB [broad]", &m_drawAttackAabb);
-		ImGui::Checkbox("World labels", &m_drawAttackCollisionLabels);
+		ImGui::Checkbox("物陰でも透けて見せる", &m_drawAttackCollisionXray);
+		ImGui::SeparatorText("表示する判定");
+		ImGui::Checkbox("プレイヤーのOBB", &m_drawPlayerObb);
+		ImGui::Checkbox("敵のOBB", &m_drawEnemyObb);
+		ImGui::Checkbox("敵のAABB(粗い判定)", &m_drawEnemyAabb);
+		ImGui::Checkbox("剣のOBB", &m_drawSwordObb);
+		ImGui::Checkbox("攻撃のAABB(粗い判定)", &m_drawAttackAabb);
+		ImGui::Checkbox("3D上の名前表示", &m_drawAttackCollisionLabels);
 		ImGui::Unindent();
 	}
-	ImGui::Checkbox("Draw legacy spheres / axes", &m_drawLegacyPhysicsDebug);
+	ImGui::Checkbox("旧デバッグ表示(球・座標軸)", &m_drawLegacyPhysicsDebug);
     ImGui::Separator();
 	const auto& collision = m_combat.GetCollisionDebugState();
-	ImGui::Text("Pipeline: AABB broad phase -> OBB narrow phase");
-    ImGui::Text("Attack window: %s", m_combat.IsPlayerAttackActive() ? "ACTIVE" : "INACTIVE");
-	ImGui::Text("Sword transform: %s", collision.swordTransformValid ? "VALID" : "INVALID");
-	ImGui::Text("Player auto OBB: %.1f x %.1f x %.1f",
+	ImGui::Text("判定の流れ: AABBで粗く絞る → OBBで正確に判定");
+    ImGui::Text("攻撃判定: %s", m_combat.IsPlayerAttackActive() ? "出ている" : "出ていない");
+	ImGui::Text("剣の姿勢: %s", collision.swordTransformValid ? "取得できている" : "取得できていない");
+	ImGui::Text("プレイヤーのOBB: %.1f x %.1f x %.1f",
 		collision.playerObb.lengthx,
 		collision.playerObb.lengthy,
 		collision.playerObb.lengthz);
-	ImGui::Text("Enemy auto OBB: %.1f x %.1f x %.1f",
+	ImGui::Text("敵のOBB: %.1f x %.1f x %.1f",
 		collision.enemyObb.lengthx,
 		collision.enemyObb.lengthy,
 		collision.enemyObb.lengthz);
@@ -2578,29 +2663,34 @@ void GameScene::DebugCombat()
 		collision.broadPhaseOverlap
 			? ImVec4(1.0f, 0.85f, 0.10f, 1.0f)
 			: ImVec4(0.25f, 0.80f, 1.0f, 1.0f),
-		"1. Broad phase (AABB): %s",
-		collision.broadPhaseOverlap ? "PASS" : "REJECT");
+		"1. 粗い判定(AABB): %s",
+		collision.broadPhaseOverlap ? "通過" : "除外");
 	ImGui::TextColored(
 		collision.narrowPhaseHit
 			? ImVec4(1.0f, 0.15f, 0.05f, 1.0f)
 			: ImVec4(0.75f, 0.45f, 1.0f, 1.0f),
-		"2. Narrow phase (OBB): %s",
+		"2. 正確な判定(OBB): %s",
 		collision.narrowPhaseHit
-			? "HIT"
-			: (collision.narrowPhaseTested ? "MISS" : "SKIPPED"));
-	ImGui::Text("Damage: %.1f", 25.0f);
+			? "命中"
+			: (collision.narrowPhaseTested ? "外れ" : "判定せず"));
+	ImGui::Text("与ダメージ: %.1f", 25.0f);
     ImGui::Separator();
-	ImGui::TextColored(ImVec4(0.15f, 0.85f, 1.0f, 1.0f), "CYAN/BLUE: AABB (broad phase)");
-	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.10f, 1.0f), "YELLOW: AABB candidate overlap");
-	ImGui::TextColored(ImVec4(0.20f, 0.75f, 1.0f, 1.0f), "LIGHT BLUE: player auto OBB");
-	ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "GREEN: enemy auto OBB");
-	ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.05f, 1.0f), "ORANGE/PURPLE: sword OBBs");
-	ImGui::TextColored(ImVec4(1.0f, 0.08f, 0.04f, 1.0f), "RED: narrow-phase hit");
-    ImGui::End();
+	ImGui::SeparatorText("画面に描く色の意味");
+	ImGui::TextColored(ImVec4(0.15f, 0.85f, 1.0f, 1.0f), "水色・青: AABB(粗い判定)");
+	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.10f, 1.0f), "黄: AABBが重なっている");
+	ImGui::TextColored(ImVec4(0.20f, 0.75f, 1.0f, 1.0f), "明るい青: プレイヤーのOBB");
+	ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "緑: 敵のOBB");
+	ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.05f, 1.0f), "橙・紫: 剣のOBB");
+	ImGui::TextColored(ImVec4(1.0f, 0.08f, 0.04f, 1.0f), "赤: 正確な判定で命中");
+    ImGui::EndTabItem();
+}
 
+void GameScene::DrawCollisionWorldLabels()
+{
 	if (!m_drawAttackCollisionDebug || !m_drawAttackCollisionLabels)
 		return;
 
+	const auto& collision = m_combat.GetCollisionDebugState();
 	const Matrix4x4 view = m_camera.GetViewMatrix();
 	const Matrix4x4 projection = m_camera.GetProjMatrix();
 	const bool showSwordSweep = collision.swordTransformValid &&

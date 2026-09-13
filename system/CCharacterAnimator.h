@@ -14,6 +14,8 @@ struct CharacterAnimationState
 	bool running = false;
 	bool jumping = false;
 	float motionTime = 0.0f;
+	// GameSceneの固定更新間隔。省略時は既存の60Hz挙動を維持する。
+	float deltaSeconds = 1.0f / 60.0f;
 };
 
 struct MotionKeyframe
@@ -201,6 +203,13 @@ private:
 	float m_lastAttackTorsoPitch = 0.0f;
 	std::unordered_map<std::string, Matrix4x4> m_lastRenderedPose;
 	std::unordered_map<std::string, Matrix4x4> m_attackBlendFromPose;
+	// PlayAttackMotion()はmeshを持たないため、次のUpdateで直前の姿勢を取得する。
+	bool m_attackBlendPending = false;
+	// 攻撃終了後も、最後の攻撃姿勢から待機/移動姿勢へ段差なく戻す。
+	std::unordered_map<std::string, Matrix4x4> m_locomotionBlendFromPose;
+	float m_locomotionBlendTime = 1.0f;
+	float m_locomotionBlendDuration = 0.10f;
+	bool m_locomotionBlendActive = false;
 	bool m_useCustomMotion = false;
 	bool m_motionPlaying = false;
 	bool m_motionLoop = true;

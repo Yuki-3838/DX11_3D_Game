@@ -83,8 +83,23 @@ float enemy::recoverySeconds() const
 	return getAttackData().frames.recoverySeconds;
 }
 
+void enemy::setForcedAttackKind(const Combat::EnemyAttackKind* kind)
+{
+	m_forceAttackKind = kind != nullptr;
+	if (kind != nullptr)
+		m_forcedAttackKind = *kind;
+}
+
 void enemy::selectNextAttack(float distance)
 {
+	// 調整中は指定された攻撃だけを出す。射程の条件も無視する。
+	if (m_forceAttackKind)
+	{
+		m_previousAttackKind = m_attackKind;
+		m_attackKind = m_forcedAttackKind;
+		return;
+	}
+
 	// 距離で候補を絞り、そのうえで直前と同じ攻撃が続かないようにする。
 	// 完全なランダムだと同じ攻撃が連続して「読む意味」が薄れ、
 	// 逆に完全な順番固定だと暗記ゲームになるため、その中間を取る。
@@ -117,6 +132,16 @@ SRT enemy::getRenderSRT() const
 	// ドラゴンのモデルは傾いた姿勢で作られているので、描画姿勢だけピッチを加えて頭部と胴体を正しく見せる。
 	renderSrt.rot.x += PI * 0.5f;
 	renderSrt.pos.y += m_visualGroundOffsetY;
+
+	// 攻撃の種類ごとに違う構えを、描画姿勢にだけ足す。
+	// 敵の攻撃クリップは1本しか無いため、これをしないと3種類の攻撃が
+	// 再生速度違いにしか見えず、プレイヤーはHUDの文字でしか区別できない。
+	// 物理SRTは変更しない(壁との衝突・接地・敵AIの判断に影響させないため)。
+	// なお m_visualGroundOffsetY はGameScene側でこの傾きを織り込んで計算されている。
+	// 傾けると足元の最下点が変わるため、織り込まないと攻撃のたびに地面へ埋まる。
+	const Combat::EnemyPoseOffset pose = getAttackPoseOffset();
+	renderSrt.rot.x += pose.pitch;
+	renderSrt.rot.y += pose.yaw;
 	return renderSrt;
 }
 
@@ -216,6 +241,22 @@ void enemy::update(uint64_t dt)
 	m_srt.pos += m_move;
 }
 
+Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
+{
+	return Combat::EnemyAttackPose(m_attackKind, currentAttackPhase(), m_stateTime);
+}
+
+Combat::EnemyAttackPhase enemy::currentAttackPhase() const
+{
+	switch (m_motionState)
+	{
+	case MotionState::Windup:   return Combat::EnemyAttackPhase::Windup;
+	case MotionState::Active:   return Combat::EnemyAttackPhase::Active;
+	case MotionState::Recovery: return Combat::EnemyAttackPhase::Recovery;
+	default:                    return Combat::EnemyAttackPhase::None;
+	}
+}
+
 void enemy::changeState(MotionState nextState)
 {
 	m_motionState = nextState;
@@ -250,13 +291,13 @@ const char* enemy::getMotionStateName() const
 {
 	switch (m_motionState)
 	{
-	case MotionState::Approach: return "Approach";
-	case MotionState::Circle: return "Circle";
-	case MotionState::Windup: return "Windup";
-	case MotionState::Active: return "Active";
-	case MotionState::Recovery: return "Recovery";
-	case MotionState::Retreat: return "Retreat";
-	default: return "Unknown";
+	case MotionState::Approach: return "接近";
+	case MotionState::Circle: return "様子見(周回)";
+	case MotionState::Windup: return "予兆";
+	case MotionState::Active: return "攻撃判定中";
+	case MotionState::Recovery: return "隙";
+	case MotionState::Retreat: return "後退";
+	default: return "不明";
 	}
 }
 

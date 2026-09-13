@@ -41,6 +41,9 @@ public:
 	// 未設定(nullptr)の場合は標準の叩き付けとして扱う。
 	void SetEnemyAttackKind(Combat::EnemyAttackKind kind) { m_enemyAttackKind = kind; }
 	Combat::EnemyAttackKind GetEnemyAttackKind() const { return m_enemyAttackKind; }
+	// 敵の向き(ヨー)。攻撃判定を正面からの角度で絞るために使う。
+	// Update()の引数がすでに多いため、攻撃の種類と同じくセッターで渡す。
+	void SetEnemyFacingYaw(float yawRadians) { m_enemyFacingYaw = yawRadians; }
 	void ClearCollisionDebug()
 	{
 		m_collisionDebug = {};
@@ -131,6 +134,7 @@ private:
     float m_enemyCooldown = 0.7f;
     // 敵が現在出している攻撃の種類。時間・威力・射程はここから引く。
     Combat::EnemyAttackKind m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
+    float m_enemyFacingYaw = 0.0f;
     AttackState m_playerAttack{};
     AttackState m_enemyAttack{};
 	CollisionDebugState m_collisionDebug{};

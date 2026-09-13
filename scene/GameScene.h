@@ -35,11 +35,19 @@ public:
 
 	player* getplayer();
 
+	// デバッグ表示は1つのウィンドウにタブでまとめる。
+	// 以前は7つの独立したウィンドウが画面中に散らばり、
+	// ゲーム画面がほとんど見えなくなっていた。
+	void DrawDebugWindow();
 	void DebugWalls();
 	void DebugEnemies();
 	void DebugPlayerSRT();
 	void DebugCamera();
 	void DebugCombat();
+	void DebugCollision();
+	// 当たり判定の3D上のラベル。タブの選択状態に関わらず描くため、
+	// タブの中身とは別の関数に分けている。
+	void DrawCollisionWorldLabels();
 	void DebugAudio();
 	void UpdateEnemyAnimation(float deltaSeconds = 0.0f);
 	void StartEnemyIntro();
@@ -136,6 +144,9 @@ private:
 	bool m_drawSwordObb = false;
 	bool m_drawAttackAabb = false;
 	bool m_drawLegacyPhysicsDebug = false;
+	// 攻撃ごとの構えを見比べるための調整用(デバッグ表示からのみ操作する)。
+	bool m_forceEnemyAttack = false;
+	int m_forcedEnemyAttackIndex = 0;
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系

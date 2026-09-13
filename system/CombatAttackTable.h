@@ -68,6 +68,18 @@ inline constexpr float ENEMY_SWEEP_COOLDOWN = 1.30f;
 inline constexpr int ENEMY_SWEEP_DAMAGE = 22;
 inline constexpr float ENEMY_SWEEP_HIT_RANGE = 78.0f;
 inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = 0.22f;
+
+// --- 当たり判定の左右の広さ(正面からの片側角度・ラジアン) ---
+// 敵の攻撃判定は元々「距離だけ」で、どの攻撃も全方位に当たっていた。
+// 見た目上は薙ぎ払いだけが横へ振り抜くのに、噛みつきでも真横で当たるのでは
+// 「横へ回り込んで避ける」という判断が成立しない。
+// 攻撃ごとに広さを変えることで、予兆から読み取れる形と実際の危険範囲を一致させる。
+//   噛みつき : 狭い。正面を外せば当たらない。
+//   叩き付け : 標準。正面寄りだけ。
+//   薙ぎ払い : 広い。横へ回り込んでも当たるので、回避か距離で対処する。
+inline constexpr float ENEMY_HIT_HALF_ANGLE = 0.96f;       // 約55度
+inline constexpr float ENEMY_BITE_HIT_HALF_ANGLE = 0.61f;  // 約35度
+inline constexpr float ENEMY_SWEEP_HIT_HALF_ANGLE = 1.92f; // 約110度
 } // namespace Tuning
 
 /** プレイヤーの通常攻撃1段分。 */
@@ -194,6 +206,41 @@ inline float EnemyFirstHitTimeOf(EnemyAttackKind kind)
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_FIRST_HIT_TIME;
     case EnemyAttackKind::Slam:
     default:                     return Tuning::ENEMY_FIRST_HIT_TIME;
+    }
+}
+
+/**
+ * @brief 当たり判定の左右の広さ(正面からの片側角度)を種類から引く。
+ *
+ * 敵の正面方向とプレイヤーへの方向の角度差がこの値以内なら当たる。
+ * 距離だけの判定にすると、横へ回り込んでも当たってしまい、
+ * 「予兆の形を見て回り込む/回避する」という選択が意味を持たなくなる。
+ */
+inline float EnemyHitHalfAngleOf(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Slam:
+    default:                     return Tuning::ENEMY_HIT_HALF_ANGLE;
+    }
+}
+
+/**
+ * @brief デバッグ表示用の日本語名。
+ *
+ * HUDは英字で統一しているため、`EnemyAttackDisplayName()`とは別に持つ。
+ * デバッグ表示は開発者が読むものなので日本語にする。
+ */
+inline const char* EnemyAttackDebugName(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return "噛みつき";
+    case EnemyAttackKind::Sweep: return "薙ぎ払い";
+    case EnemyAttackKind::Slam:
+    default:                     return "叩き付け";
     }
 }
 

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "gameobject.h"
 #include "../system/CombatAttackTable.h"
+#include "../system/EnemyAttackPose.h"
 
 class player;
 
@@ -36,8 +37,19 @@ public:
 	Combat::EnemyAttackKind getAttackKind() const;
 	const Combat::AttackData& getAttackData() const;
 
+	// 演出で加えている体の傾き・ひねり・高さ。
+	// 傾けると足元の最下点が変わるため、接地オフセットを計算する側が必要とする。
+	Combat::EnemyPoseOffset getAttackPoseOffset() const;
+
+	// 調整用。攻撃の種類を固定する(デバッグ表示からのみ使う)。
+	// 3種類の構えを見比べるには同じ攻撃を繰り返し出させる必要があるが、
+	// 通常の選択は距離と直前の攻撃で変わるため、狙った攻撃が出るまで待つことになる。
+	void setForcedAttackKind(const Combat::EnemyAttackKind* kind);
+
 private:
 	void changeState(MotionState nextState);
+	// 描画用の構え(EnemyAttackPose.h)へ渡すため、AIの状態を攻撃の段階へ変換する。
+	Combat::EnemyAttackPhase currentAttackPhase() const;
 	void selectNextAttack(float distance);
 	float distanceToTarget(const Vector3& targetPosition) const;
 	float angleToTarget(const Vector3& targetPosition) const;
@@ -74,4 +86,6 @@ private:
 	// 同じ攻撃が続けて出ると読み合いにならないため、直前に使った攻撃を覚えておく。
 	Combat::EnemyAttackKind m_previousAttackKind = Combat::EnemyAttackKind::Slam;
 	int m_attackSelectCounter = 0;
+	bool m_forceAttackKind = false;
+	Combat::EnemyAttackKind m_forcedAttackKind = Combat::EnemyAttackKind::Slam;
 };

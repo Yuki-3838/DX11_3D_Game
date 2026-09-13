@@ -1,5 +1,6 @@
 #include "DebugUI.h"
 #include "renderer.h"
+#include <fstream>
 
 namespace
 {
@@ -24,6 +25,11 @@ void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context)
     // デバッグUIへの文字入力とゲーム操作の取り合いは起きない。
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;     // Allow ImGui windows to detach outside the game window.
+    // ドッキングを有効にする。デバッグウィンドウのタイトルバーを別のウィンドウへ
+    // 重ねると1つにまとまり、タブで切り替えられるようになる。
+    // 画面全体を覆うドックスペースは作らない。作るとゲーム画面の上に
+    // 透明な受け皿が乗り、左クリック攻撃などの入力を吸ってしまうためである。
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // Dear ImGuiの表示スタイルを初期化する。
     ImGui::StyleColorsDark();
@@ -35,13 +41,36 @@ void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context)
     cfg.OversampleH = 2;
     cfg.OversampleV = 1;
     cfg.MergeMode = false;
-    // WindowsのデバッグUI用にメイリオまたは游ゴシックを読み込む。
-    io.Fonts->AddFontFromFileTTF(
+    // デバッグUIは日本語で表示するため、日本語の字形を持つフォントが要る。
+    // 同梱フォントを先に試すのは、別のPCで確実に読めるようにするためである
+    // (メイリオは日本語版Windowsにしか無い)。どれも読めなければ
+    // ImGuiの既定フォントへ落とす。既定フォントには日本語が無いので
+    // 文字は出ないが、少なくとも起動はできる。
+    const char* fontCandidates[] = {
+        "assets/font/NotoSansJP-Light.otf",
         "C:\\Windows\\Fonts\\meiryo.ttc",
-        18.0f,
-        &cfg,
-        io.Fonts->GetGlyphRangesJapanese()   // Japanese glyph range
-    );
+        "C:\\Windows\\Fonts\\YuGothM.ttc",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+    };
+    ImFont* debugFont = nullptr;
+    for (const char* path : fontCandidates)
+    {
+        // 存在しないファイルを渡すとImGuiがアサートで止まるため、先に開いて確かめる。
+        std::ifstream probe(path, std::ios::binary);
+        if (!probe.is_open())
+            continue;
+        probe.close();
+        debugFont = io.Fonts->AddFontFromFileTTF(
+            path,
+            18.0f,
+            &cfg,
+            io.Fonts->GetGlyphRangesJapanese()   // Japanese glyph range
+        );
+        if (debugFont != nullptr)
+            break;
+    }
+    if (debugFont == nullptr)
+        io.Fonts->AddFontDefault();
     // DX11バックエンドがテクスチャ設定を登録した後にフォントアトラスを構築する。
 
     // プラットフォーム用とレンダラー用のバックエンドを初期化する。
@@ -104,12 +133,22 @@ void DebugUI::BeginFrame() {
 void DebugUI::Render() {
     if (g_debugVisible)
     {
-        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(260.0f, 82.0f), ImGuiCond_Always);
-        ImGui::Begin("Debug Information", nullptr, ImGuiWindowFlags_NoCollapse);
+        // 位置と大きさは初回だけ決める。Alwaysで固定すると、
+        // 他のウィンドウへドッキングしてまとめることができなくなる。
+        // マルチビューポートが有効なので、位置は画面全体の座標になる。
+        // 小さな値をそのまま渡すとゲームウィンドウの外へ別ウィンドウとして開くため、
+        // ゲーム画面の左上を基準にする。
+        // 左上はゲームの体力・スタミナゲージが使っているため、右上へ置く。
+        const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(mainViewport->WorkPos.x + mainViewport->WorkSize.x - 290.0f,
+                   mainViewport->WorkPos.y + 10.0f),
+            ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(280.0f, 96.0f), ImGuiCond_FirstUseEver);
+        ImGui::Begin("動作状況");
         ImGuiIO& io = ImGui::GetIO();
-        ImGui::Text("FPS: %.1f", io.Framerate);
-        ImGui::Text("Frame time: %.3f ms", 1000.0f / io.Framerate);
+        ImGui::Text("フレームレート: %.1f fps", io.Framerate);
+        ImGui::Text("1フレームの時間: %.3f ミリ秒", 1000.0f / io.Framerate);
         ImGui::End();
 
         for (auto& f : m_debugfunction)
