@@ -7,6 +7,9 @@
 #include <vector>
 
 #include "CAnimationMesh.h"
+#include "LocomotionBlendSpace.h"
+
+namespace Combat { struct PlayerComboStep; }
 
 struct CharacterAnimationState
 {
@@ -16,6 +19,11 @@ struct CharacterAnimationState
 	float motionTime = 0.0f;
 	// GameSceneの固定更新間隔。省略時は既存の60Hz挙動を維持する。
 	float deltaSeconds = 1.0f / 60.0f;
+	// キャラクターから見た移動速度(単位/秒)。移動のブレンドツリーが使う。
+	// 右が正、前が正。ロックオン中の横歩き・後ろ歩きの判定に使うため、向きとは別に持つ。
+	// 呼び出し側が並び順で初期化しているため、新しい項目は必ず末尾へ足すこと。
+	float velocityRight = 0.0f;
+	float velocityForward = 0.0f;
 };
 
 struct MotionKeyframe
@@ -38,6 +46,17 @@ public:
 	// 待機モーション。設定しない場合は従来どおり、静止姿勢へ
 	// 背骨のわずかな呼吸だけを手続き的に加えた見た目になる。
 	void SetIdleAnimation(aiAnimation* animation);
+	// 移動のブレンドツリー用のクリップ。前後左右 × 歩き/走り の8本。
+	// 無いクリップ(nullptr)は同じ歩調の前向きクリップで代用する。
+	// 足が地面を滑らないよう、クリップの腰の移動量から「1倍速で再生したときの移動速度」を求め、
+	// ゲーム内の実際の速さに合わせて再生速度を決める。そのためメッシュとモデルの倍率が要る。
+	// walkSpeed/runSpeedはゲーム側の歩き・ダッシュの速さで、歩き・走りのクリップを切り替える境目になる。
+	void SetLocomotionBlendSpace(
+		const CAnimationMesh& mesh,
+		float modelScale,
+		const std::array<aiAnimation*, 8>& clips,
+		float walkSpeed,
+		float runSpeed);
 	void SetAttackAnimations(
 		const std::array<aiAnimation*, 3>& weakAnimations,
 		const std::array<aiAnimation*, 3>& heavyAnimations);
@@ -55,6 +74,15 @@ public:
 	// (腰や脚まで取り込むと接地が崩れることが分かっているため)。
 	void SetImpactAnimation(aiAnimation* animation);
 	void PlayImpactMotion();
+	// ダッシュ攻撃(走りながら弱攻撃)。クリップと時間は Combat::PlayerDashAttackStep()。
+	void SetDashAttackAnimation(aiAnimation* animation) { m_dashAttackAnimation = animation; }
+	void PlayDashAttackMotion();
+	// 攻撃の踏み込み(ルートモーション)。前回取り出してから今までに、クリップの腰が進んだ量を
+	// キャラクターから見た向き(右・前、ゲーム内の単位)で返し、内部の値を0へ戻す。
+	// 呼び出し側がキャラクターの位置へ足す。進んでいなければfalse。
+	bool ConsumeRootMotion(float& right, float& forward);
+	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
+	void SetAttackHipsRotationMode(int mode) { m_attackHipsRotationMode = mode; }
 	bool IsMotionPlaying() const { return m_motionPlaying; }
 	const std::vector<std::string>& GetBoneNames() const { return m_boneNames; }
 	const std::string& GetSelectedBone() const { return m_selectedBone; }
@@ -147,6 +175,11 @@ private:
 		float duration,
 		float windupEnd,
 		float activeEnd);
+	// コンボの段の設定(再生を始める位置・再生速度・終わり)どおりにクリップを再生する。
+	void PlayImportedComboStep(
+		aiAnimation* animation,
+		const char* name,
+		const Combat::PlayerComboStep& step);
 	void ApplyAttackMotionDesign(
 		const char* name,
 		float windupEnd,
@@ -243,6 +276,7 @@ private:
 	std::array<aiAnimation*, 3> m_weakAttackAnimations{};
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
 	aiAnimation* m_impactAnimation = nullptr;
+	aiAnimation* m_dashAttackAnimation = nullptr;
 	bool m_comboPreviewActive = false;
 	int m_comboPreviewStep = 0;
 	bool m_comboPreviewHeavy = false;
@@ -256,4 +290,38 @@ private:
 	// 読み込みサンプラーをキー番号で進めるため、この値で元データの速度を保つ。
 	float m_walkPlaybackRate = 0.33f;
 	float m_runPlaybackRate = 0.50f;
+
+	// --- 移動のブレンドツリー ---
+	struct BlendSpaceClip
+	{
+		aiAnimation* animation = nullptr;
+		// 1周期で腰が進む距離(ゲーム内の単位)。再生速度を移動速度へ合わせるのに使う。
+		float cycleDistance = 0.0f;
+		float cycleSeconds = 1.0f;
+	};
+	// [方向(前,右,後,左) x 2 + 歩調(歩き=0,走り=1)]
+	std::array<BlendSpaceClip, 8> m_blendSpaceClips{};
+	bool m_blendSpaceReady = false;
+	float m_blendSpaceWalkSpeed = 70.0f;
+	float m_blendSpaceRunSpeed = 115.0f;
+	// 全移動クリップで共有する正規化時間。共有することで、混ぜても左右の足が揃う。
+	float m_blendSpacePhase = 0.0f;
+	// クリップの単位 → ゲーム内の単位。移動の足合わせと攻撃の踏み込みの両方で使う。
+	float m_clipToWorld = 0.0f;
+	// 攻撃の踏み込み: 前回サンプルした正規化時間と、まだ取り出されていない移動量。
+	float m_rootMotionPreviousTime = 0.0f;
+	float m_pendingRootMotionRight = 0.0f;
+	float m_pendingRootMotionForward = 0.0f;
+	int m_attackHipsRotationMode = 1;
+	// 入力の速度をそのまま使うと、キーを押した瞬間に重みが跳ぶので、なめらかに追従させる。
+	float m_smoothedVelocityRight = 0.0f;
+	float m_smoothedVelocityForward = 0.0f;
+	const BlendSpaceClip& BlendSpaceClipOf(Anim::LocomotionDirection direction, Anim::LocomotionGait gait) const;
+	bool UpdateLocomotionBlendSpace(
+		CAnimationMesh& mesh,
+		BoneCombMatrix& boneComb,
+		const CharacterAnimationState& state,
+		float deltaSeconds,
+		const std::unordered_map<std::string, Matrix4x4>* blendFromPose,
+		float blendRate);
 };

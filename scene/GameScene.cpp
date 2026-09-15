@@ -659,7 +659,7 @@ void GameScene::StartEnemyIntro()
 	// 再戦時も前回の攻撃ズームをカットシーン後へ持ち越さない。
 	m_cameraDistanceCurrent = m_cameraBaseDistance;
 	m_enemyAnimationFrame = 0;
-	m_enemyAnimationTick = 0;
+	m_enemyAnimationTick = 0.0f;
 	m_previousEnemyMotionState = enemy::MotionState::Approach;
 
 	if (m_enemies.empty())
@@ -679,7 +679,13 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 {
 	if (m_enemies.empty())
 	{
+		// 敵がいない(素振り)ときは登場演出を飛ばし、すぐ操作を返す。
+		// 演出の途中で敵を消した場合もカットシーンの構図のまま止まらないよう、戦闘カメラへ戻す。
 		m_enemyIntroActive = false;
+		SoundManager::PlayGameBgm();
+		m_camera.BeginBattleTransition(
+			m_player->getSRT().pos,
+			m_player->getSRT().rot.y);
 		return;
 	}
 
@@ -749,7 +755,7 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		// ここで先頭へ戻すことで、遷移直後に後ろ足だけ前フレームの姿勢へ
 		// 残るスナップを防ぐ。
 		m_enemyAnimationFrame = 0;
-		m_enemyAnimationTick = 0;
+		m_enemyAnimationTick = 0.0f;
 		m_enemyIntroActive = false;
 		m_enemyIntroTime = battleStartTime;
 		m_enemies.front()->setSRT(enemySrt);
@@ -757,6 +763,12 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		m_camera.BeginBattleTransition(
 			m_player->getSRT().pos,
 			m_player->getSRT().rot.y);
+		// 調整用: dev_settings.ini の auto_lockon=1 で戦闘開始と同時にロックオンする。
+		// ロックオン中の移動(横歩き・後ろ歩き)やカメラを、毎回Tabを押さずに確かめるため。
+		if (GetDevSetting("auto_lockon", "0") == "1")
+			m_lockOnTarget = true;
+		// 調整用: enemy_passive=1 で敵を攻撃させない(プレイヤーの攻撃モーションを落ち着いて見るため)。
+		m_enemies.front()->setPassive(GetDevSetting("enemy_passive", "0") == "1");
 	}
 }
 
@@ -834,6 +846,9 @@ void GameScene::update(uint64_t deltatime)
 	// 吹き飛ばされている間も攻撃を受け付けない。飛ばされながら剣を振れると、
 	// 被弾が「読み違えた代償」にならない。
 	const bool playerKnockedBack = m_player->isKnockedBack();
+	// 走っている最中に弱攻撃を押すとダッシュ攻撃(突進斬り)になる。
+	// 判定は前フレームの移動状態で行い、戦闘側とアニメーション側で同じ値を使う。
+	const bool playerWasRunning = m_player->getMotionState() == player::MotionState::Run;
 	const bool attackInput = attackTriggered && !playerDodgeActive && !playerKnockedBack;
 	const bool heavyAttackInput = heavyAttackTriggered && !playerDodgeActive && !playerKnockedBack;
 	const bool attackStarted = (attackInput || heavyAttackInput) &&
@@ -842,6 +857,8 @@ void GameScene::update(uint64_t deltatime)
 	{
 		if (heavyAttackInput)
 			m_playerAnimator.PlayHeavyAttackMotion(1);
+		else if (playerWasRunning)
+			m_playerAnimator.PlayDashAttackMotion();
 		else
 			m_playerAnimator.PlayAttackMotion(1);
 		m_lastPlayerComboStep = 1;
@@ -849,7 +866,11 @@ void GameScene::update(uint64_t deltatime)
 	}
 	const bool dodgeTriggered = !ImGui::GetIO().WantCaptureKeyboard && input.IsKeyTriggered(DIK_SPACE);
 	const bool sprinting = !ImGui::GetIO().WantCaptureKeyboard &&
-		input.IsKeyPressed(DIK_LSHIFT) && !m_combat.IsPlayerAttacking() && !m_player->isDodging();
+		// 移動キー(WASD)と同じく、DirectInputで取れない場合はWin32のキー状態でも読む(ゲームが前面のときだけ)。
+		(input.IsKeyPressed(DIK_LSHIFT) ||
+		 (GetForegroundWindow() == Application::GetWindow() &&
+		  (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0)) &&
+		!m_combat.IsPlayerAttacking() && !m_player->isDodging();
 	if (sprinting)
 		m_playerStamina = std::max(0.0f, m_playerStamina - 28.0f * deltaSeconds);
 	else if (!m_player->isDodging())
@@ -886,6 +907,16 @@ void GameScene::update(uint64_t deltatime)
 	SRT prevPlayerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere prevPlayerSphere = transformBSphere(m_localbsplayer, prevPlayerSrt);
 
+	// ロックオンしても体は敵へ向けない(ユーザー判断 2026-09-15)。
+	// モンスターハンターのロックオン(ターゲットカメラ)はカメラだけが敵を追い、
+	// キャラクターは入力した方向を向いて動くため。
+	// フロム作品のように体まで敵を向かせる場合は、この定数をtrueにする。
+	// その場合は移動のブレンドツリーの横歩き・後ろ歩きが使われる。
+	constexpr bool LOCK_ON_FACES_TARGET = false;
+	if (LOCK_ON_FACES_TARGET && m_lockOnTarget && !m_enemies.empty() && !m_enemyIntroActive)
+		m_player->setLockOnTarget(true, m_enemies.front()->getSRT().pos);
+	else
+		m_player->setLockOnTarget(false, Vector3(0.0f, 0.0f, 0.0f));
 	m_player->update(deltatime, m_camera.GetYaw(), lockPlayerMovement, sprinting, canDodge);
 
 	SRT playerSrt = m_player->getSRT();
@@ -914,6 +945,29 @@ void GameScene::update(uint64_t deltatime)
 	}
 	if (m_playerAnimationMesh && m_player)
 	{
+		// 移動のブレンドツリーへ渡す、キャラクターから見た速度(単位/秒)。
+		// 壁に押し戻された分を含めるため、入力ではなく実際に動いた量から求める
+		// (壁に向かって歩き続けても、その場で足踏みしないように)。
+		// 吹き飛ばし・回避の移動はブレンドツリーへ入れない(それぞれ専用の見た目がある)。
+		float velocityRight = 0.0f;
+		float velocityForward = 0.0f;
+		if (deltaSeconds > 0.0001f &&
+			!m_player->isKnockedBack() && !m_player->isDodging())
+		{
+			const SRT currentPlayerSrt = m_player->getSRT();
+			const float moveX = (currentPlayerSrt.pos.x - prevPlayerSrt.pos.x) / deltaSeconds;
+			const float moveZ = (currentPlayerSrt.pos.z - prevPlayerSrt.pos.z) / deltaSeconds;
+			// プレイヤーの正面は(-sin, -cos)。右は(正面.z, -正面.x)。
+			// カメラの右方向(cos, sin)と同じ規約になるように決めている
+			// (カメラと同じ向きを向いたとき、キャラクターの右 = 画面の右)。
+			const float yaw = currentPlayerSrt.rot.y;
+			const float forwardX = -std::sinf(yaw);
+			const float forwardZ = -std::cosf(yaw);
+			const float rightX = forwardZ;
+			const float rightZ = -forwardX;
+			velocityForward = moveX * forwardX + moveZ * forwardZ;
+			velocityRight = moveX * rightX + moveZ * rightZ;
+		}
 		m_playerAnimator.Update(
 			*m_playerAnimationMesh,
 			m_playerBoneComb,
@@ -928,8 +982,28 @@ void GameScene::update(uint64_t deltatime)
 				m_player->getMotionState() == player::MotionState::Run,
 				m_player->getMotionState() == player::MotionState::Jump,
 				m_player->getMotionTime(),
-				deltaSeconds
+				deltaSeconds,
+				velocityRight,
+				velocityForward
 			});
+
+		// 攻撃の踏み込み。アニメーターが溜めた「キャラクターから見た移動量」を
+		// ワールドの向きへ直し、次の更新でプレイヤーの位置へ足す(壁の衝突補正を通る)。
+		float rootRight = 0.0f;
+		float rootForward = 0.0f;
+		if (m_playerAnimator.ConsumeRootMotion(rootRight, rootForward) &&
+			!m_player->isKnockedBack())
+		{
+			const float yaw = m_player->getSRT().rot.y;
+			const float forwardX = -std::sinf(yaw);
+			const float forwardZ = -std::cosf(yaw);
+			const float rightX = forwardZ;
+			const float rightZ = -forwardX;
+			m_player->applyRootMotion(Vector3(
+				forwardX * rootForward + rightX * rootRight,
+				0.0f,
+				forwardZ * rootForward + rightZ * rootRight));
+		}
 	}
 
 	for (auto& e : m_enemies) {
@@ -1044,6 +1118,7 @@ void GameScene::update(uint64_t deltatime)
 		// 攻撃判定を正面からの角度で絞るため、敵の向きも渡す。
 		// 描画用SRTには演出のひねりが入っているので、必ず物理SRTの向きを使う。
 		m_combat.SetEnemyFacingYaw(m_enemies.front()->getSRT().rot.y);
+		m_combat.SetPlayerSprinting(playerWasRunning);
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
@@ -1144,23 +1219,6 @@ void GameScene::update(uint64_t deltatime)
 			m_player->applyKnockback(awayFromEnemy, knockback.speed, knockback.seconds);
 			m_playerAnimator.PlayImpactMotion();
 		}
-		const int comboStep = m_combat.GetPlayerComboStep();
-		if (m_combat.IsPlayerAttacking() &&
-			(comboStep != m_lastPlayerComboStep ||
-			 m_combat.IsPlayerHeavyAttack() != m_lastPlayerHeavyAttack))
-		{
-			if (m_combat.IsPlayerHeavyAttack())
-				m_playerAnimator.PlayHeavyAttackMotion(comboStep);
-			else
-				m_playerAnimator.PlayAttackMotion(comboStep);
-			m_lastPlayerComboStep = comboStep;
-			m_lastPlayerHeavyAttack = m_combat.IsPlayerHeavyAttack();
-		}
-		if (!m_combat.IsPlayerAttacking())
-		{
-			m_lastPlayerComboStep = 0;
-			m_lastPlayerHeavyAttack = false;
-		}
 
 		// どちらかのHPが0になったら結果を保存してリザルト画面へ遷移する。
 		if (!m_resultRequested &&
@@ -1176,6 +1234,10 @@ void GameScene::update(uint64_t deltatime)
     }
 	else
 	{
+		// 敵がいなくても剣を振れるようにする(素振り)。攻撃の段・判定・硬直は
+		// 敵がいるときと同じ表で進めるので、モーションの見た目とつなぎをそのまま確かめられる。
+		m_combat.SetPlayerSprinting(playerWasRunning);
+		m_combat.UpdateWithoutEnemy(deltatime, attackInput, heavyAttackInput);
 		// 攻撃対象がいなくても、調整用にプレイヤーと攻撃判定は
 		// 描画中の剣へ追従し続ける。
 		Vector3 swordBase{};
@@ -1193,6 +1255,26 @@ void GameScene::update(uint64_t deltatime)
 			previousSwordTip,
 			swordTransformValid,
 			playerObb);
+	}
+
+	// 戦闘側でコンボが次の段へ進んだら、その段のモーションを再生する。
+	// 敵の有無に関係なく通す(敵がいないときもコンボを出せるように)。
+	const int comboStep = m_combat.GetPlayerComboStep();
+	if (m_combat.IsPlayerAttacking() &&
+		(comboStep != m_lastPlayerComboStep ||
+		 m_combat.IsPlayerHeavyAttack() != m_lastPlayerHeavyAttack))
+	{
+		if (m_combat.IsPlayerHeavyAttack())
+			m_playerAnimator.PlayHeavyAttackMotion(comboStep);
+		else
+			m_playerAnimator.PlayAttackMotion(comboStep);
+		m_lastPlayerComboStep = comboStep;
+		m_lastPlayerHeavyAttack = m_combat.IsPlayerHeavyAttack();
+	}
+	if (!m_combat.IsPlayerAttacking())
+	{
+		m_lastPlayerComboStep = 0;
+		m_lastPlayerHeavyAttack = false;
 	}
 }
 
@@ -1235,7 +1317,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		if (!(wasAttackMotion && isAttackMotion))
 		{
 			m_enemyAnimationFrame = 0;
-			m_enemyAnimationTick = 0;
+			m_enemyAnimationTick = 0.0f;
 		}
 		m_previousEnemyMotionState = state;
 	}
@@ -1268,7 +1350,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyAnimationFrame == recoveryPoseFrame + 1)
 	{
 		m_enemyAnimationFrame = 0;
-		m_enemyAnimationTick = 0;
+		m_enemyAnimationTick = 0.0f;
 	}
 
 	aiAnimation* animation = m_enemyIdleAnimation;
@@ -1299,9 +1381,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	if (animation != nullptr)
 	{
 		m_enemyAnimationMesh->SetCurentAnimation(animation);
-		// Sample every fixed update, retaining the existing number of updates per key.
+		// キー間の小数部。経過時間で進めた値をそのまま使う。
 		const float fraction = holdRecoveryPose ? 0.0f :
-			static_cast<float>(m_enemyAnimationTick) / static_cast<float>(framesPerKey);
+			m_enemyAnimationTick;
 		const bool blendIntroToBattle =
 			m_enemyIntroBattleBlendActive &&
 			!m_enemyIntroActive &&
@@ -1370,17 +1452,25 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	{
 		// ブレンド中はWalkの先頭姿勢を維持し、完了後に通常のキー送りへ戻す。
 		m_enemyAnimationFrame = 0;
-		m_enemyAnimationTick = 0;
+		m_enemyAnimationTick = 0.0f;
 	}
 	else if (holdRecoveryPose)
 	{
 		m_enemyAnimationFrame = recoveryPoseFrame + 1;
-		m_enemyAnimationTick = 0;
+		m_enemyAnimationTick = 0.0f;
 	}
-	else if (++m_enemyAnimationTick >= framesPerKey)
+	else
 	{
-		m_enemyAnimationTick = 0;
-		++m_enemyAnimationFrame;
+		// 経過時間でキーを進める。
+		// 以前は「更新1回ごとに1カウント、framesPerKey回で1キー」だったため、
+		// fpsが違う機種(30fpsのSwitchなど)では敵のアニメーションの速さが変わっていた。
+		// framesPerKeyは60Hzで調整してきた値なので、「60Hzでの更新回数」として秒へ直して使う。
+		m_enemyAnimationTick += deltaSeconds * 60.0f / static_cast<float>(framesPerKey);
+		while (m_enemyAnimationTick >= 1.0f)
+		{
+			m_enemyAnimationTick -= 1.0f;
+			++m_enemyAnimationFrame;
+		}
 	}
 }
 
@@ -1843,14 +1933,16 @@ void GameScene::init()
 	//   heavy2=assets/motion/sword and shield attack.fbx
 	// 指定が無ければ既定のクリップを使う。
 	const std::array<std::string, 3> weakAttackFiles = {
-		GetDevSetting("weak1", "assets/motion/sword and shield slash (5).fbx"),
-		GetDevSetting("weak2", "assets/motion/sword and shield slash (2).fbx"),
-		GetDevSetting("weak3", "assets/motion/sword and shield slash (3).fbx"),
+		// 既定のクリップと振りの位置は Combat::PlayerComboStepOf() が持つ。
+		// iniで差し替えると振りの位置の値と合わなくなるので、差し替えたら表の値も見直すこと。
+		GetDevSetting("weak1", Combat::PlayerComboStepOf(false, 1).clipFile),
+		GetDevSetting("weak2", Combat::PlayerComboStepOf(false, 2).clipFile),
+		GetDevSetting("weak3", Combat::PlayerComboStepOf(false, 3).clipFile),
 	};
 	const std::array<std::string, 3> heavyAttackFiles = {
-		GetDevSetting("heavy1", "assets/motion/sword and shield attack (4).fbx"),
-		GetDevSetting("heavy2", "assets/motion/sword and shield attack (2).fbx"),
-		GetDevSetting("heavy3", "assets/motion/sword and shield attack (3).fbx"),
+		GetDevSetting("heavy1", Combat::PlayerComboStepOf(true, 1).clipFile),
+		GetDevSetting("heavy2", Combat::PlayerComboStepOf(true, 2).clipFile),
+		GetDevSetting("heavy3", Combat::PlayerComboStepOf(true, 3).clipFile),
 	};
 	for (size_t index = 0; index < weakAttackFiles.size(); ++index)
 	{
@@ -1872,12 +1964,53 @@ void GameScene::init()
 	}
 	aiAnimation* playerIdleAnimation = m_playerAnimationData.GetAnimation("idle", 0);
 	m_playerAnimator.SetLocomotionAnimations(m_playerWalkAnimation, playerRunAnimation);
+
+	// 移動のブレンドツリー。前後左右 × 歩き/走り の8本を速度で混ぜる。
+	// 手持ちのクリップの腰の移動量を調べて方向を割り当てた(2026-09-15):
+	//   walk=前 / walk (2)=後ろ / run=前 / run (2)=後ろ
+	//   strafe (2)=歩き+X / strafe (3)=走り+X / strafe=歩き-X / strafe (4)=走り-X
+	// Mixamoのキャラクターは+Zを向いており、+Xがキャラクターの左になる。
+	// 左右が逆に見える場合は dev_settings.ini で差し替えられる(ビルド不要)。
+	{
+		struct BlendClipFile { const char* key; const char* defaultFile; };
+		const BlendClipFile blendClipFiles[8] = {
+			{ "walk_forward",  "assets/motion/sword and shield walk.fbx" },
+			{ "run_forward",   "assets/motion/sword and shield run.fbx" },
+			{ "walk_right",    "assets/motion/sword and shield strafe.fbx" },
+			{ "run_right",     "assets/motion/sword and shield strafe (4).fbx" },
+			{ "walk_backward", "assets/motion/sword and shield walk (2).fbx" },
+			{ "run_backward",  "assets/motion/sword and shield run (2).fbx" },
+			{ "walk_left",     "assets/motion/sword and shield strafe (2).fbx" },
+			{ "run_left",      "assets/motion/sword and shield strafe (3).fbx" },
+		};
+		// 並び順は CCharacterAnimator の [方向(前,右,後,左) x 2 + 歩調(歩き,走り)] に合わせる。
+		std::array<aiAnimation*, 8> blendClips{};
+		for (size_t index = 0; index < blendClips.size(); ++index)
+		{
+			const std::string name = std::string("blend_") + blendClipFiles[index].key;
+			m_playerAnimationData.LoadAnimation(
+				GetDevSetting(blendClipFiles[index].key, blendClipFiles[index].defaultFile), name);
+			blendClips[index] = m_playerAnimationData.GetAnimation(name.c_str(), 0);
+		}
+		m_playerAnimator.SetLocomotionBlendSpace(
+			*m_playerAnimationMesh,
+			playerProfile.modelScale.y,
+			blendClips,
+			player::VALUE_MOVE_MODEL,
+			player::VALUE_MOVE_MODEL * player::RUN_SPEED_MULTIPLIER);
+	}
 	m_playerAnimator.SetIdleAnimation(playerIdleAnimation);
 	m_playerAnimator.SetAttackAnimations(weakAttackAnimations, heavyAttackAnimations);
 	// 被弾ののけぞり。手持ちのクリップにある「impact」を使う(新規アセットは追加しない)。
 	m_playerAnimationData.LoadAnimation(
 		GetDevSetting("impact", "assets/motion/sword and shield impact.fbx"), "impact");
 	m_playerAnimator.SetImpactAnimation(m_playerAnimationData.GetAnimation("impact", 0));
+	// ダッシュ攻撃(走りながら弱攻撃)。モンハンの片手剣の突進斬りの役。
+	m_playerAnimationData.LoadAnimation(
+		GetDevSetting("dash_attack", Combat::PlayerDashAttackStep().clipFile), "dash_attack");
+	m_playerAnimator.SetDashAttackAnimation(m_playerAnimationData.GetAnimation("dash_attack", 0));
+	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
+	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting("attack_hips_rotation", "1")));
 	if (playerIdleAnimation == nullptr)
 		std::cout << "[Player] idle animation not loaded" << std::endl;
 	if (m_playerWalkAnimation == nullptr)
@@ -1957,6 +2090,9 @@ void GameScene::init()
 
 	m_enemies.reserve(INITIAL_ENEMYNUM);
 	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos(0, 0, -120); 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, ENEMY_MODEL_SCALE)); 	}
+	// 調整用: dev_settings.ini の no_enemy=1 で敵を置かずに始める(素振りでモーションを確かめるため)。
+	// 敵の境界の計算にはモデルが要るので、敵は一度作ってから外す。
+	const bool startWithoutEnemy = GetDevSetting("no_enemy", "0") == "1";
 	StartEnemyIntro();
 	// プレイヤーのローカル境界球とモデル境界を作成する。
 	{
@@ -2018,6 +2154,8 @@ void GameScene::init()
 				enemyGroundY + m_localEnemyMeshBounds.max.z * ENEMY_MODEL_SCALE);
 		}
 	}
+	if (startWithoutEnemy)
+		m_enemies.clear();
 	// デバッグ表示はまとめて1つのウィンドウへ登録する。
 	// 個別に登録すると、それぞれが独立したウィンドウとして開いてしまう。
 	DebugUI::RedistDebugFunction([this]() {
@@ -2228,6 +2366,17 @@ void GameScene::DebugEnemies()
 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, 0.0f, ENEMY_MODEL_SCALE));
 		selected_model = static_cast<int>(m_enemies.size()) - 1;
 	}
+	ImGui::SameLine();
+	// 素振りでモーションを確かめるための近道。敵がいなくても攻撃・コンボ・ダッシュ攻撃は出せる。
+	// 起動時から敵なしにしたい場合は dev_settings.ini に no_enemy=1 を書く。
+	if (ImGui::Button("敵を全員消す(素振り)") && !m_enemies.empty())
+	{
+		m_enemies.clear();
+		m_combat.ClearEnemyCollisionDebug();
+		m_combat.CancelEnemyAttack();
+		m_lockOnTarget = false;
+		selected_model = 0;
+	}
 
 	if (m_enemies.empty())
 	{
@@ -2272,6 +2421,7 @@ void GameScene::DebugEnemies()
 	{
 		m_enemies.erase(m_enemies.begin() + selected_model);
 		m_combat.ClearEnemyCollisionDebug();
+		m_combat.CancelEnemyAttack();
 		if (m_enemies.empty()) {
 			selected_model = 0;
 		}

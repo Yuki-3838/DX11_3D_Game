@@ -8,7 +8,12 @@
 class player : public gameobject {
 	// 旧来の移動調整値（現在は未使用）。
 public:
-	inline static float VALUE_MOVE_MODEL = 70.0f;				// 遘ｻ蜍暮㍼
+	// 歩く速さ(単位/秒)。以前は70で、身長約18単位のキャラクターに対して速すぎた
+	// (人間に換算して秒速約7m。ユーザーから「ゴキブリかと思った」)。
+	// 歩きクリップを1倍速で再生したときの速さ(約14)の約1.4倍にしている。
+	inline static float VALUE_MOVE_MODEL = 20.0f;
+	// ダッシュの速さ = 歩く速さ x この倍率(=45)。走りクリップの1倍速(約39)の約1.15倍。
+	inline static float RUN_SPEED_MULTIPLIER = 2.25f;
 	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// 蝗櫁ｻ｢驥・
 	inline static float RATE_ROTATE_MODEL = 0.4f;				// 蝗櫁ｻ｢蜑ｲ蜷・
 	inline static float RATE_MOVE_MODEL = 0.2f;					// 遘ｻ蜍墓ｸ幄｡ｰ蜑ｲ蜷・
@@ -53,6 +58,15 @@ public:
 	void applyKnockback(const Vector3& direction, float speed, float seconds);
 	bool isKnockedBack() const;
 
+	// ロックオン中は敵を向いたまま移動する(フロム作品のロックオン移動)。
+	// 向きを移動方向へ回さないので、横や後ろへ動くと横歩き・後ろ歩きのクリップが混ざる。
+	// ダッシュ中は向きの固定を外し、走る方向を向く(エルデンリングと同じ)。
+	void setLockOnTarget(bool enabled, const Vector3& targetPosition);
+
+	// 攻撃の踏み込み(ルートモーション)。次のupdateでキャラクターの位置へ足す。
+	// updateの中で足すのは、壁との衝突補正(更新前後の差分で行う)を通すため。
+	void applyRootMotion(const Vector3& worldDelta);
+
 	void setVel(const Vector3& vel);
 
 private:
@@ -66,6 +80,9 @@ private:
 	bool m_isDodging = false;
 	float m_dodgeTime = 0.0f;
 	Vector3 m_dodgeDirection{0, 0, 0};
+	Vector3 m_pendingRootMotion{0, 0, 0};
+	bool m_lockOnEnabled = false;
+	Vector3 m_lockOnTargetPosition{0, 0, 0};
 	bool m_isKnockedBack = false;
 	float m_knockbackTime = 0.0f;
 	float m_knockbackSeconds = 0.0f;

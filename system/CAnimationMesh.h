@@ -173,6 +173,44 @@ public:
 	// 次の攻撃クリップへ移るとき、直前の歩行姿勢をブレンド元として使う。
 	std::unordered_map<std::string, Matrix4x4> CaptureCurrentLocalPose() const;
 
+	// --- ブレンドツリー用 ---
+	// クリップの姿勢を、正規化時間(0〜1)で取り出す。ボーン行列の状態は変えない。
+	// 返すのは指定ボーンのローカル行列(休止姿勢の平行移動にクリップの回転を合わせたもの)。
+	// 複数のクリップを同じ正規化時間で取り出して混ぜることで、足の運びの位相を揃えられる。
+	std::unordered_map<std::string, Matrix4x4> SampleLocalPose(
+		aiAnimation* animation,
+		float normalizedTime,
+		const std::vector<std::string>& boneNames);
+	// ボーン名→ローカル行列の姿勢を適用する。含まれないボーンは休止姿勢にし、
+	// manualLocalRotationsは「姿勢に含まれないボーン」にだけ休止姿勢への加算として掛ける
+	// (剣を握る手の姿勢など。UpdateAnimationWithManualPoseと同じ扱い)。
+	void ApplyLocalPose(
+		BoneCombMatrix& bonecombarray,
+		const std::unordered_map<std::string, Matrix4x4>& localPose,
+		const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations);
+	// 2つのローカル行列をスケール・回転・平行移動ごとに補間する(回転はslerp)。
+	static Matrix4x4 BlendLocalMatrix(const Matrix4x4& from, const Matrix4x4& to, float amount);
+	// --- 攻撃の踏み込み(ルートモーション)用 ---
+	// クリップ先頭からの、ボーン(腰)の位置の変化量(クリップの単位)。
+	Vector3 SampleBonePositionOffset(
+		aiAnimation* animation, float normalizedTime, const std::string& boneName) const;
+	// 腰をその場に置いたまま、クリップの沈み込みと回転の変化だけを取り込んだローカル行列。
+	// 前後左右の移動はキャラクターの位置へ移すので、ここでは休止姿勢の位置のままにする
+	// (両方に入れると二重に進み、足が滑る)。
+	// 腰の高さはクリップの値をそのまま使う(しゃがんだ姿勢で始まるクリップでも足が浮かないように)。
+	// クリップとモデルの腰の位置が同じ単位であることが前提(Mixamoはどちらもcm)。
+	// rotationMode: 0=回転を取り込まない / 1=クリップのバインド姿勢からの変化を休止姿勢へ足す(既定) / 2=クリップの回転をそのまま使う
+	Matrix4x4 SampleHipsInPlace(
+		aiAnimation* animation, float normalizedTime, const std::string& boneName, int rotationMode) const;
+	// ローカル行列の平行移動のうち、絶対値が最も大きい成分(符号付き)。
+	// 腰の休止位置では、これが親空間での「高さ」になる(親の上の軸がYとは限らないため)。
+	static float DominantAxisComponent(const Matrix4x4& localMatrix);
+	// 休止姿勢のボーンのローカル行列(見つからなければ単位行列)。
+	Matrix4x4 GetRestLocalMatrix(const std::string& boneName) const;
+	// 休止姿勢でのボーンのモデル空間の高さ(Y)。
+	// クリップの腰の高さと比べて、クリップの単位をモデルの単位へ換算するのに使う。
+	float GetRestBoneModelHeight(const std::string& boneName) const;
+
 	// レスト姿勢に対して指定ボーンのローカル回転を加えたポーズを更新
 	void UpdateManualPose(
 		BoneCombMatrix& bonecombarray,

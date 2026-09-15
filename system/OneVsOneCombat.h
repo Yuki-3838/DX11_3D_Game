@@ -45,6 +45,9 @@ public:
 	// 敵の向き(ヨー)。攻撃判定を正面からの角度で絞るために使う。
 	// Update()の引数がすでに多いため、攻撃の種類と同じくセッターで渡す。
 	void SetEnemyFacingYaw(float yawRadians) { m_enemyFacingYaw = yawRadians; }
+	// プレイヤーが走っているか。走りながら弱攻撃を押すとダッシュ攻撃になる(Update前に設定する)。
+	void SetPlayerSprinting(bool sprinting) { m_playerSprinting = sprinting; }
+	bool IsPlayerDashAttack() const { return m_playerAttack.dash && m_playerAttack.comboStep == 1; }
 	void ClearCollisionDebug()
 	{
 		m_collisionDebug = {};
@@ -72,6 +75,12 @@ public:
 		bool swordTransformValid,
 		const GM31::GE::Collision::BoundingBoxOBB& playerObb,
 		const GM31::GE::Collision::BoundingBoxOBB& enemyObb);
+	// 敵がいないとき(素振り)の更新。プレイヤーの攻撃の段・判定・硬直だけを進め、ダメージは出さない。
+	// 敵がいないとUpdate()を呼べず、攻撃が1段目のまま進まずコンボも出なかったため。
+	void UpdateWithoutEnemy(
+		uint64_t deltaMicroseconds,
+		bool playerAttackTriggered,
+		bool playerHeavyAttackTriggered);
 
     float GetPlayerHp() const { return m_playerHp; }
     float GetEnemyHp() const { return m_enemyHp; }
@@ -98,6 +107,14 @@ public:
     std::string_view GetStateName() const;
 
 private:
+	// プレイヤーの攻撃の入力受付と段の進行。敵の有無に関係なく同じ処理を通す。
+	// canHitEnemy=false のときは判定中でもダメージを与えない。
+	void AdvancePlayerAttack(
+		float deltaSeconds,
+		bool playerAttackTriggered,
+		bool playerHeavyAttackTriggered,
+		bool canHitEnemy);
+
 	enum class AttackKind { Normal, Heavy };
     struct AttackState
     {
@@ -109,6 +126,8 @@ private:
 		float totalElapsed = 0.0f;
 		int comboStep = 1;
 		int comboQueued = 0;
+		// 走りから出したダッシュ攻撃か。1段目だけダッシュ攻撃のクリップと時間を使う。
+		bool dash = false;
     };
 
     // 攻撃の時間・威力の定義元は system/CombatAttackTable.h に集約している。
@@ -121,13 +140,8 @@ private:
     static constexpr float ENEMY_DAMAGE =
         static_cast<float>(Combat::Tuning::ENEMY_DAMAGE);
 	static constexpr float ENEMY_ATTACK_RANGE = Combat::Tuning::ENEMY_HIT_RANGE;
-	// プレイヤーアニメーターで使用する、短く地に足の着いた一閃モーションに合わせる。
-	static constexpr float PLAYER_WINDUP = Combat::Tuning::PLAYER_WEAK_ANTICIPATION;
-	static constexpr float PLAYER_ACTIVE = Combat::Tuning::PLAYER_WEAK_ACTIVE;
-	static constexpr float PLAYER_RECOVERY = Combat::Tuning::PLAYER_WEAK_RECOVERY;
-	static constexpr float HEAVY_WINDUP = Combat::Tuning::PLAYER_HEAVY_ANTICIPATION;
-	static constexpr float HEAVY_ACTIVE = Combat::Tuning::PLAYER_HEAVY_ACTIVE;
-	static constexpr float HEAVY_RECOVERY = Combat::Tuning::PLAYER_HEAVY_RECOVERY;
+	// プレイヤーの攻撃の時間(予兆・判定・硬直)はコンボの段ごとに違うので、
+	// Combat::PlayerComboStepOf() から都度引く。
 	static constexpr float HEAVY_DAMAGE =
 		static_cast<float>(Combat::Tuning::PLAYER_HEAVY_DAMAGE);
     // 敵の移動も攻撃に合わせる。予備動作を見やすくし、攻撃後の硬直を十分に取ることで、
@@ -144,6 +158,7 @@ private:
     // 敵が現在出している攻撃の種類。時間・威力・射程はここから引く。
     Combat::EnemyAttackKind m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
     float m_enemyFacingYaw = 0.0f;
+    bool m_playerSprinting = false;
     AttackState m_playerAttack{};
     AttackState m_enemyAttack{};
 	CollisionDebugState m_collisionDebug{};

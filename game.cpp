@@ -67,7 +67,10 @@ void gameupdate(uint64_t deltatime)
     input.Update();
     SoundManager::Update();
 
-    // F1：ゲームシーン、F2：車モデルシーン、F3：モーションエディター、F4：デバッグ表示切り替え
+    // F1：ゲームシーン、F2：車モデルシーン、F4：デバッグ表示切り替え
+    // F3のゲーム内モーションエディター(MotionEditorScene)は、ユーザー判断でいったん外した。
+    // 外部ツール(tools/MotionEditor.Wpf)と役割が重複しており、デバッグツールは1つでよいため。
+    // シーンのコードは残してあるので、戻す場合はここへ分岐を足し直すだけでよい。
     if (input.IsKeyTriggered(DIK_F1))
     {
         SceneManager::SetCurrentScene("GameScene");
@@ -75,10 +78,6 @@ void gameupdate(uint64_t deltatime)
     else if (input.IsKeyTriggered(DIK_F2))
     {
         SceneManager::SetCurrentScene("CarScene");
-    }
-    else if (input.IsKeyTriggered(DIK_F3))
-    {
-        SceneManager::SetCurrentScene("MotionEditorScene");
     }
     else if (input.IsKeyTriggered(DIK_F4))
     {

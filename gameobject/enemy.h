@@ -60,6 +60,10 @@ public:
 	// 傾けると足元の最下点が変わるため、接地オフセットを計算する側が必要とする。
 	Combat::EnemyPoseOffset getAttackPoseOffset() const;
 
+	// 調整用。敵を攻撃させず、その場でプレイヤーの方を向かせるだけにする(練習用の的)。
+	// プレイヤーの攻撃モーションを、敵の攻撃に邪魔されずに見比べるため。
+	void setPassive(bool passive) { m_passive = passive; }
+
 	// 調整用。攻撃の種類を固定する(デバッグ表示からのみ使う)。
 	// 3種類の構えを見比べるには同じ攻撃を繰り返し出させる必要があるが、
 	// 通常の選択は距離と直前の攻撃で変わるため、狙った攻撃が出るまで待つことになる。
@@ -116,6 +120,7 @@ private:
 	Combat::EnemyCondition m_condition = Combat::EnemyCondition::Healthy;
 	// 呼吸や足取りの周期に使う。状態が変わっても0へ戻さない(戻すと動きが途切れて見える)。
 	float m_conditionTime = 0.0f;
+	bool m_passive = false;
 	bool m_forceAttackKind = false;
 	Combat::EnemyAttackKind m_forcedAttackKind = Combat::EnemyAttackKind::Slam;
 };

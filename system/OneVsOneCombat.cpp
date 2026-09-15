@@ -274,27 +274,7 @@ void OneVsOneCombat::Update(
     }
     else
     {
-		if ((playerAttackTriggered || playerHeavyAttackTriggered) && m_playerAttack.phase == Phase::Ready)
-		{
-			m_playerAttack = {};
-			m_playerAttack.phase = Phase::Windup;
-			m_playerAttack.kind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
-			m_playerAttack.comboStep = 1;
-		}
-		else if ((playerAttackTriggered || playerHeavyAttackTriggered) &&
-			m_playerAttack.phase != Phase::Ready &&
-			m_playerAttack.phase != Phase::Defeated)
-		{
-			const AttackKind requestedKind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
-			const bool sameKind = requestedKind == m_playerAttack.kind;
-			// 現在の攻撃中に次の入力を受け付ける。
-			// 有効時間や硬直の境界直前に押してもコンボが途切れないようにする。
-			const bool canBuffer = m_playerAttack.phase == Phase::Windup ||
-				m_playerAttack.phase == Phase::Active ||
-				m_playerAttack.phase == Phase::Recovery;
-			if (sameKind && canBuffer && m_playerAttack.comboStep < 3)
-				m_playerAttack.comboQueued = std::min(2, m_playerAttack.comboQueued + 1);
-		}
+		AdvancePlayerAttack(deltaSeconds, playerAttackTriggered, playerHeavyAttackTriggered, true);
 
 		// 敵の攻撃の時間・威力・射程は、敵AIが選んだ攻撃データから引く。
 		// これにより攻撃の種類ごとに「予兆の長さ」「隙の大きさ」が変わり、
@@ -308,51 +288,6 @@ void OneVsOneCombat::Update(
         {
             m_enemyAttack = { Phase::Windup, 0.0f, false };
             m_enemyCooldown = enemyAttack.frames.cooldownSeconds;
-        }
-
-		m_playerAttack.elapsed += deltaSeconds;
-		m_playerAttack.totalElapsed += deltaSeconds;
-		const float playerWindup = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_WINDUP : PLAYER_WINDUP;
-		const float playerActive = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_ACTIVE : PLAYER_ACTIVE;
-		const float playerRecovery = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_RECOVERY : PLAYER_RECOVERY;
-		if (m_playerAttack.phase == Phase::Windup &&
-		    m_playerAttack.elapsed >= playerWindup)
-        {
-            m_playerAttack.phase = Phase::Active;
-            m_playerAttack.elapsed = 0.0f;
-        }
-        else if (m_playerAttack.phase == Phase::Active)
-        {
-			if (!m_playerAttack.hit &&
-				(m_collisionDebug.narrowPhaseHit || m_playerHitGrace > 0.0f))
-			{
-				const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
-				m_enemyHp = std::max(0.0f, m_enemyHp - damage);
-				m_playerAttack.hit = true;
-				m_playerHitGrace = 0.0f;
-            }
-			if (m_playerAttack.elapsed >= playerActive)
-            {
-                m_playerAttack.phase = Phase::Recovery;
-                m_playerAttack.elapsed = 0.0f;
-            }
-        }
-		else if (m_playerAttack.phase == Phase::Recovery &&
-		    m_playerAttack.elapsed >= playerRecovery)
-        {
-			if (m_playerAttack.comboQueued && m_playerAttack.comboStep < 3)
-			{
-				const AttackKind kind = m_playerAttack.kind;
-				const int nextStep = m_playerAttack.comboStep + 1;
-				const int queuedInputs = m_playerAttack.comboQueued;
-				m_playerAttack = {};
-				m_playerAttack.phase = Phase::Windup;
-				m_playerAttack.kind = kind;
-				m_playerAttack.comboStep = nextStep;
-				m_playerAttack.comboQueued = std::max(0, queuedInputs - 1);
-			}
-			else
-				m_playerAttack = {};
         }
 
         m_enemyAttack.elapsed += deltaSeconds;
@@ -419,6 +354,107 @@ void OneVsOneCombat::Update(
         if (IsPlayerDefeated())
             m_playerAttack = { Phase::Defeated, 0.0f, false };
     }
+}
+
+void OneVsOneCombat::UpdateWithoutEnemy(
+	uint64_t deltaMicroseconds,
+	bool playerAttackTriggered,
+	bool playerHeavyAttackTriggered)
+{
+	const float deltaSeconds = std::min(
+		static_cast<float>(deltaMicroseconds) / 1000000.0f,
+		0.1f);
+	// 当たる相手がいないので、境界での接触の保持も持ち越さない。
+	m_playerHitGrace = 0.0f;
+	if (IsPlayerDefeated())
+		return;
+	AdvancePlayerAttack(deltaSeconds, playerAttackTriggered, playerHeavyAttackTriggered, false);
+}
+
+void OneVsOneCombat::AdvancePlayerAttack(
+	float deltaSeconds,
+	bool playerAttackTriggered,
+	bool playerHeavyAttackTriggered,
+	bool canHitEnemy)
+{
+		if ((playerAttackTriggered || playerHeavyAttackTriggered) && m_playerAttack.phase == Phase::Ready)
+		{
+			m_playerAttack = {};
+			m_playerAttack.phase = Phase::Windup;
+			m_playerAttack.kind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
+			m_playerAttack.comboStep = 1;
+			// 走りながらの弱攻撃はダッシュ攻撃(突進斬り)として出す。
+			m_playerAttack.dash = !playerHeavyAttackTriggered && m_playerSprinting;
+		}
+		else if ((playerAttackTriggered || playerHeavyAttackTriggered) &&
+			m_playerAttack.phase != Phase::Ready &&
+			m_playerAttack.phase != Phase::Defeated)
+		{
+			const AttackKind requestedKind = playerHeavyAttackTriggered ? AttackKind::Heavy : AttackKind::Normal;
+			const bool sameKind = requestedKind == m_playerAttack.kind;
+			// 現在の攻撃中に次の入力を受け付ける。
+			// 有効時間や硬直の境界直前に押してもコンボが途切れないようにする。
+			const bool canBuffer = m_playerAttack.phase == Phase::Windup ||
+				m_playerAttack.phase == Phase::Active ||
+				m_playerAttack.phase == Phase::Recovery;
+			if (sameKind && canBuffer && m_playerAttack.comboStep < 3)
+				m_playerAttack.comboQueued = std::min(2, m_playerAttack.comboQueued + 1);
+		}
+
+		m_playerAttack.elapsed += deltaSeconds;
+		m_playerAttack.totalElapsed += deltaSeconds;
+		// 時間はコンボの段ごとに、再生するクリップの振りの位置から決まっている。
+		// アニメーター側も同じ表を見るので、見た目の振りと判定がずれない。
+		const Combat::PlayerComboStep& comboStepData = IsPlayerDashAttack()
+			? Combat::PlayerDashAttackStep()
+			: Combat::PlayerComboStepOf(m_playerAttack.kind == AttackKind::Heavy, m_playerAttack.comboStep);
+		const float playerWindup = comboStepData.WindupSeconds();
+		const float playerActive = comboStepData.ActiveSeconds();
+		const float playerRecovery = comboStepData.RecoverySeconds();
+		if (m_playerAttack.phase == Phase::Windup &&
+		    m_playerAttack.elapsed >= playerWindup)
+        {
+            m_playerAttack.phase = Phase::Active;
+            m_playerAttack.elapsed = 0.0f;
+        }
+        else if (m_playerAttack.phase == Phase::Active)
+        {
+			if (canHitEnemy && !m_playerAttack.hit &&
+				(m_collisionDebug.narrowPhaseHit || m_playerHitGrace > 0.0f))
+			{
+				const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
+				m_enemyHp = std::max(0.0f, m_enemyHp - damage);
+				m_playerAttack.hit = true;
+				m_playerHitGrace = 0.0f;
+            }
+			if (m_playerAttack.elapsed >= playerActive)
+            {
+                m_playerAttack.phase = Phase::Recovery;
+                m_playerAttack.elapsed = 0.0f;
+            }
+        }
+		else if (m_playerAttack.phase == Phase::Recovery &&
+			(m_playerAttack.elapsed >= playerRecovery ||
+			 (m_playerAttack.comboQueued && m_playerAttack.comboStep < 3 &&
+			  m_playerAttack.elapsed >= comboStepData.comboLinkSeconds)))
+        {
+			// 次の段の入力が予約されていれば、硬直の終わりを待たずに振り終わり直後から次へつなぐ。
+			// 以前は硬直が全部終わるまで待っていた。クリップ本来の長さで再生するようにしたため
+			// 硬直(戻りの動き)が長くなり、待つと片手剣らしい連撃の速さが出ない。
+			if (m_playerAttack.comboQueued && m_playerAttack.comboStep < 3)
+			{
+				const AttackKind kind = m_playerAttack.kind;
+				const int nextStep = m_playerAttack.comboStep + 1;
+				const int queuedInputs = m_playerAttack.comboQueued;
+				m_playerAttack = {};
+				m_playerAttack.phase = Phase::Windup;
+				m_playerAttack.kind = kind;
+				m_playerAttack.comboStep = nextStep;
+				m_playerAttack.comboQueued = std::max(0, queuedInputs - 1);
+			}
+			else
+				m_playerAttack = {};
+        }
 }
 
 std::string_view OneVsOneCombat::GetStateName() const

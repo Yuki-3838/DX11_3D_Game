@@ -6,6 +6,7 @@
 #include	"player.h"	
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"	
+#include	"../Application.h"
 
 player::player(IScene* scene)
 	: gameobject(scene)
@@ -79,9 +80,12 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool sprinting, bool dodgeTriggered) {
 
 	auto& input = CInputManager::GetInstance();
-	const auto isMoveKeyPressed = [&input](int directInputKey, int virtualKey) {
+	// GetAsyncKeyStateはPC全体のキー状態を返すので、ゲームのウィンドウが前面にあるときだけ使う。
+	// 以前は前面かどうかを見ておらず、別のアプリで押したキーでもプレイヤーが動いていた。
+	const bool gameIsForeground = GetForegroundWindow() == Application::GetWindow();
+	const auto isMoveKeyPressed = [&input, gameIsForeground](int directInputKey, int virtualKey) {
 		return input.IsKeyPressed(directInputKey) ||
-			((GetAsyncKeyState(virtualKey) & 0x8000) != 0);
+			(gameIsForeground && (GetAsyncKeyState(virtualKey) & 0x8000) != 0);
 	};
 
 	const bool moveForward = !movementLocked && isMoveKeyPressed(DIK_W, 'W');
@@ -100,6 +104,9 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
 	m_move.x = 0.0f;
 	m_move.z = 0.0f;
+	// 攻撃の踏み込み。入力による移動とは別に足す(攻撃中は入力による移動を止めているため)。
+	m_srt.pos += m_pendingRootMotion;
+	m_pendingRootMotion = Vector3(0.0f, 0.0f, 0.0f);
 	// 吹き飛ばしは回避や移動入力より優先する。食らった瞬間に操作を奪い、
 	// 「読み違えた」ことを体で分からせる。
 	// 位置の変更は回避と同じくm_srt.posへ直接足す。壁との衝突補正は
@@ -127,6 +134,32 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		m_isDodging = true;
 		m_dodgeTime = 0.0f;
 		m_dodgeDirection = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y));
+		// 回避は入力した方向へ転がる。ロックオン中は常に敵を向いているので、
+		// 向いている方へ転がる作りのままだと、横へ避けたくても敵へ飛び込んでしまう。
+		const float dodgeForward = static_cast<float>(moveForward) - static_cast<float>(moveBackward);
+		const float dodgeRight = static_cast<float>(moveRight) - static_cast<float>(moveLeft);
+		if (dodgeForward != 0.0f || dodgeRight != 0.0f)
+		{
+			const float length = std::sqrt(dodgeForward * dodgeForward + dodgeRight * dodgeRight);
+			const float x = (-std::sinf(cameraYaw) * dodgeForward + std::cosf(cameraYaw) * dodgeRight) / length;
+			const float z = (std::cosf(cameraYaw) * dodgeForward + std::sinf(cameraYaw) * dodgeRight) / length;
+			m_dodgeDirection = Vector3(x, 0.0f, z);
+		}
+		else if (m_lockOnEnabled)
+		{
+			// 入力が無くロックオン中なら、敵から離れる方へ下がる(後ろへの回避)。
+			Vector3 away = m_srt.pos - m_lockOnTargetPosition;
+			away.y = 0.0f;
+			if (away.LengthSquared() > 0.0001f)
+			{
+				away.Normalize();
+				m_dodgeDirection = away;
+			}
+		}
+		// 転がる向きへ体を向ける。回避のモーションは前へ転がる動きなので、
+		// 向きと移動方向が食い違うと横滑りして見える。回避が終われば敵へ向き直る。
+		m_srt.rot.y = std::atan2(-m_dodgeDirection.x, -m_dodgeDirection.z);
+		m_destrot.y = m_srt.rot.y;
 	}
 	if (m_isDodging)
 	{
@@ -202,12 +235,24 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		const float moveX = forwardX * normalizedForward + rightX * normalizedRight;
 		const float moveZ = forwardZ * normalizedForward + rightZ * normalizedRight;
 
-		const float moveSpeed = sprinting ? VALUE_MOVE_MODEL * 1.65f : VALUE_MOVE_MODEL;
+		const float moveSpeed = sprinting ? VALUE_MOVE_MODEL * RUN_SPEED_MULTIPLIER : VALUE_MOVE_MODEL;
 		m_move.x = moveX * moveSpeed * deltaSec;
 		m_move.z = moveZ * moveSpeed * deltaSec;
 
 		// 移動方向へプレイヤーを滑らかに振り向かせる。
-		m_destrot.y = std::atan2(-moveX, -moveZ);
+		// ロックオン中(ダッシュしていないとき)は、下で敵の方を向かせるので回さない。
+		if (!m_lockOnEnabled || sprinting)
+			m_destrot.y = std::atan2(-moveX, -moveZ);
+	}
+
+	// ロックオン中は、移動していてもしていなくても敵の方を向く。
+	// 攻撃中は向き直らない(振っている最中に体が回ると、攻撃の向きが読めなくなる)。
+	if (m_lockOnEnabled && !sprinting && !movementLocked)
+	{
+		const float toTargetX = m_lockOnTargetPosition.x - m_srt.pos.x;
+		const float toTargetZ = m_lockOnTargetPosition.z - m_srt.pos.z;
+		if (toTargetX * toTargetX + toTargetZ * toTargetZ > 0.0001f)
+			m_destrot.y = std::atan2(-toTargetX, -toTargetZ);
 	}
 
 	if (!movementLocked && CInputManager::GetInstance().IsKeyPressed(DIK_RIGHT))
@@ -239,8 +284,12 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		diffrot += PI * 2.0f;
 	}
 
-	// 比率計算
-	m_srt.rot.y += diffrot * RATE_ROTATE_MODEL;
+	// 振り向き。以前は更新1回ごとに差分のRATE_ROTATE_MODEL(40%)ずつ回していたため、
+	// fpsが違う機種では振り向きの速さが変わっていた。
+	// 60Hzで1回あたり40%だった速さを保ったまま、経過時間に対する指数補間へ直す。
+	// (60Hzのとき 1 - (1 - 0.4)^1 = 0.4 になり、従来と同じ見た目になる)
+	const float turnBlend = 1.0f - std::pow(1.0f - RATE_ROTATE_MODEL, deltaSec * 60.0f);
+	m_srt.rot.y += diffrot * turnBlend;
 	if (m_srt.rot.y > PI)
 	{
 		m_srt.rot.y -= PI * 2.0f;
@@ -340,6 +389,17 @@ void player::applyKnockback(const Vector3& direction, float speed, float seconds
 bool player::isKnockedBack() const
 {
 	return m_isKnockedBack;
+}
+
+void player::applyRootMotion(const Vector3& worldDelta)
+{
+	m_pendingRootMotion += Vector3(worldDelta.x, 0.0f, worldDelta.z);
+}
+
+void player::setLockOnTarget(bool enabled, const Vector3& targetPosition)
+{
+	m_lockOnEnabled = enabled;
+	m_lockOnTargetPosition = targetPosition;
 }
 
 const char* player::getMotionStateName() const

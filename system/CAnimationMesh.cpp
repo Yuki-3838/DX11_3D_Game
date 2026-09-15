@@ -1442,6 +1442,248 @@ std::unordered_map<std::string, Matrix4x4> CAnimationMesh::CaptureCurrentLocalPo
 	return pose;
 }
 
+std::unordered_map<std::string, Matrix4x4> CAnimationMesh::SampleLocalPose(
+	aiAnimation* animation,
+	float normalizedTime,
+	const std::vector<std::string>& boneNames)
+{
+	std::unordered_map<std::string, Matrix4x4> pose;
+	if (animation == nullptr)
+		return pose;
+
+	// ApplyAnimationToBonesはボーン辞書へ直接書き込むので、対象ボーンの今の値を退避してから
+	// 休止姿勢へ戻し、クリップを適用して読み取り、最後に元へ戻す。
+	std::vector<std::pair<std::string, Matrix4x4>> saved;
+	saved.reserve(boneNames.size());
+	for (const std::string& name : boneNames)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt == m_BoneDictionary.end())
+			continue;
+		saved.emplace_back(name, boneIt->second.AnimationMatrix);
+		boneIt->second.AnimationMatrix = GetRestLocalMatrix(name);
+	}
+
+	// 正規化時間をキー番号と小数部へ直す。キー数はチャンネルごとに違うことがあるので、
+	// ApplyAnimationToBonesと同じく回転キーの最大数を基準にする。
+	unsigned int maxRotationKeys = 0;
+	for (unsigned int c = 0; c < animation->mNumChannels; ++c)
+		maxRotationKeys = std::max(maxRotationKeys, animation->mChannels[c]->mNumRotationKeys);
+	const float wrapped = normalizedTime - std::floor(normalizedTime);
+	const float keyPosition = maxRotationKeys > 1
+		? wrapped * static_cast<float>(maxRotationKeys - 1)
+		: 0.0f;
+	const int frame = static_cast<int>(std::floor(keyPosition));
+	const float fraction = keyPosition - static_cast<float>(frame);
+	// ループ指定にすると末尾でキー番号が0へ巻き戻るため、ここでは非ループで渡す
+	// (正規化時間の巻き戻しは上で済ませている)。
+	ApplyAnimationToBones(animation, frame, fraction, boneNames, false, std::string());
+
+	for (auto& [name, previous] : saved)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		pose.emplace(name, boneIt->second.AnimationMatrix);
+		boneIt->second.AnimationMatrix = previous;
+	}
+	return pose;
+}
+
+void CAnimationMesh::ApplyLocalPose(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, Matrix4x4>& localPose,
+	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations)
+{
+	m_DebugBoneMatrices.clear();
+	for (auto& [name, bone] : m_BoneDictionary)
+		bone.AnimationMatrix = GetRestLocalMatrix(name);
+
+	for (const auto& [name, matrix] : localPose)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt != m_BoneDictionary.end())
+			boneIt->second.AnimationMatrix = matrix;
+	}
+
+	for (const auto& [name, rotation] : manualLocalRotations)
+	{
+		if (localPose.find(name) != localPose.end())
+			continue;
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt != m_BoneDictionary.end())
+			boneIt->second.AnimationMatrix = rotation * GetRestLocalMatrix(name);
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.idx] = bone.Matrix.Transpose();
+	}
+}
+
+Matrix4x4 CAnimationMesh::BlendLocalMatrix(const Matrix4x4& from, const Matrix4x4& to, float amount)
+{
+	return BlendLocalSrt(from, to, amount);
+}
+
+namespace
+{
+	const aiNodeAnim* FindChannel(const aiAnimation* animation, const std::string& boneName)
+	{
+		if (animation == nullptr)
+			return nullptr;
+		for (unsigned int c = 0; c < animation->mNumChannels; ++c)
+		{
+			const aiNodeAnim* channel = animation->mChannels[c];
+			if (channel != nullptr && boneName == channel->mNodeName.C_Str())
+				return channel;
+		}
+		return nullptr;
+	}
+
+	aiVector3D SamplePositionKeys(const aiNodeAnim* channel, float normalizedTime)
+	{
+		if (channel->mNumPositionKeys == 0)
+			return aiVector3D(0.0f, 0.0f, 0.0f);
+		if (channel->mNumPositionKeys == 1)
+			return channel->mPositionKeys[0].mValue;
+		const float position = std::clamp(normalizedTime, 0.0f, 1.0f) *
+			static_cast<float>(channel->mNumPositionKeys - 1);
+		const unsigned int index = std::min(
+			channel->mNumPositionKeys - 2,
+			static_cast<unsigned int>(std::floor(position)));
+		const float blend = std::clamp(position - static_cast<float>(index), 0.0f, 1.0f);
+		const aiVector3D& a = channel->mPositionKeys[index].mValue;
+		const aiVector3D& b = channel->mPositionKeys[index + 1].mValue;
+		return a + (b - a) * blend;
+	}
+
+	aiQuaternion SampleRotationKeys(const aiNodeAnim* channel, float normalizedTime)
+	{
+		if (channel->mNumRotationKeys == 0)
+			return aiQuaternion();
+		if (channel->mNumRotationKeys == 1)
+			return channel->mRotationKeys[0].mValue;
+		const float position = std::clamp(normalizedTime, 0.0f, 1.0f) *
+			static_cast<float>(channel->mNumRotationKeys - 1);
+		const unsigned int index = std::min(
+			channel->mNumRotationKeys - 2,
+			static_cast<unsigned int>(std::floor(position)));
+		const float blend = std::clamp(position - static_cast<float>(index), 0.0f, 1.0f);
+		aiQuaternion result;
+		aiQuaternion::Interpolate(
+			result, channel->mRotationKeys[index].mValue, channel->mRotationKeys[index + 1].mValue, blend);
+		result.Normalize();
+		return result;
+	}
+
+	Matrix4x4 QuaternionToMatrix(const aiQuaternion& q)
+	{
+		Quaternion dx{};
+		dx.x = q.x;
+		dx.y = q.y;
+		dx.z = q.z;
+		dx.w = q.w;
+		return Matrix4x4::CreateFromQuaternion(dx);
+	}
+}
+
+Vector3 CAnimationMesh::SampleBonePositionOffset(
+	aiAnimation* animation, float normalizedTime, const std::string& boneName) const
+{
+	const aiNodeAnim* channel = FindChannel(animation, boneName);
+	if (channel == nullptr || channel->mNumPositionKeys == 0)
+		return Vector3(0.0f, 0.0f, 0.0f);
+	const aiVector3D now = SamplePositionKeys(channel, normalizedTime);
+	const aiVector3D& origin = channel->mPositionKeys[0].mValue;
+	return Vector3(now.x - origin.x, now.y - origin.y, now.z - origin.z);
+}
+
+Matrix4x4 CAnimationMesh::SampleHipsInPlace(
+	aiAnimation* animation, float normalizedTime, const std::string& boneName, int rotationMode) const
+{
+	Matrix4x4 rest = GetRestLocalMatrix(boneName);
+	const aiNodeAnim* channel = FindChannel(animation, boneName);
+	if (channel == nullptr)
+		return rest;
+
+	Vector3 restPosition(rest._41, rest._42, rest._43);
+	Matrix4x4 restRotation = rest;
+	restRotation._41 = 0.0f;
+	restRotation._42 = 0.0f;
+	restRotation._43 = 0.0f;
+
+	// 上下: クリップの腰の高さを、そのままモデルの腰の高さにする。
+	//
+	// 以前は「クリップ先頭からの変化」を割合で足していた。ところが slash (5) のように
+	// クリップの先頭ですでにしゃがんでいる(腰41cm、立つと約92cm)クリップでは、
+	// 変化が0のまま腰だけが立った高さに残り、しゃがんだ脚の角度で足が宙に浮いた(実機で確認)。
+	// 脚の角度はクリップの腰の高さを前提に作られているので、高さは絶対値で合わせる必要がある。
+	//
+	// 前提: クリップの位置キーとモデルの腰の休止位置が同じ単位(Mixamoはどちらもcm)。
+	// 高さの軸はクリップはY、モデルの親空間は最も大きい成分の軸(このモデルではZ)。
+	if (channel->mNumPositionKeys > 0)
+	{
+		const aiVector3D now = SamplePositionKeys(channel, normalizedTime);
+		const float ax = std::abs(restPosition.x);
+		const float ay = std::abs(restPosition.y);
+		const float az = std::abs(restPosition.z);
+		if (az >= ax && az >= ay)
+			restPosition.z = std::copysign(now.y, restPosition.z);
+		else if (ay >= ax)
+			restPosition.y = std::copysign(now.y, restPosition.y);
+		else
+			restPosition.x = std::copysign(now.y, restPosition.x);
+	}
+
+	Matrix4x4 rotation = restRotation;
+	if (rotationMode == 1 && channel->mNumRotationKeys > 0)
+	{
+		// クリップのバインド姿勢からの回転の変化を、腰自身のローカル空間で休止姿勢へ重ねる。
+		// 行ベクトル規約: 変化 = 現在 * 基準の逆、結果 = 変化 * 休止姿勢。
+		// 親空間で重ねる(休止姿勢 * 基準の逆 * 現在)と、親の上の軸がクリップと違うモデルでは
+		// 回転の軸がずれ、腰のひねりが前後の倒れに化けてキャラクターが寝転ぶ。
+		//
+		// 基準: クリップのファイル自身のバインド姿勢(Mixamoのクリップでは腰の回転なし = 単位回転。調査で確認)。
+		// モデルの休止姿勢も同じバインド姿勢なので、クリップの腰の向きがそのままモデルに再現される。
+		//
+		// 以前の基準と、それぞれの問題:
+		// - 攻撃クリップ自身の先頭: 先頭で前かがみ・しゃがみのクリップ(slash (5)など)ではその傾きが消え、脚の角度と合わない。
+		// - 待機クリップの先頭: 待機は片手剣の構えで**腰が55度ひねれている**。その分だけ攻撃中の体が常に斜めを向き、
+		//   前へ跳ぶダッシュ攻撃で「前を向いているのに斜めを向いて攻撃する」と指摘された。
+		const Matrix4x4 now = QuaternionToMatrix(SampleRotationKeys(channel, normalizedTime));
+		rotation = now * restRotation;
+	}
+	else if (rotationMode == 2 && channel->mNumRotationKeys > 0)
+	{
+		rotation = QuaternionToMatrix(SampleRotationKeys(channel, normalizedTime));
+	}
+	return rotation * Matrix4x4::CreateTranslation(restPosition);
+}
+
+float CAnimationMesh::DominantAxisComponent(const Matrix4x4& localMatrix)
+{
+	const float x = localMatrix._41;
+	const float y = localMatrix._42;
+	const float z = localMatrix._43;
+	if (std::abs(z) >= std::abs(x) && std::abs(z) >= std::abs(y))
+		return z;
+	return std::abs(y) >= std::abs(x) ? y : x;
+}
+
+Matrix4x4 CAnimationMesh::GetRestLocalMatrix(const std::string& boneName) const
+{
+	const auto rest = m_RestLocalMatrices.find(boneName);
+	return rest != m_RestLocalMatrices.end() ? rest->second : Matrix4x4::Identity;
+}
+
+float CAnimationMesh::GetRestBoneModelHeight(const std::string& boneName) const
+{
+	const auto rest = m_RestGlobalMatrices.find(boneName);
+	// 行ベクトル規約なので平行移動は4行目にある。
+	return rest != m_RestGlobalMatrices.end() ? rest->second._42 : 0.0f;
+}
+
 void CAnimationMesh::UpdateManualPose(
 	BoneCombMatrix& bonecombarray,
 	const std::unordered_map<std::string, Matrix4x4>& localRotations)

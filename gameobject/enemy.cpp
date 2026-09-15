@@ -193,6 +193,15 @@ void enemy::update(uint64_t dt)
 	m_posture = std::max(
 		0.0f, m_posture - Combat::Tuning::ENEMY_POSTURE_RECOVERY_PER_SECOND * deltaSec);
 
+	// 練習用の的: 怯み以外は、その場でプレイヤーの方を向くだけにする。
+	if (m_passive && m_motionState != MotionState::Flinch)
+	{
+		if (m_motionState != MotionState::Circle)
+			changeState(MotionState::Circle);
+		faceTarget(targetPosition, deltaSec, 4.0f);
+		return;
+	}
+
 	if (m_motionState == MotionState::Approach && distance <= ATTACK_DISTANCE)
 	{
 		// 大型の敵は衝突分離によって希望距離の少し外側で止まることがあるため、

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include "../DX11_3D_Game/CombatDesign.h"
 
 /**
@@ -31,16 +32,9 @@ namespace Tuning
 inline constexpr float PLAYER_MAX_HP = 100.0f;
 inline constexpr float ENEMY_MAX_HP = 2000.0f;
 
-// --- プレイヤー通常攻撃 ---
-inline constexpr float PLAYER_WEAK_ANTICIPATION = 0.16f;
-inline constexpr float PLAYER_WEAK_ACTIVE = 0.38f;
-inline constexpr float PLAYER_WEAK_RECOVERY = 0.41f;
+// --- プレイヤーの攻撃の威力 ---
+// 時間(予兆・判定・硬直)はコンボの段ごとに違うので、下の PlayerComboStepOf() に持たせている。
 inline constexpr int PLAYER_WEAK_DAMAGE = 25;
-
-// --- プレイヤー強攻撃 ---
-inline constexpr float PLAYER_HEAVY_ANTICIPATION = 0.20f;
-inline constexpr float PLAYER_HEAVY_ACTIVE = 0.42f;
-inline constexpr float PLAYER_HEAVY_RECOVERY = 0.48f;
 inline constexpr int PLAYER_HEAVY_DAMAGE = 40;
 
 // --- 敵の攻撃(叩き付け): 標準。予兆が長く、隙も大きい ---
@@ -147,6 +141,88 @@ inline constexpr float ENEMY_SWEEP_KNOCKBACK_SPEED = 340.0f;
 inline constexpr float ENEMY_SWEEP_KNOCKBACK_SECONDS = 0.45f;
 } // namespace Tuning
 
+/**
+ * @brief プレイヤーのコンボ1段分の、クリップと時間の対応。
+ *
+ * 以前は攻撃クリップを元の長さに関係なく0.95秒(強攻撃1.10秒)へ詰めて再生し、
+ * 予兆・判定・硬直も全段同じ値だった。3.5秒ある回転斬りを3.7倍速で回すことになり、
+ * モーションがぎこちなく見える大きな原因だった。
+ *
+ * ここでは段ごとに「クリップのどこから再生し、どこで振り、どこで終わるか」を持たせ、
+ * 戦闘判定の時間はそこから計算する(見た目の振りと判定がずれない)。
+ * 振っている区間は、クリップの右腕の回転の速さが最大の50%を超える区間を
+ * 調査プログラムで測り、その前後へ少し余裕を持たせた値にしている。
+ *
+ * 構成はモンスターハンターの片手剣を参考にした。
+ *   弱: 低く踏み込む振り下ろし → 斬り上げ → 反対側からの横薙ぎ(走りからはダッシュ攻撃)
+ *   強: 振りかぶって踏み込む振り下ろし → 前進しながらの回転斬り → 沈み込んで振り抜く回転斬り
+ * 片手剣は「出が早く、振り終わりからすぐ次へつながる」ので、
+ * 振りの手前から再生を始め(溜めを短く)、振り終わった直後から次の段へつなげる。
+ */
+struct PlayerComboStep
+{
+    const char* clipFile = "";   ///< 既定のクリップ(dev_settings.ini の weak1..3 / heavy1..3 で差し替え可)
+    float clipStart = 0.0f;      ///< 再生を始める位置(クリップの秒)。溜めの前半を飛ばす
+    float hitStart = 0.0f;       ///< 攻撃判定が出始める位置(クリップの秒)
+    float hitEnd = 0.0f;         ///< 攻撃判定が消える位置(クリップの秒)
+    float clipEnd = 0.0f;        ///< 次の入力が無いときに攻撃が終わる位置(クリップの秒)
+    float playbackRate = 1.0f;   ///< 再生速度(1 = クリップ本来の速さ)
+    float comboLinkSeconds = 0.0f; ///< 判定が消えてから、予約した次の段へ移れるまでの時間(ゲーム内の秒)
+
+    float WindupSeconds() const { return (hitStart - clipStart) / playbackRate; }
+    float ActiveSeconds() const { return (hitEnd - hitStart) / playbackRate; }
+    float RecoverySeconds() const { return (clipEnd - hitEnd) / playbackRate; }
+    float TotalSeconds() const { return (clipEnd - clipStart) / playbackRate; }
+};
+
+/** コンボの段(1〜3)の設定を引く。 */
+inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
+{
+    // 右腕の振りの計測値(クリップの秒): slash(5) 0.49-0.64 / slash 0.55-0.64 / slash(3) 0.74-0.86 /
+    // attack 1.05-1.28 / attack(4) 0.17-0.55 / attack(3) 0.68-0.81 / slash(4) 1.28-1.40
+    static const PlayerComboStep weak[3] = {
+        // 1段目: slash (5)。低く踏み込んで斬り、戻る。出が早い基本の一撃。
+        // (以前は跳躍斬りの attack を1段目にしていたが、立ち止まった状態からいきなり跳ぶのは
+        //  弱攻撃の出だしにふさわしくない、とユーザー判断。跳躍斬りはダッシュ攻撃へ移した)
+        { "assets/motion/sword and shield slash (5).fbx", 0.24f, 0.44f, 0.70f, 1.20f, 1.30f, 0.05f },
+        // 2段目: slash (3)。低い位置から斬り上げる。
+        // (以前は slash にしていたが、1段目と同じく「剣を同じ側へ振り上げて斜めに振り下ろす」軌道で、
+        //  どちらの段か見分けられない、とユーザー指摘。右手の軌跡を測って、軌道が逆向きのものを選んだ)
+        { "assets/motion/sword and shield slash (3).fbx", 0.44f, 0.68f, 0.92f, 1.60f, 1.25f, 0.08f },
+        // 3段目: attack (4)。反対側から横へ薙ぐ。振り下ろし → 斬り上げ → 横薙ぎと、段ごとに剣の向きを変える。
+        { "assets/motion/sword and shield attack (4).fbx", 0.02f, 0.15f, 0.58f, 0.95f, 1.20f, 0.10f },
+    };
+    static const PlayerComboStep heavyTable[3] = {
+        // 1段目: slash。高く振りかぶり、約42cm踏み込みながら振り下ろす。
+        // 溜めを長めに見せて(0.36秒)、弱攻撃より重い一撃にする。
+        // (以前は attack (4) だったが、弱攻撃の3段目へ回したので差し替えた)
+        { "assets/motion/sword and shield slash.fbx",      0.10f, 0.50f, 0.72f, 1.30f, 1.10f, 0.08f },
+        // 2段目: attack (3)。約226cm前進しながら回転して斬る。
+        // 回転しながら2回振るクリップで、2回目の振りは0.75〜1.05秒(手の速さが最大なのは0.95秒)。
+        // 以前は判定の終わりを0.90秒にしていたため、次の段へ1.0秒で移り、振り切る前に3段目が始まっていた。
+        // (右腕の関節の回転だけで振りの区間を測っていたので、体の回転で剣が動く分を見落としていた)
+        { "assets/motion/sword and shield attack (3).fbx", 0.34f, 0.62f, 1.05f, 1.60f, 1.25f, 0.12f },
+        // 3段目: slash (4)。沈み込んで振り抜く回転斬り。締めの大技なので硬直が最も長い。
+        { "assets/motion/sword and shield slash (4).fbx",  0.84f, 1.22f, 1.50f, 2.30f, 1.25f, 0.10f },
+    };
+    const int index = std::clamp(comboStep, 1, 3) - 1;
+    return heavy ? heavyTable[index] : weak[index];
+}
+
+/**
+ * @brief ダッシュ攻撃(走っているときに弱攻撃を押すと出る)。
+ *
+ * モンスターハンターの片手剣の突進斬りと同じく、走りから派生して大きく踏み込み、距離を詰めて斬る。
+ * 立ち止まった状態の弱攻撃1段目の代わりに出て、そのまま弱攻撃の2段目へつなげられる。
+ * クリップは attack(跳び上がって約223cm前へ出る斬り下ろし)。
+ */
+inline const PlayerComboStep& PlayerDashAttackStep()
+{
+    static const PlayerComboStep step =
+        { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f };
+    return step;
+}
+
 /** プレイヤーの通常攻撃1段分。 */
 inline const AttackData& PlayerWeakAttack()
 {
@@ -154,9 +230,6 @@ inline const AttackData& PlayerWeakAttack()
         AttackData attack;
         attack.attackId = "player_weak";
         attack.animationName = "sword_shield_slash";
-        attack.frames.anticipationSeconds = Tuning::PLAYER_WEAK_ANTICIPATION;
-        attack.frames.activeSeconds = Tuning::PLAYER_WEAK_ACTIVE;
-        attack.frames.recoverySeconds = Tuning::PLAYER_WEAK_RECOVERY;
         attack.damage = Tuning::PLAYER_WEAK_DAMAGE;
         attack.postureDamage = Tuning::PLAYER_WEAK_POSTURE_DAMAGE;
         return attack;
@@ -171,9 +244,6 @@ inline const AttackData& PlayerHeavyAttack()
         AttackData attack;
         attack.attackId = "player_heavy";
         attack.animationName = "sword_shield_attack";
-        attack.frames.anticipationSeconds = Tuning::PLAYER_HEAVY_ANTICIPATION;
-        attack.frames.activeSeconds = Tuning::PLAYER_HEAVY_ACTIVE;
-        attack.frames.recoverySeconds = Tuning::PLAYER_HEAVY_RECOVERY;
         attack.damage = Tuning::PLAYER_HEAVY_DAMAGE;
         attack.postureDamage = Tuning::PLAYER_HEAVY_POSTURE_DAMAGE;
         return attack;

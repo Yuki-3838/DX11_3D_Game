@@ -82,7 +82,8 @@ private:
 	aiAnimation* m_enemyAttackAnimation = nullptr;
 	aiAnimation* m_enemyDieAnimation = nullptr;
 	int m_enemyAnimationFrame = 0;
-	int m_enemyAnimationTick = 0;
+	// 次のキーまでの進み具合(0〜1)。経過時間で進める(fpsに依存させない)。
+	float m_enemyAnimationTick = 0.0f;
 	// カットシーン終了時のIdle姿勢を、戦闘開始時のWalk先頭へ短時間でつなぐ。
 	static constexpr float ENEMY_INTRO_BATTLE_BLEND_SECONDS = 0.18f;
 	bool m_enemyIntroBattleBlendActive = false;
