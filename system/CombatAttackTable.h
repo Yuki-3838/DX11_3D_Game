@@ -19,6 +19,18 @@ namespace Combat
 {
 namespace Tuning
 {
+// --- 体力 ---
+// 以前はプレイヤーと敵が同じ100を共有しており、強攻撃(40)3発で敵が倒れていた。
+// それでは予兆を読んで立ち回る時間がほとんど無く、怯みも1戦で1回程度しか起きない。
+// エルデンリングのボスやモンハンの大型モンスターのように、読み合いを何度も繰り返す
+// 長さの戦闘にするため、敵の体力をプレイヤーと切り離して大きくした。
+//
+// 目安: 敵の攻撃1周期(予兆→攻撃→隙→様子見)は約4秒。隙へ3段コンボ(75)を
+// 毎回入れられるわけではないので、平均の与ダメージを秒間12程度と見積もると、
+// 予兆を読めるプレイヤーで約2分半〜3分の戦闘になる。
+inline constexpr float PLAYER_MAX_HP = 100.0f;
+inline constexpr float ENEMY_MAX_HP = 2000.0f;
+
 // --- プレイヤー通常攻撃 ---
 inline constexpr float PLAYER_WEAK_ANTICIPATION = 0.16f;
 inline constexpr float PLAYER_WEAK_ACTIVE = 0.38f;
@@ -68,6 +80,71 @@ inline constexpr float ENEMY_SWEEP_COOLDOWN = 1.30f;
 inline constexpr int ENEMY_SWEEP_DAMAGE = 22;
 inline constexpr float ENEMY_SWEEP_HIT_RANGE = 78.0f;
 inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = 0.22f;
+
+// --- 当たり判定の左右の広さ(正面からの片側角度・ラジアン) ---
+// 敵の攻撃判定は元々「距離だけ」で、どの攻撃も全方位に当たっていた。
+// 見た目上は薙ぎ払いだけが横へ振り抜くのに、噛みつきでも真横で当たるのでは
+// 「横へ回り込んで避ける」という判断が成立しない。
+// 攻撃ごとに広さを変えることで、予兆から読み取れる形と実際の危険範囲を一致させる。
+//   噛みつき : 狭い。正面を外せば当たらない。
+//   叩き付け : 標準。正面寄りだけ。
+//   薙ぎ払い : 広い。横へ回り込んでも当たるので、回避か距離で対処する。
+inline constexpr float ENEMY_HIT_HALF_ANGLE = 0.96f;       // 約55度
+inline constexpr float ENEMY_BITE_HIT_HALF_ANGLE = 0.61f;  // 約35度
+inline constexpr float ENEMY_SWEEP_HIT_HALF_ANGLE = 1.92f; // 約110度
+
+// --- 敵の怯み ---
+// 読みが当たって隙へ攻撃を入れたとき、敵の体が反応しないと「反撃できた」手応えが無い。
+// 攻撃ごとの怯み値(AttackData::postureDamage)を敵に溜め、しきい値を超えたら怯ませる。
+// 1発ごとに必ず怯むと、敵が何もできずに一方的な戦いになるため、溜める方式にしている。
+inline constexpr int PLAYER_WEAK_POSTURE_DAMAGE = 14;
+inline constexpr int PLAYER_HEAVY_POSTURE_DAMAGE = 34;
+// 敵の隙(Recovery)へ入れた攻撃は怯み値を増やす。「読んで踏み込んだ」ことへのご褒美。
+inline constexpr float PUNISH_POSTURE_MULTIPLIER = 2.0f;
+// 怯むたびにしきい値を上げる(モンスターハンターの怯み耐性と同じ考え方)。
+// 体力を2000へ増やしたとき、固定のしきい値60のままだと1戦で40回以上怯み、
+// 敵が何もできないまま殴られ続ける。上げていくことで、序盤は怯みやすく
+// 終盤ほど「狙って溜めないと怯まない」ようにし、1戦で8回前後に収める。
+//   150 → 188 → 234 → 293 → 366 → 375(上限)...
+inline constexpr float ENEMY_FLINCH_BASE_THRESHOLD = 150.0f;
+inline constexpr float ENEMY_FLINCH_THRESHOLD_GROWTH = 1.25f;
+inline constexpr float ENEMY_FLINCH_THRESHOLD_MAX = 375.0f;
+// 攻撃を当てない時間が続くと怯み値は抜けていく。散発的な攻撃でいつの間にか怯むのを防ぐ。
+inline constexpr float ENEMY_POSTURE_RECOVERY_PER_SECOND = 6.0f;
+// 怯んでいる時間。短すぎると気付けず、長すぎると反撃が一方的になる。
+inline constexpr float ENEMY_FLINCH_SECONDS = 0.90f;
+
+// --- 敵の弱り具合(体力ゲージの代わり) ---
+// 敵の体力は画面に数値やゲージで出さない。モンスターハンターのように、
+// 「足を引きずる」「息が荒い」「隙が長くなる」といった体の変化で弱ってきたことを伝える。
+//   通常 : 体力50%より上
+//   疲れ : 50%以下。息が荒く頭が下がり、動きが少し鈍る
+//   瀕死 : 20%以下。足を引きずり、動きが遅く、攻撃後の隙が長い
+// 段階が変わった瞬間はよろめかせる(怯みと同じ動き)。変化に気付かせるため。
+inline constexpr float ENEMY_TIRED_HP_RATIO = 0.50f;
+inline constexpr float ENEMY_DYING_HP_RATIO = 0.20f;
+inline constexpr float ENEMY_TIRED_MOVE_SCALE = 0.85f;
+inline constexpr float ENEMY_DYING_MOVE_SCALE = 0.55f;
+// 隙(Recovery)を伸ばす倍率。敵AIの側だけを伸ばす。戦闘判定側の攻撃は先に終わって
+// 待機へ戻るので、次の攻撃の受け付けとは食い違わない。
+inline constexpr float ENEMY_TIRED_RECOVERY_SCALE = 1.20f;
+inline constexpr float ENEMY_DYING_RECOVERY_SCALE = 1.50f;
+
+// --- プレイヤーの吹き飛ばし ---
+// 食らった攻撃の重さを、体が飛ばされる距離で伝える。
+// 同じダメージ表現(画面の揺れ・赤み)だけだと、どの攻撃を食らったか体で分からない。
+//   噛みつき : 軽く押し戻されるだけ。すぐ動ける。
+//   叩き付け : 大きく吹き飛ぶ。最も重い。
+//   薙ぎ払い : 横薙ぎで大きく飛ばされる。
+// 初速(単位/秒)と時間(秒)。速度は時間とともに二乗で落ちるので、
+// 飛ばされる距離は 初速 x 時間 / 3 になる(叩き付けで約77、薙ぎ払いで約51、噛みつきで約11)。
+// 初版(叩き付け260=約48)は実機で「押し戻された」程度にしか見えなかったため強めた。
+inline constexpr float ENEMY_KNOCKBACK_SPEED = 420.0f;
+inline constexpr float ENEMY_KNOCKBACK_SECONDS = 0.55f;
+inline constexpr float ENEMY_BITE_KNOCKBACK_SPEED = 150.0f;
+inline constexpr float ENEMY_BITE_KNOCKBACK_SECONDS = 0.22f;
+inline constexpr float ENEMY_SWEEP_KNOCKBACK_SPEED = 340.0f;
+inline constexpr float ENEMY_SWEEP_KNOCKBACK_SECONDS = 0.45f;
 } // namespace Tuning
 
 /** プレイヤーの通常攻撃1段分。 */
@@ -81,6 +158,7 @@ inline const AttackData& PlayerWeakAttack()
         attack.frames.activeSeconds = Tuning::PLAYER_WEAK_ACTIVE;
         attack.frames.recoverySeconds = Tuning::PLAYER_WEAK_RECOVERY;
         attack.damage = Tuning::PLAYER_WEAK_DAMAGE;
+        attack.postureDamage = Tuning::PLAYER_WEAK_POSTURE_DAMAGE;
         return attack;
     }();
     return data;
@@ -97,6 +175,7 @@ inline const AttackData& PlayerHeavyAttack()
         attack.frames.activeSeconds = Tuning::PLAYER_HEAVY_ACTIVE;
         attack.frames.recoverySeconds = Tuning::PLAYER_HEAVY_RECOVERY;
         attack.damage = Tuning::PLAYER_HEAVY_DAMAGE;
+        attack.postureDamage = Tuning::PLAYER_HEAVY_POSTURE_DAMAGE;
         return attack;
     }();
     return data;
@@ -194,6 +273,63 @@ inline float EnemyFirstHitTimeOf(EnemyAttackKind kind)
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_FIRST_HIT_TIME;
     case EnemyAttackKind::Slam:
     default:                     return Tuning::ENEMY_FIRST_HIT_TIME;
+    }
+}
+
+/**
+ * @brief 当たり判定の左右の広さ(正面からの片側角度)を種類から引く。
+ *
+ * 敵の正面方向とプレイヤーへの方向の角度差がこの値以内なら当たる。
+ * 距離だけの判定にすると、横へ回り込んでも当たってしまい、
+ * 「予兆の形を見て回り込む/回避する」という選択が意味を持たなくなる。
+ */
+inline float EnemyHitHalfAngleOf(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Slam:
+    default:                     return Tuning::ENEMY_HIT_HALF_ANGLE;
+    }
+}
+
+/** プレイヤーが吹き飛ばされる強さ。 */
+struct KnockbackData
+{
+    float speed = 0.0f;   ///< 初速(単位/秒)
+    float seconds = 0.0f; ///< 飛ばされている時間(秒)
+};
+
+/** 敵の攻撃を食らったときの吹き飛ばしを種類から引く。 */
+inline KnockbackData EnemyKnockbackOf(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:
+        return { Tuning::ENEMY_BITE_KNOCKBACK_SPEED, Tuning::ENEMY_BITE_KNOCKBACK_SECONDS };
+    case EnemyAttackKind::Sweep:
+        return { Tuning::ENEMY_SWEEP_KNOCKBACK_SPEED, Tuning::ENEMY_SWEEP_KNOCKBACK_SECONDS };
+    case EnemyAttackKind::Slam:
+    default:
+        return { Tuning::ENEMY_KNOCKBACK_SPEED, Tuning::ENEMY_KNOCKBACK_SECONDS };
+    }
+}
+
+/**
+ * @brief デバッグ表示用の日本語名。
+ *
+ * HUDは英字で統一しているため、`EnemyAttackDisplayName()`とは別に持つ。
+ * デバッグ表示は開発者が読むものなので日本語にする。
+ */
+inline const char* EnemyAttackDebugName(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return "噛みつき";
+    case EnemyAttackKind::Sweep: return "薙ぎ払い";
+    case EnemyAttackKind::Slam:
+    default:                     return "叩き付け";
     }
 }
 

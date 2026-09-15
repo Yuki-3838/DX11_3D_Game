@@ -83,9 +83,15 @@ void ThirdPersonCamera::UpdateLockOn(
 	// 同じ寄りを反映する。これを別管理にすると通常時と攻撃時で距離の責務が
 	// 分かれ、片方だけズームしない不整合が起きる。
 	const float distanceScale = std::clamp(m_lookDistance / 70.0f, 0.60f, 1.0f);
+	// 敵に密着したときも攻撃ズーム率だけを掛けると、
+	// 76 * 0.62 = 47.12単位までカメラが寄ってしまう。
+	// プレイヤーのモデル幅に対して近すぎ、モデルが巨大化したように見えるため、
+	// ロックオン戦闘では最低距離を設ける。遠距離時の攻撃ズームはこの制限に
+	// 掛からない範囲で従来どおり残す。
+	constexpr float MIN_LOCK_ON_CAMERA_DISTANCE = 64.0f;
 	const float desiredDistance = std::clamp(
-		framingDistance * distanceScale,
-		55.0f,
+		std::max(framingDistance * distanceScale, MIN_LOCK_ON_CAMERA_DISTANCE),
+		MIN_LOCK_ON_CAMERA_DISTANCE,
 		112.0f);
 	const float cameraDistance = m_collisionDistance >= 0.0f
 		? std::min(desiredDistance, m_collisionDistance)

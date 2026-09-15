@@ -100,6 +100,28 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
 	m_move.x = 0.0f;
 	m_move.z = 0.0f;
+	// 吹き飛ばしは回避や移動入力より優先する。食らった瞬間に操作を奪い、
+	// 「読み違えた」ことを体で分からせる。
+	// 位置の変更は回避と同じくm_srt.posへ直接足す。壁との衝突補正は
+	// GameScene側が更新前後の差分で行うので、闘技場の外へは飛ばされない。
+	if (m_isKnockedBack)
+	{
+		m_knockbackTime += deltaSec;
+		m_motionState = MotionState::Knockback;
+		const float progress = std::clamp(
+			m_knockbackTime / std::max(0.01f, m_knockbackSeconds), 0.0f, 1.0f);
+		// 出だしが最も速く、二乗で止まる。等速だと滑っているように見える。
+		const float remaining = 1.0f - progress;
+		m_move = m_knockbackDirection * (m_knockbackSpeed * remaining * remaining * deltaSec);
+		if (m_knockbackTime >= m_knockbackSeconds)
+		{
+			m_isKnockedBack = false;
+			m_knockbackTime = 0.0f;
+			m_motionState = MotionState::Idle;
+		}
+		m_srt.pos += m_move;
+		return;
+	}
 	if (!m_isDodging && dodgeTriggered && !movementLocked && !m_isJumping)
 	{
 		m_isDodging = true;
@@ -269,7 +291,55 @@ SRT player::getRenderSRT() const
 		const float step = std::sinf(m_motionTime * (m_motionState == MotionState::Run ? 10.0f : 7.0f));
 		renderSrt.pos.y -= std::fabs(step) * 0.12f;
 	}
+	if (m_isKnockedBack)
+	{
+		// 飛ばされている間は上体を後ろへ反らせる。移動だけだと押されて滑っているように見え、
+		// 「食らった」衝撃が伝わらない。
+		// プレイヤーの正面は-Z方向。行ベクトル規約でX軸へ正の回転を加えると
+		// 頭が+Z(後ろ)へ倒れる。モデルの原点は足元なので、足は地面から離れない。
+		const float progress = std::clamp(
+			m_knockbackTime / std::max(0.01f, m_knockbackSeconds), 0.0f, 1.0f);
+		// 食らった瞬間に最大まで反り、飛ばされ終わるまでに戻す。
+		const float lean = progress < 0.15f
+			? progress / 0.15f
+			: 1.0f - (progress - 0.15f) / 0.85f;
+		constexpr float KNOCKBACK_LEAN_RADIANS = 0.30f;
+		renderSrt.rot.x += KNOCKBACK_LEAN_RADIANS * std::clamp(lean, 0.0f, 1.0f);
+	}
 	return renderSrt;
+}
+
+void player::applyKnockback(const Vector3& direction, float speed, float seconds)
+{
+	Vector3 horizontal(direction.x, 0.0f, direction.z);
+	if (horizontal.LengthSquared() < 0.0001f)
+	{
+		// 敵と完全に重なっていて向きが決まらないときは、今向いている方の反対へ飛ばす。
+		horizontal = Vector3(std::sinf(m_srt.rot.y), 0.0f, std::cosf(m_srt.rot.y));
+	}
+	horizontal.Normalize();
+
+	m_isKnockedBack = true;
+	m_knockbackTime = 0.0f;
+	m_knockbackSeconds = seconds;
+	m_knockbackSpeed = speed;
+	m_knockbackDirection = horizontal;
+	// 飛ばしてきた相手の方を向かせる。背中から飛ばされる向きにすると、
+	// 何に飛ばされたのかが画面から読めない。
+	// 正面は(-sin, -cos)なので、飛ばされる向きの逆を正面にするyawを求める。
+	m_srt.rot.y = std::atan2(horizontal.x, horizontal.z);
+	// 目標の向きも揃えておく。揃えないと、飛ばされ終わった直後に
+	// 食らう前の向きへ振り向き直してしまう。
+	m_destrot.y = m_srt.rot.y;
+	// 回避中に食らった場合(無敵時間の外)は、回避を打ち切る。
+	m_isDodging = false;
+	m_dodgeTime = 0.0f;
+	m_motionState = MotionState::Knockback;
+}
+
+bool player::isKnockedBack() const
+{
+	return m_isKnockedBack;
 }
 
 const char* player::getMotionStateName() const
@@ -277,15 +347,17 @@ const char* player::getMotionStateName() const
 	switch (m_motionState)
 	{
 	case MotionState::Walk:
-		return "Walk";
+		return "歩行";
 	case MotionState::Run:
-		return "Run";
+		return "ダッシュ";
 	case MotionState::Dodge:
-		return "Dodge";
+		return "回避";
 	case MotionState::Jump:
-		return "Jump";
+		return "ジャンプ";
+	case MotionState::Knockback:
+		return "吹き飛ばし";
 	default:
-		return "Idle";
+		return "待機";
 	}
 }
 
@@ -300,6 +372,8 @@ void player::resetMotion()
 	m_isDodging = false;
 	m_dodgeTime = 0.0f;
 	m_dodgeDirection = Vector3(0, 0, 0);
+	m_isKnockedBack = false;
+	m_knockbackTime = 0.0f;
 }
 
 void player::dispose() {

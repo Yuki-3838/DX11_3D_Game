@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string_view>
 
@@ -41,6 +42,9 @@ public:
 	// 未設定(nullptr)の場合は標準の叩き付けとして扱う。
 	void SetEnemyAttackKind(Combat::EnemyAttackKind kind) { m_enemyAttackKind = kind; }
 	Combat::EnemyAttackKind GetEnemyAttackKind() const { return m_enemyAttackKind; }
+	// 敵の向き(ヨー)。攻撃判定を正面からの角度で絞るために使う。
+	// Update()の引数がすでに多いため、攻撃の種類と同じくセッターで渡す。
+	void SetEnemyFacingYaw(float yawRadians) { m_enemyFacingYaw = yawRadians; }
 	void ClearCollisionDebug()
 	{
 		m_collisionDebug = {};
@@ -71,12 +75,19 @@ public:
 
     float GetPlayerHp() const { return m_playerHp; }
     float GetEnemyHp() const { return m_enemyHp; }
+    float GetPlayerMaxHp() const { return PLAYER_MAX_HP; }
+    float GetEnemyMaxHp() const { return ENEMY_MAX_HP; }
+    // 調整用。敵の体力を直接設定する(弱り具合の見た目を確かめるため。デバッグ表示から使う)。
+    void SetEnemyHpForDebug(float hp) { m_enemyHp = std::clamp(hp, 1.0f, ENEMY_MAX_HP); }
     bool IsPlayerDefeated() const { return m_playerHp <= 0.0f; }
     bool IsEnemyDefeated() const { return m_enemyHp <= 0.0f; }
 	bool CanStartPlayerAttack() const { return m_playerAttack.phase == Phase::Ready && !IsPlayerDefeated() && !IsEnemyDefeated(); }
 	bool IsPlayerAttacking() const { return m_playerAttack.phase == Phase::Windup || m_playerAttack.phase == Phase::Active || m_playerAttack.phase == Phase::Recovery; }
 	bool CanCancelPlayerAttack(int cancelEndFrame) const;
 	void CancelPlayerAttack();
+	// 敵が怯んだときに、進行中の攻撃を取り消す。
+	// 敵AIだけ怯ませて戦闘側の攻撃を残すと、のけぞっている敵からダメージが飛んでくる。
+	void CancelEnemyAttack();
 	int GetPlayerAttackFrame() const;
 	bool IsPlayerAttackActive() const { return m_playerAttack.phase == Phase::Active; }
 	int GetPlayerComboStep() const { return m_playerAttack.comboStep; }
@@ -103,7 +114,8 @@ private:
     // 攻撃の時間・威力の定義元は system/CombatAttackTable.h に集約している。
     // 敵AI(gameobject/enemy)も同じテーブルを参照するため、
     // 「アニメーションの予備動作」と「実際の攻撃判定」が必ず一致する。
-    static constexpr float MAX_HP = 100.0f;
+    static constexpr float PLAYER_MAX_HP = Combat::Tuning::PLAYER_MAX_HP;
+    static constexpr float ENEMY_MAX_HP = Combat::Tuning::ENEMY_MAX_HP;
     static constexpr float PLAYER_DAMAGE =
         static_cast<float>(Combat::Tuning::PLAYER_WEAK_DAMAGE);
     static constexpr float ENEMY_DAMAGE =
@@ -126,11 +138,12 @@ private:
     static constexpr float ENEMY_COOLDOWN = Combat::Tuning::ENEMY_COOLDOWN;
 	static constexpr int ENEMY_MAX_HITS = 1;
 
-    float m_playerHp = MAX_HP;
-    float m_enemyHp = MAX_HP;
+    float m_playerHp = PLAYER_MAX_HP;
+    float m_enemyHp = ENEMY_MAX_HP;
     float m_enemyCooldown = 0.7f;
     // 敵が現在出している攻撃の種類。時間・威力・射程はここから引く。
     Combat::EnemyAttackKind m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
+    float m_enemyFacingYaw = 0.0f;
     AttackState m_playerAttack{};
     AttackState m_enemyAttack{};
 	CollisionDebugState m_collisionDebug{};

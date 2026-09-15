@@ -79,6 +79,62 @@ namespace
 		return value;
 	}
 
+	// ローカルボーン行列をSRTとして補間する。行ベクトル規約では
+	// 回転行列の各行の長さが各軸のスケールになる。
+	// 回転だけを取り出して再構成すると、バインド姿勢に含まれる
+	// ボーン固有スケールが消え、攻撃開始時にモデルの一部が拡大・縮小する。
+	Matrix4x4 BlendLocalSrt(
+		const Matrix4x4& from,
+		const Matrix4x4& to,
+		float amount)
+	{
+		const float rate = std::clamp(amount, 0.0f, 1.0f);
+		if (rate <= 0.0f)
+			return from;
+		if (rate >= 1.0f)
+			return to;
+
+		const auto extractScale = [](const Matrix4x4& matrix)
+		{
+			return Vector3(
+				Vector3(matrix._11, matrix._12, matrix._13).Length(),
+				Vector3(matrix._21, matrix._22, matrix._23).Length(),
+				Vector3(matrix._31, matrix._32, matrix._33).Length());
+		};
+		const auto removeScale = [&extractScale](const Matrix4x4& matrix)
+		{
+			Matrix4x4 rotation = matrix;
+			const Vector3 scale = extractScale(matrix);
+			const float sx = std::max(scale.x, 0.0001f);
+			const float sy = std::max(scale.y, 0.0001f);
+			const float sz = std::max(scale.z, 0.0001f);
+			rotation._11 /= sx; rotation._12 /= sx; rotation._13 /= sx;
+			rotation._21 /= sy; rotation._22 /= sy; rotation._23 /= sy;
+			rotation._31 /= sz; rotation._32 /= sz; rotation._33 /= sz;
+			rotation._41 = 0.0f;
+			rotation._42 = 0.0f;
+			rotation._43 = 0.0f;
+			rotation._44 = 1.0f;
+			return rotation;
+		};
+
+		const Vector3 fromScale = extractScale(from);
+		const Vector3 toScale = extractScale(to);
+		const Quaternion fromRotation =
+			Quaternion::CreateFromRotationMatrix(removeScale(from));
+		const Quaternion toRotation =
+			Quaternion::CreateFromRotationMatrix(removeScale(to));
+		const Quaternion rotation = Quaternion::Slerp(fromRotation, toRotation, rate);
+		const Vector3 scale = Vector3::Lerp(fromScale, toScale, rate);
+		const Vector3 position = Vector3::Lerp(
+			Vector3(from._41, from._42, from._43),
+			Vector3(to._41, to._42, to._43),
+			rate);
+		return Matrix4x4::CreateScale(scale) *
+			Matrix4x4::CreateFromQuaternion(rotation) *
+			Matrix4x4::CreateTranslation(position);
+	}
+
 	int SwordBonePriority(const std::string& name)
 	{
 		const std::string normalized = NormalizeBoneName(name);
@@ -1003,8 +1059,20 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 
 float CAnimationMesh::GetAnimatedLocalMaxZ() const
 {
+	// 追加のピッチが無ければ、最下点はローカルZの最大値そのもの。
+	return -GetAnimatedLowestLocalHeight(0.0f);
+}
+
+float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) const
+{
 	if (m_vertices.empty())
 		return 0.0f;
+
+	// 行ベクトル規約でX軸へθ回転すると、ワールドYは y*cosθ - z*sinθ になる。
+	// 基準姿勢のθ=90度では -z となり、Z最大の頂点が最下点になる(従来の実装)。
+	// θ=90度+pのときは cos=-sin(p)、sin=cos(p) なので、高さは -y*sin(p) - z*cos(p)。
+	const float sinPitch = std::sin(extraPitchRadians);
+	const float cosPitch = std::cos(extraPitchRadians);
 
 	std::array<const BONE*, MAX_BONE> bonesByIndex{};
 	for (const auto& [name, bone] : m_BoneDictionary)
@@ -1014,7 +1082,7 @@ float CAnimationMesh::GetAnimatedLocalMaxZ() const
 			bonesByIndex[bone.idx] = &bone;
 	}
 
-	float maxZ = std::numeric_limits<float>::lowest();
+	float lowestHeight = (std::numeric_limits<float>::max)();
 	bool hasVertex = false;
 	for (const VERTEX_3D& vertex : m_vertices)
 	{
@@ -1046,11 +1114,12 @@ float CAnimationMesh::GetAnimatedLocalMaxZ() const
 			skinned = vertex.Position;
 		}
 
-		maxZ = std::max(maxZ, skinned.z);
+		const float height = -skinned.y * sinPitch - skinned.z * cosPitch;
+		lowestHeight = std::min(lowestHeight, height);
 		hasVertex = true;
 	}
 
-	return hasVertex ? maxZ : 0.0f;
+	return hasVertex ? lowestHeight : 0.0f;
 }
 
 void CAnimationMesh::ApplyAnimationToBones(
@@ -1219,7 +1288,9 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
 	const std::vector<std::string>& animatedBoneNames,
 	bool loopAnimation,
-	float frameFraction)
+	float frameFraction,
+	const std::unordered_map<std::string, Matrix4x4>* blendFromPose,
+	float blendRate)
 {
 	m_DebugBoneMatrices.clear();
 	const auto isAnimatedBone = [&animatedBoneNames](const std::string& name)
@@ -1252,6 +1323,24 @@ void CAnimationMesh::UpdateAnimationWithManualPose(
 			boneIt->second.AnimationMatrix = localPose * rest->second;
 	}
 
+	// 指定ボーンだけを前姿勢から補間する。全身を一括で混ぜず、呼び出し側が
+	// 渡したanimatedBoneNamesに限定することで、下半身の接地やルート移動を
+	// 別レイヤーから維持できる。
+	if (blendFromPose != nullptr && !blendFromPose->empty())
+	{
+		const float rate = std::clamp(blendRate, 0.0f, 1.0f);
+		for (const std::string& boneName : animatedBoneNames)
+		{
+			const auto fromIt = blendFromPose->find(boneName);
+			auto boneIt = m_BoneDictionary.find(boneName);
+			if (fromIt == blendFromPose->end() || boneIt == m_BoneDictionary.end())
+				continue;
+
+			boneIt->second.AnimationMatrix = BlendLocalSrt(
+				fromIt->second, boneIt->second.AnimationMatrix, rate);
+		}
+	}
+
 	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
 	for (const auto& bone : m_BoneDictionary)
 	{
@@ -1274,7 +1363,9 @@ void CAnimationMesh::UpdateLayeredAnimation(
 	const std::vector<std::string>& overlayBones,
 	bool loopOverlayAnimation,
 	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
-	const std::string& baseTranslationBone)
+	const std::string& baseTranslationBone,
+	const std::unordered_map<std::string, Matrix4x4>* overlayBlendFromPose,
+	float overlayBlendRate)
 {
 	m_DebugBoneMatrices.clear();
 
@@ -1312,6 +1403,27 @@ void CAnimationMesh::UpdateLayeredAnimation(
 			boneIt->second.AnimationMatrix = localPose * rest->second;
 	}
 
+	// 攻撃開始時は、下半身の移動を維持したまま上半身だけを直前の
+	// ロコモーション姿勢から攻撃姿勢へ補間する。全身を混ぜると、歩行側の
+	// 足まで攻撃クリップへ引かれて接地が崩れるため、overlayBonesに限定する。
+	if (overlayBlendFromPose != nullptr && !overlayBlendFromPose->empty())
+	{
+		const float rate = std::clamp(overlayBlendRate, 0.0f, 1.0f);
+		for (const std::string& boneName : overlayBones)
+		{
+			const auto fromIt = overlayBlendFromPose->find(boneName);
+			auto boneIt = m_BoneDictionary.find(boneName);
+			if (fromIt == overlayBlendFromPose->end() || boneIt == m_BoneDictionary.end())
+				continue;
+
+			// 攻撃クリップがスケールキーを持たなくても、from側のバインド姿勢に
+			// 含まれるスケールを保ったまま補間する。ここで回転・移動だけを
+			// 再構成すると、攻撃開始時にプレイヤーが拡大して見えることがある。
+			boneIt->second.AnimationMatrix = BlendLocalSrt(
+				fromIt->second, boneIt->second.AnimationMatrix, rate);
+		}
+	}
+
 	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
 	for (const auto& bone : m_BoneDictionary)
 	{
@@ -1320,6 +1432,16 @@ void CAnimationMesh::UpdateLayeredAnimation(
 				bone.second.Matrix.Transpose();
 	}
 }
+
+std::unordered_map<std::string, Matrix4x4> CAnimationMesh::CaptureCurrentLocalPose() const
+{
+	std::unordered_map<std::string, Matrix4x4> pose;
+	pose.reserve(m_BoneDictionary.size());
+	for (const auto& [boneName, bone] : m_BoneDictionary)
+		pose.emplace(boneName, bone.AnimationMatrix);
+	return pose;
+}
+
 void CAnimationMesh::UpdateManualPose(
 	BoneCombMatrix& bonecombarray,
 	const std::unordered_map<std::string, Matrix4x4>& localRotations)

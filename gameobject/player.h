@@ -21,6 +21,7 @@ public:
 		Run,
 		Dodge,
 		Jump,
+		Knockback, // 敵の攻撃を食らって吹き飛ばされている
 	};
 	
 	// 所属シーンを受け取るゲームオブジェクトのコンストラクタ。
@@ -47,6 +48,11 @@ public:
 	int getDodgeFrame() const;
 	void resetMotion();
 
+	// 敵の攻撃を食らったときに吹き飛ばす。directionは飛ばされる向き(水平)。
+	// 飛ばされている間は操作を受け付けない。回避中でも上書きする。
+	void applyKnockback(const Vector3& direction, float speed, float seconds);
+	bool isKnockedBack() const;
+
 	void setVel(const Vector3& vel);
 
 private:
@@ -60,6 +66,11 @@ private:
 	bool m_isDodging = false;
 	float m_dodgeTime = 0.0f;
 	Vector3 m_dodgeDirection{0, 0, 0};
+	bool m_isKnockedBack = false;
+	float m_knockbackTime = 0.0f;
+	float m_knockbackSeconds = 0.0f;
+	float m_knockbackSpeed = 0.0f;
+	Vector3 m_knockbackDirection{0, 0, 0};
 	// 読み込んだモデルの原点が足元にない場合に描画だけへ加える補正値。
 	// ゲーム内の移動とジャンプ物理は従来どおりm_srtを使用する。
 	float m_visualGroundOffsetY = 0.0f;

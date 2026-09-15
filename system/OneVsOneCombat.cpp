@@ -156,8 +156,8 @@ namespace
 
 void OneVsOneCombat::Reset()
 {
-    m_playerHp = MAX_HP;
-    m_enemyHp = MAX_HP;
+    m_playerHp = PLAYER_MAX_HP;
+    m_enemyHp = ENEMY_MAX_HP;
     m_enemyCooldown = 0.7f;
     m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
     m_playerAttack = {};
@@ -211,6 +211,12 @@ void OneVsOneCombat::CancelPlayerAttack()
 {
 	if (IsPlayerAttacking())
 		m_playerAttack = {};
+}
+
+void OneVsOneCombat::CancelEnemyAttack()
+{
+	if (IsEnemyAttacking())
+		m_enemyAttack = {};
 }
 
 int OneVsOneCombat::GetPlayerAttackFrame() const
@@ -366,7 +372,29 @@ void OneVsOneCombat::Update(
 			{
 				// 射程は攻撃の種類ごとに違う。噛みつきは近距離だけ、薙ぎ払いは広い。
 				const float hitRange = enemyAttack.broadPhaseFilter.maxDistance;
-				if (distance <= hitRange && !playerInvincible)
+				// 左右の広さも攻撃ごとに変える。以前は距離だけで判定していたため、
+				// 真後ろにいても噛みつきが当たっていた。それでは
+				// 「予兆の形を見て回り込む」という選択が成立しない。
+				// 敵の正面(enemy.cppと同じ -sin/-cos の向き)との角度差で絞る。
+				const Vector3 enemyForward(
+					-std::sin(m_enemyFacingYaw), 0.0f, -std::cos(m_enemyFacingYaw));
+				const float toPlayerX = playerPosition.x - enemyPosition.x;
+				const float toPlayerZ = playerPosition.z - enemyPosition.z;
+				const float toPlayerLength =
+					std::sqrt(toPlayerX * toPlayerX + toPlayerZ * toPlayerZ);
+				// 真上から重なっているときは向きを決められないので、当たり扱いにする。
+				float angleToPlayer = 0.0f;
+				if (toPlayerLength > 0.0001f)
+				{
+					const float cosAngle = std::clamp(
+						(enemyForward.x * toPlayerX + enemyForward.z * toPlayerZ) /
+							toPlayerLength,
+						-1.0f, 1.0f);
+					angleToPlayer = std::acos(cosAngle);
+				}
+				const bool inFrontArc =
+					angleToPlayer <= Combat::EnemyHitHalfAngleOf(m_enemyAttackKind);
+				if (distance <= hitRange && inFrontArc && !playerInvincible)
 				{
 					m_playerHp = std::max(
 						0.0f,
@@ -395,13 +423,13 @@ void OneVsOneCombat::Update(
 
 std::string_view OneVsOneCombat::GetStateName() const
 {
-    if (IsEnemyDefeated()) return "ENEMY DOWN - YOU WIN";
-    if (IsPlayerDefeated()) return "PLAYER DOWN - TRY AGAIN";
-    if (m_playerAttack.phase == Phase::Active) return "PLAYER ATTACK";
-    if (m_enemyAttack.phase == Phase::Active) return "ENEMY ATTACK";
+    if (IsEnemyDefeated()) return "敵を撃破";
+    if (IsPlayerDefeated()) return "プレイヤー戦闘不能";
+    if (m_playerAttack.phase == Phase::Active) return "プレイヤーの攻撃判定中";
+    if (m_enemyAttack.phase == Phase::Active) return "敵の攻撃判定中";
     if (m_playerAttack.phase == Phase::Windup ||
-        m_playerAttack.phase == Phase::Recovery) return "PLAYER RECOVERY";
+        m_playerAttack.phase == Phase::Recovery) return "プレイヤーの予兆・硬直";
     if (m_enemyAttack.phase == Phase::Windup ||
-        m_enemyAttack.phase == Phase::Recovery) return "ENEMY RECOVERY";
-    return "READY";
+        m_enemyAttack.phase == Phase::Recovery) return "敵の予兆・硬直";
+    return "待機";
 }

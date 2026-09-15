@@ -14,6 +14,8 @@ struct CharacterAnimationState
 	bool running = false;
 	bool jumping = false;
 	float motionTime = 0.0f;
+	// GameSceneの固定更新間隔。省略時は既存の60Hz挙動を維持する。
+	float deltaSeconds = 1.0f / 60.0f;
 };
 
 struct MotionKeyframe
@@ -48,6 +50,11 @@ public:
 	void StartComboPreview(bool heavy);
 	void TriggerHitStop(float seconds = 0.05f);
 	void PlayDodgeMotion();
+	// 被弾したときの上体ののけぞり。既存の「sword and shield impact」クリップを使う。
+	// 攻撃と同じ上半身レイヤーで再生し、脚は移動・待機のまま残す
+	// (腰や脚まで取り込むと接地が崩れることが分かっているため)。
+	void SetImpactAnimation(aiAnimation* animation);
+	void PlayImpactMotion();
 	bool IsMotionPlaying() const { return m_motionPlaying; }
 	const std::vector<std::string>& GetBoneNames() const { return m_boneNames; }
 	const std::string& GetSelectedBone() const { return m_selectedBone; }
@@ -201,6 +208,13 @@ private:
 	float m_lastAttackTorsoPitch = 0.0f;
 	std::unordered_map<std::string, Matrix4x4> m_lastRenderedPose;
 	std::unordered_map<std::string, Matrix4x4> m_attackBlendFromPose;
+	// PlayAttackMotion()はmeshを持たないため、次のUpdateで直前の姿勢を取得する。
+	bool m_attackBlendPending = false;
+	// 攻撃終了後も、最後の攻撃姿勢から待機/移動姿勢へ段差なく戻す。
+	std::unordered_map<std::string, Matrix4x4> m_locomotionBlendFromPose;
+	float m_locomotionBlendTime = 1.0f;
+	float m_locomotionBlendDuration = 0.10f;
+	bool m_locomotionBlendActive = false;
 	bool m_useCustomMotion = false;
 	bool m_motionPlaying = false;
 	bool m_motionLoop = true;
@@ -228,6 +242,7 @@ private:
 	float m_idlePlaybackRate = 0.5f;
 	std::array<aiAnimation*, 3> m_weakAttackAnimations{};
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
+	aiAnimation* m_impactAnimation = nullptr;
 	bool m_comboPreviewActive = false;
 	int m_comboPreviewStep = 0;
 	bool m_comboPreviewHeavy = false;

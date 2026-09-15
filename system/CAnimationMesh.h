@@ -135,7 +135,10 @@ public:
 		// これを渡すとキー間をslerp補間するため、動きが滑らかになる。
 		// 元データは30fps前後で焼かれており、60Hz以上で再生すると
 		// 補間なしでは同じ姿勢が数フレーム続いてから飛ぶ、カクついた動きになる。
-		float frameFraction = 0.0f);
+		float frameFraction = 0.0f,
+		// 状態遷移時に指定ボーンだけを直前のローカル姿勢から補間する。
+		const std::unordered_map<std::string, Matrix4x4>* blendFromPose = nullptr,
+		float blendRate = 1.0f);
 
 	/**
 	 * @brief 2つのクリップをボーンごとに使い分けて合成する(上半身・下半身のレイヤー分け)。
@@ -161,7 +164,14 @@ public:
 		bool loopOverlayAnimation,
 		const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations,
 		// ベース側で平行移動も取り込むボーン(通常は腰)。
-		const std::string& baseTranslationBone = std::string());
+		const std::string& baseTranslationBone = std::string(),
+		// 攻撃開始時など、オーバーレイ側だけを直前の姿勢から補間する。
+		const std::unordered_map<std::string, Matrix4x4>* overlayBlendFromPose = nullptr,
+		float overlayBlendRate = 1.0f);
+
+	// 現在適用中のローカルボーン姿勢を保存する。
+	// 次の攻撃クリップへ移るとき、直前の歩行姿勢をブレンド元として使う。
+	std::unordered_map<std::string, Matrix4x4> CaptureCurrentLocalPose() const;
 
 	// レスト姿勢に対して指定ボーンのローカル回転を加えたポーズを更新
 	void UpdateManualPose(
@@ -178,6 +188,13 @@ public:
 	// ドラゴンは描画時にX軸へ+90度回転するため、接地判定ではこの値が
 	// ワールドYの最下点に対応する。
 	float GetAnimatedLocalMaxZ() const;
+
+	// X軸へ(90度 + extraPitchRadians)回転させたときの、
+	// スキニング済み頂点のワールドY最小値(モデル単位・スケール前)を返す。
+	// 演出で本体をさらに前後へ傾けると最下点が変わるため、
+	// 「Z最大値=最下点」という前提が崩れて敵が地面へ埋まる。
+	// extraPitchRadians=0のとき、戻り値は -GetAnimatedLocalMaxZ() に一致する。
+	float GetAnimatedLowestLocalHeight(float extraPitchRadians) const;
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
