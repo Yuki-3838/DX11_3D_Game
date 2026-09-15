@@ -145,7 +145,9 @@ void DebugUI::Render() {
                    mainViewport->WorkPos.y + 10.0f),
             ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(280.0f, 96.0f), ImGuiCond_FirstUseEver);
-        ImGui::Begin("動作状況");
+        // 位置を保存しない理由はGameSceneの「デバッグ」ウィンドウと同じ
+        // (画面座標で保存され、ゲームウィンドウの位置が変わると外へ取り残される)。
+        ImGui::Begin("動作状況", nullptr, ImGuiWindowFlags_NoSavedSettings);
         ImGuiIO& io = ImGui::GetIO();
         ImGui::Text("フレームレート: %.1f fps", io.Framerate);
         ImGui::Text("1フレームの時間: %.3f ミリ秒", 1000.0f / io.Framerate);

@@ -50,6 +50,11 @@ public:
 	void StartComboPreview(bool heavy);
 	void TriggerHitStop(float seconds = 0.05f);
 	void PlayDodgeMotion();
+	// 被弾したときの上体ののけぞり。既存の「sword and shield impact」クリップを使う。
+	// 攻撃と同じ上半身レイヤーで再生し、脚は移動・待機のまま残す
+	// (腰や脚まで取り込むと接地が崩れることが分かっているため)。
+	void SetImpactAnimation(aiAnimation* animation);
+	void PlayImpactMotion();
 	bool IsMotionPlaying() const { return m_motionPlaying; }
 	const std::vector<std::string>& GetBoneNames() const { return m_boneNames; }
 	const std::string& GetSelectedBone() const { return m_selectedBone; }
@@ -237,6 +242,7 @@ private:
 	float m_idlePlaybackRate = 0.5f;
 	std::array<aiAnimation*, 3> m_weakAttackAnimations{};
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
+	aiAnimation* m_impactAnimation = nullptr;
 	bool m_comboPreviewActive = false;
 	int m_comboPreviewStep = 0;
 	bool m_comboPreviewHeavy = false;

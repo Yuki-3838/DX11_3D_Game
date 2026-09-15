@@ -156,8 +156,8 @@ namespace
 
 void OneVsOneCombat::Reset()
 {
-    m_playerHp = MAX_HP;
-    m_enemyHp = MAX_HP;
+    m_playerHp = PLAYER_MAX_HP;
+    m_enemyHp = ENEMY_MAX_HP;
     m_enemyCooldown = 0.7f;
     m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
     m_playerAttack = {};
@@ -211,6 +211,12 @@ void OneVsOneCombat::CancelPlayerAttack()
 {
 	if (IsPlayerAttacking())
 		m_playerAttack = {};
+}
+
+void OneVsOneCombat::CancelEnemyAttack()
+{
+	if (IsEnemyAttacking())
+		m_enemyAttack = {};
 }
 
 int OneVsOneCombat::GetPlayerAttackFrame() const

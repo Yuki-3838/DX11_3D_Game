@@ -46,6 +46,10 @@ void enemy::resetEncounter()
 	m_stateTime = 0.0f;
 	m_move = Vector3(0.0f, 0.0f, 0.0f);
 	m_circleDirection = 1.0f;
+	m_posture = 0.0f;
+	m_flinchCount = 0;
+	m_condition = Combat::EnemyCondition::Healthy;
+	m_conditionTime = 0.0f;
 }
 
 bool enemy::isInRecovery() const
@@ -80,7 +84,21 @@ float enemy::activeSeconds() const
 
 float enemy::recoverySeconds() const
 {
-	return getAttackData().frames.recoverySeconds;
+	// 弱っているほど攻撃後の隙が長い。「効いている」ことが隙の長さからも伝わり、
+	// 終盤ほど反撃しやすくなる(モンスターハンターの弱った大型モンスターと同じ)。
+	const float scale =
+		m_condition == Combat::EnemyCondition::Dying ? Combat::Tuning::ENEMY_DYING_RECOVERY_SCALE :
+		m_condition == Combat::EnemyCondition::Tired ? Combat::Tuning::ENEMY_TIRED_RECOVERY_SCALE :
+		1.0f;
+	return getAttackData().frames.recoverySeconds * scale;
+}
+
+float enemy::moveSpeedScale() const
+{
+	return
+		m_condition == Combat::EnemyCondition::Dying ? Combat::Tuning::ENEMY_DYING_MOVE_SCALE :
+		m_condition == Combat::EnemyCondition::Tired ? Combat::Tuning::ENEMY_TIRED_MOVE_SCALE :
+		1.0f;
 }
 
 void enemy::setForcedAttackKind(const Combat::EnemyAttackKind* kind)
@@ -170,6 +188,10 @@ void enemy::update(uint64_t dt)
 	const float distance = distanceToTarget(targetPosition);
 	m_stateTime += deltaSec;
 	m_move = Vector3(0, 0, 0);
+	m_conditionTime += deltaSec;
+	// 攻撃を当てない時間が続くと怯み値は抜けていく。
+	m_posture = std::max(
+		0.0f, m_posture - Combat::Tuning::ENEMY_POSTURE_RECOVERY_PER_SECOND * deltaSec);
 
 	if (m_motionState == MotionState::Approach && distance <= ATTACK_DISTANCE)
 	{
@@ -191,7 +213,7 @@ void enemy::update(uint64_t dt)
 	{
 	case MotionState::Approach:
 		faceTarget(targetPosition, deltaSec, 8.0f);
-		moveInFacingDirection(APPROACH_SPEED * deltaSec);
+		moveInFacingDirection(APPROACH_SPEED * moveSpeedScale() * deltaSec);
 		break;
 	case MotionState::Circle:
 	{
@@ -204,10 +226,10 @@ void enemy::update(uint64_t dt)
 			distanceError * 3.0f,
 			-CIRCLE_SPEED * 0.75f,
 			CIRCLE_SPEED * 0.75f);
-		const float side = m_circleDirection * CIRCLE_SPEED * deltaSec;
+		const float side = m_circleDirection * CIRCLE_SPEED * moveSpeedScale() * deltaSec;
 		const Vector3 forwardDir(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y));
 		const Vector3 sideDir(-forwardDir.z, 0.0f, forwardDir.x);
-		m_move = forwardDir * (forwardSpeed * deltaSec) + sideDir * side;
+		m_move = forwardDir * (forwardSpeed * moveSpeedScale() * deltaSec) + sideDir * side;
 		break;
 	}
 	case MotionState::Windup:
@@ -225,9 +247,16 @@ void enemy::update(uint64_t dt)
 	case MotionState::Recovery:
 		if (m_stateTime >= recoverySeconds()) changeState(MotionState::Retreat);
 		break;
+	case MotionState::Flinch:
+		// 怯んでいる間は何もしない。向き直りもしないので、背後へ回り込む機会になる。
+		// 明けたら様子見へ戻す。後退させると、反撃に踏み込んだプレイヤーから逃げてしまい、
+		// 怯ませた手応えが薄れるためである。
+		if (m_stateTime >= Combat::Tuning::ENEMY_FLINCH_SECONDS)
+			changeState(MotionState::Circle);
+		break;
 	case MotionState::Retreat:
 		faceTarget(targetPosition, deltaSec, 6.0f);
-		moveInFacingDirection(-RETREAT_SPEED * deltaSec);
+		moveInFacingDirection(-RETREAT_SPEED * moveSpeedScale() * deltaSec);
 		if (m_stateTime >= RETREAT_SECONDS || distance >= RETREAT_DISTANCE)
 		{
 			m_circleDirection = -m_circleDirection;
@@ -243,7 +272,117 @@ void enemy::update(uint64_t dt)
 
 Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 {
-	return Combat::EnemyAttackPose(m_attackKind, currentAttackPhase(), m_stateTime);
+	// 怯みは攻撃の構えより優先する。構えの途中で怯んだら、構えを捨ててのけぞる。
+	if (m_motionState == MotionState::Flinch)
+	{
+		return Combat::EnemyFlinchPose(
+			m_stateTime, Combat::Tuning::ENEMY_FLINCH_SECONDS, m_flinchYawSign);
+	}
+	Combat::EnemyPoseOffset pose =
+		Combat::EnemyAttackPose(m_attackKind, currentAttackPhase(), m_stateTime);
+
+	// 弱り具合の姿勢は、攻撃の予兆と攻撃判定の間には足さない。
+	// 息で頭が上下すると構えの形が崩れ、「何が来るか」が読みにくくなるため。
+	// 予兆の読みやすさは、弱り具合の表現より優先する。
+	const Combat::EnemyAttackPhase phase = currentAttackPhase();
+	if (phase == Combat::EnemyAttackPhase::None || phase == Combat::EnemyAttackPhase::Recovery)
+	{
+		const bool moving =
+			m_motionState == MotionState::Approach ||
+			m_motionState == MotionState::Circle ||
+			m_motionState == MotionState::Retreat;
+		const Combat::EnemyPoseOffset condition =
+			Combat::EnemyConditionPose(m_condition, moving, m_conditionTime);
+		pose.pitch += condition.pitch;
+		pose.yaw += condition.yaw;
+	}
+	return pose;
+}
+
+bool enemy::setHealthRatio(float ratio)
+{
+	const Combat::EnemyCondition next =
+		ratio <= Combat::Tuning::ENEMY_DYING_HP_RATIO ? Combat::EnemyCondition::Dying :
+		ratio <= Combat::Tuning::ENEMY_TIRED_HP_RATIO ? Combat::EnemyCondition::Tired :
+		Combat::EnemyCondition::Healthy;
+	// 体力は減る一方なので、悪くなる向きだけを見る。
+	if (static_cast<int>(next) <= static_cast<int>(m_condition))
+		return false;
+
+	m_condition = next;
+	// 段階が変わった瞬間はよろめかせる。姿勢や速さの変化はじわじわしていて
+	// 気付きにくいので、「今、効いた」と分かるきっかけを作る。
+	// 怯みと同じ動きを使うが、怯み値や怯み耐性の回数には数えない。
+	// 倒れる直前(体力0)は対象外。倒れたらすぐリザルトへ移るため。
+	if (ratio > 0.0f && m_motionState != MotionState::Flinch)
+	{
+		m_flinchYawSign = -m_flinchYawSign;
+		changeState(MotionState::Flinch);
+	}
+	return true;
+}
+
+Combat::EnemyCondition enemy::getCondition() const
+{
+	return m_condition;
+}
+
+const char* enemy::getConditionName() const
+{
+	switch (m_condition)
+	{
+	case Combat::EnemyCondition::Tired: return "疲れ";
+	case Combat::EnemyCondition::Dying: return "瀕死";
+	case Combat::EnemyCondition::Healthy:
+	default: return "通常";
+	}
+}
+
+bool enemy::addPostureDamage(float amount, const Vector3& hitFromPosition)
+{
+	m_posture += amount;
+	// 怯んでいる最中に重ねて怯ませない。怯みが途切れず続き、一方的な戦いになるため。
+	if (m_motionState == MotionState::Flinch ||
+		m_posture < getFlinchThreshold())
+	{
+		return false;
+	}
+
+	m_posture = 0.0f;
+	++m_flinchCount;
+	// 打たれた側と反対へ顔を背ける。敵の右側から打たれたら左へ、という向きにする。
+	// 敵の右方向は、正面(-sin, -cos)を上から見て時計回りに90度回したもの。
+	const Vector3 forward(-std::sin(m_srt.rot.y), 0.0f, -std::cos(m_srt.rot.y));
+	const Vector3 right(-forward.z, 0.0f, forward.x);
+	const float side =
+		(hitFromPosition.x - m_srt.pos.x) * right.x +
+		(hitFromPosition.z - m_srt.pos.z) * right.z;
+	m_flinchYawSign = side >= 0.0f ? 1.0f : -1.0f;
+	changeState(MotionState::Flinch);
+	return true;
+}
+
+bool enemy::isFlinching() const
+{
+	return m_motionState == MotionState::Flinch;
+}
+
+float enemy::getPosture() const
+{
+	return m_posture;
+}
+
+float enemy::getFlinchThreshold() const
+{
+	// 怯んだ回数だけしきい値を上げ、上限で止める。
+	const float grown = Combat::Tuning::ENEMY_FLINCH_BASE_THRESHOLD *
+		std::pow(Combat::Tuning::ENEMY_FLINCH_THRESHOLD_GROWTH, static_cast<float>(m_flinchCount));
+	return std::min(grown, Combat::Tuning::ENEMY_FLINCH_THRESHOLD_MAX);
+}
+
+int enemy::getFlinchCount() const
+{
+	return m_flinchCount;
 }
 
 Combat::EnemyAttackPhase enemy::currentAttackPhase() const
@@ -297,6 +436,7 @@ const char* enemy::getMotionStateName() const
 	case MotionState::Active: return "攻撃判定中";
 	case MotionState::Recovery: return "隙";
 	case MotionState::Retreat: return "後退";
+	case MotionState::Flinch: return "怯み";
 	default: return "不明";
 	}
 }

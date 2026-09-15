@@ -48,6 +48,9 @@ public:
 	// 当たり判定の3D上のラベル。タブの選択状態に関わらず描くため、
 	// タブの中身とは別の関数に分けている。
 	void DrawCollisionWorldLabels();
+	// 調整用。dev_settings.ini の enemy_hp を試合開始時の敵の体力にする。
+	// 弱り具合(疲れ・瀕死)の見た目を、長い戦闘をしなくても確かめられるようにする。
+	void ApplyDebugEnemyStartHp();
 	void DebugAudio();
 	void UpdateEnemyAnimation(float deltaSeconds = 0.0f);
 	void StartEnemyIntro();

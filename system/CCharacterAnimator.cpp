@@ -349,6 +349,21 @@ void CCharacterAnimator::SetAttackAnimations(
 	m_heavyAttackAnimations = heavyAnimations;
 }
 
+void CCharacterAnimator::SetImpactAnimation(aiAnimation* animation)
+{
+	m_impactAnimation = animation;
+}
+
+void CCharacterAnimator::PlayImpactMotion()
+{
+	if (m_impactAnimation == nullptr)
+		return;
+	// 攻撃クリップと同じ上半身レイヤーの経路で再生する。
+	// 予兆・判定の区間は使わないので0にする(剣の軌跡や攻撃判定には関わらない。
+	// それらは戦闘システム側の攻撃状態で決まる)。
+	PlayImportedAttackAnimation(m_impactAnimation, "Impact", 0.60f, 0.0f, 0.0f);
+}
+
 void CCharacterAnimator::PlayAttackMotion()
 {
 	PlayAttackMotion(1);

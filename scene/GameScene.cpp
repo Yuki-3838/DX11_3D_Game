@@ -800,6 +800,7 @@ void GameScene::update(uint64_t deltatime)
     if (input.IsKeyTriggered(DIK_R))
     {
 		m_combat.Reset();
+		ApplyDebugEnemyStartHp();
 		m_playerWeaponTrail.Clear();
 		m_hitEffect.Clear();
 		m_lockOnTarget = false;
@@ -830,8 +831,11 @@ void GameScene::update(uint64_t deltatime)
 	// 回避中のクリックは戦闘システムへ渡さない。回避中に攻撃を開始すると、
 	// player::update()が回避移動を優先してreturnするため、回避の移動量を
 	// 持ったまま攻撃モーションだけが始まる状態になる。
-	const bool attackInput = attackTriggered && !playerDodgeActive;
-	const bool heavyAttackInput = heavyAttackTriggered && !playerDodgeActive;
+	// 吹き飛ばされている間も攻撃を受け付けない。飛ばされながら剣を振れると、
+	// 被弾が「読み違えた代償」にならない。
+	const bool playerKnockedBack = m_player->isKnockedBack();
+	const bool attackInput = attackTriggered && !playerDodgeActive && !playerKnockedBack;
+	const bool heavyAttackInput = heavyAttackTriggered && !playerDodgeActive && !playerKnockedBack;
 	const bool attackStarted = (attackInput || heavyAttackInput) &&
 		m_combat.CanStartPlayerAttack();
 	if (attackStarted)
@@ -853,7 +857,7 @@ void GameScene::update(uint64_t deltatime)
 	const bool canCancelAttack =
 		m_combat.CanCancelPlayerAttack(m_attackCancelEndFrame);
 	const bool canDodge = dodgeTriggered && m_playerStamina >= 25.0f &&
-		!attackStarted && !m_player->isDodging() &&
+		!attackStarted && !m_player->isDodging() && !playerKnockedBack &&
 		(!m_combat.IsPlayerAttacking() || canCancelAttack);
 	if (canDodge)
 	{
@@ -914,10 +918,13 @@ void GameScene::update(uint64_t deltatime)
 			*m_playerAnimationMesh,
 			m_playerBoneComb,
 			{
-				m_player->getMotionState() == player::MotionState::Walk ||
+				// 吹き飛ばし中は歩行扱いにしない。飛ばされる速さで脚が歩行を刻むと、
+				// 自分で後ろへ走っているように見えるため。
+				m_player->getMotionState() != player::MotionState::Knockback &&
+				(m_player->getMotionState() == player::MotionState::Walk ||
 				m_player->getMotionState() == player::MotionState::Run ||
 				m_player->getMotionState() == player::MotionState::Dodge ||
-				m_player->getVel().Length() > 0.01f,
+				m_player->getVel().Length() > 0.01f),
 				m_player->getMotionState() == player::MotionState::Run,
 				m_player->getMotionState() == player::MotionState::Jump,
 				m_player->getMotionTime(),
@@ -1044,9 +1051,12 @@ void GameScene::update(uint64_t deltatime)
 			attackInput,
 			heavyAttackInput,
 			m_enemies.front()->getMotionState() == enemy::MotionState::Windup,
-			m_player->isDodging() &&
+			// 吹き飛ばされている間は無敵にする。飛ばされた先で次の攻撃に拾われ続けると、
+			// 1回の読み違えで何もできないまま体力を削り切られてしまう。
+			m_player->isKnockedBack() ||
+			(m_player->isDodging() &&
 			m_player->getDodgeFrame() >= m_dodgeInvincibleStartFrame &&
-			m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame,
+			m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame),
 			swordBase,
 			swordTip,
 			previousSwordTip,
@@ -1070,6 +1080,23 @@ void GameScene::update(uint64_t deltatime)
 			m_camera.TriggerShake(1.1f * hitScale, 0.22f);
 			m_enemyHitFlashTime = 0.12f;
 
+			// 怯み値を溜める。隙へ入れた攻撃は多く溜まる。
+			// しきい値を超えたら敵が怯み、構えていた攻撃は取り消される。
+			const Combat::AttackData& playerAttack = heavyHit
+				? Combat::PlayerHeavyAttack()
+				: Combat::PlayerWeakAttack();
+			const float postureDamage = static_cast<float>(playerAttack.postureDamage) *
+				(punishHit ? Combat::Tuning::PUNISH_POSTURE_MULTIPLIER : 1.0f);
+			if (m_enemies.front()->addPostureDamage(postureDamage, m_player->getSRT().pos))
+			{
+				// 敵AIだけ怯ませて戦闘側の攻撃を残すと、のけぞっている敵から
+				// ダメージが飛んでくるので、戦闘側の攻撃も取り消す。
+				m_combat.CancelEnemyAttack();
+				// 怯ませた瞬間は通常の命中より一段強く揺らし、止める。
+				m_playerAnimator.TriggerHitStop(0.12f);
+				m_camera.TriggerShake(2.2f, 0.30f);
+			}
+
 			// 火花とダメージ数値。命中点は剣先のワールド座標を使う。
 			// 剣先は武器ボーンから求めているので、武器やモデルを差し替えても成立する。
 			const Vector3 hitPoint = swordTransformValid ? swordTip : enemyPosition;
@@ -1089,10 +1116,33 @@ void GameScene::update(uint64_t deltatime)
 
 		// 被弾側の手応え。与ダメージより強く揺らし、画面端を赤くする。
 		// 「今食らった」ことが分からないと、読み合いに失敗した実感が出ない。
+		// 敵の弱り具合を残り体力から更新する。体力ゲージは出さず、体の変化で伝える。
+		// 段階が悪くなった瞬間は敵がよろめくので、構えていた攻撃は取り消す。
+		if (m_enemies.front()->setHealthRatio(
+			m_combat.GetEnemyHp() / m_combat.GetEnemyMaxHp()))
+		{
+			m_combat.CancelEnemyAttack();
+			m_camera.TriggerShake(1.8f, 0.30f);
+			// 瀕死に入った瞬間だけ咆哮させる。モンスターハンターで弱ったモンスターが
+			// 苦しげに吠えるのと同じく、「もう少しで倒せる」ことを音でも伝える。
+			if (m_enemies.front()->getCondition() == Combat::EnemyCondition::Dying)
+				SoundManager::PlayEnemyRoar();
+		}
+
 		if (m_combat.GetPlayerHp() < playerHpBeforeAttack)
 		{
 			m_camera.TriggerShake(2.6f, 0.35f);
 			m_playerDamageFlashTime = 0.45f;
+
+			// 食らった攻撃の重さに応じて吹き飛ばす。向きは敵から離れる方向。
+			// 攻撃中なら攻撃は取り消す(飛ばされながら剣を振り続けないように)。
+			const Combat::KnockbackData knockback =
+				Combat::EnemyKnockbackOf(m_enemies.front()->getAttackKind());
+			const Vector3 awayFromEnemy = m_player->getSRT().pos - enemyPosition;
+			if (m_combat.IsPlayerAttacking())
+				m_combat.CancelPlayerAttack();
+			m_player->applyKnockback(awayFromEnemy, knockback.speed, knockback.seconds);
+			m_playerAnimator.PlayImpactMotion();
 		}
 		const int comboStep = m_combat.GetPlayerComboStep();
 		if (m_combat.IsPlayerAttacking() &&
@@ -1194,7 +1244,11 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		state == enemy::MotionState::Active;
 	// ドラゴンの歩きモーションは約1.67秒に9キーある。
 	// 約10回の固定更新ごとに1キー進め、足が地面を滑らないようにする。
-	int framesPerKey = 10;
+	// 弱って移動が遅くなったら、歩きのアニメーションも同じ割合で遅くする。
+	// 足の運びと移動量が合わないと、足が地面を滑って見える。
+	int framesPerKey = std::clamp(
+		static_cast<int>(std::lround(10.0f / std::max(0.1f, m_enemies.front()->getMoveSpeedScale()))),
+		10, 24);
 	if (attackMotion)
 	{
 		// 敵の攻撃モーションは1本しか無いため、攻撃の種類ごとの速さの違いを
@@ -1571,7 +1625,7 @@ void GameScene::DrawGameplayHud()
 			ImVec2(min.x, max.y - bandHeight), max, clear, clear, edge, edge);
 	}
 
-	drawBar(top, m_combat.GetPlayerHp() / 100.0f, IM_COL32(75, 205, 75, 255));
+	drawBar(top, m_combat.GetPlayerHp() / m_combat.GetPlayerMaxHp(), IM_COL32(75, 205, 75, 255));
 	drawBar(top + 24.0f, m_playerStamina / PLAYER_MAX_STAMINA, IM_COL32(235, 195, 55, 255));
 
 	if (!m_lockOnTarget || m_enemyIntroActive || m_enemies.empty())
@@ -1685,6 +1739,7 @@ void GameScene::init()
 	g_loadmodel[1].texdirectoryname = "assets/model/CethielDragon/";
 	m_combat.Reset();
 	m_playerStamina = PLAYER_MAX_STAMINA;
+	ApplyDebugEnemyStartHp();
 	// カメラ(3D)の初期匁E
 	// 剣の軌跡。刃のワールド座標だけを渡す作りなので、
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
@@ -1819,6 +1874,10 @@ void GameScene::init()
 	m_playerAnimator.SetLocomotionAnimations(m_playerWalkAnimation, playerRunAnimation);
 	m_playerAnimator.SetIdleAnimation(playerIdleAnimation);
 	m_playerAnimator.SetAttackAnimations(weakAttackAnimations, heavyAttackAnimations);
+	// 被弾ののけぞり。手持ちのクリップにある「impact」を使う(新規アセットは追加しない)。
+	m_playerAnimationData.LoadAnimation(
+		GetDevSetting("impact", "assets/motion/sword and shield impact.fbx"), "impact");
+	m_playerAnimator.SetImpactAnimation(m_playerAnimationData.GetAnimation("impact", 0));
 	if (playerIdleAnimation == nullptr)
 		std::cout << "[Player] idle animation not loaded" << std::endl;
 	if (m_playerWalkAnimation == nullptr)
@@ -1967,6 +2026,21 @@ void GameScene::init()
 
 }
 
+void GameScene::ApplyDebugEnemyStartHp()
+{
+	const std::string value = GetDevSetting("enemy_hp", "");
+	if (value.empty())
+		return;
+	try
+	{
+		m_combat.SetEnemyHpForDebug(std::stof(value));
+	}
+	catch (const std::exception&)
+	{
+		// 数値でなければ無視して通常の体力で始める。
+	}
+}
+
 void GameScene::DrawDebugWindow()
 {
 	// マルチビューポートが有効なので、ImGuiのウィンドウ位置は「画面全体の座標」である。
@@ -1977,7 +2051,11 @@ void GameScene::DrawDebugWindow()
 		ImVec2(mainViewport->WorkPos.x + 10.0f, mainViewport->WorkPos.y + 120.0f),
 		ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(440.0f, 520.0f), ImGuiCond_FirstUseEver);
-	if (ImGui::Begin("デバッグ"))
+	// 位置をimgui.iniへ保存しない。位置は画面全体の座標で保存されるため、
+	// 次に起動したときゲームウィンドウが別の場所に開くと、
+	// デバッグウィンドウだけが前回の場所(ゲーム画面の外)に取り残される。
+	// 起動のたびにゲーム画面の左上を基準に置き直す。起動中に動かすのは自由。
+	if (ImGui::Begin("デバッグ", nullptr, ImGuiWindowFlags_NoSavedSettings))
 	{
 		if (ImGui::BeginTabBar("デバッグタブ"))
 		{
@@ -2584,6 +2662,17 @@ void GameScene::DebugCombat()
 			m_enemies.front()->getStateTime());
 		ImGui::Text("敵の攻撃: %s",
 			Combat::EnemyAttackDebugName(m_enemies.front()->getAttackKind()));
+		ImGui::Text("敵の弱り具合: %s (体力 %.0f%%)",
+			m_enemies.front()->getConditionName(),
+			100.0f * m_combat.GetEnemyHp() / m_combat.GetEnemyMaxHp());
+		// 怯み値の溜まり具合。バーが満ちると怯む。怯むたびにしきい値が上がる。
+		ImGui::Text("敵の怯み値 (%.0f / %.0f、怯んだ回数 %d)",
+			m_enemies.front()->getPosture(),
+			m_enemies.front()->getFlinchThreshold(),
+			m_enemies.front()->getFlinchCount());
+		ImGui::ProgressBar(
+			m_enemies.front()->getPosture() / m_enemies.front()->getFlinchThreshold(),
+			ImVec2(-1.0f, 0.0f));
 		// 3種類の構えを見比べるための調整用。通常は距離と直前の攻撃で選ばれるため、
 		// 狙った攻撃が出るまで待つことになり、予兆の形を詰めにくい。
 		ImGui::Checkbox("敵の攻撃を固定する", &m_forceEnemyAttack);
@@ -2619,9 +2708,19 @@ void GameScene::DebugCombat()
 		m_attackCancelEndFrame);
     ImGui::Separator();
     ImGui::Text("プレイヤーの体力");
-    ImGui::ProgressBar(m_combat.GetPlayerHp() / 100.0f, ImVec2(-1.0f, 0.0f));
-    ImGui::Text("敵の体力");
-    ImGui::ProgressBar(m_combat.GetEnemyHp() / 100.0f, ImVec2(-1.0f, 0.0f));
+    ImGui::ProgressBar(m_combat.GetPlayerHp() / m_combat.GetPlayerMaxHp(), ImVec2(-1.0f, 0.0f));
+    // 敵の体力はゲーム画面には出さない(弱り具合は体の動きで伝える)。ここは開発者向け。
+    ImGui::Text("敵の体力 (%.0f / %.0f)", m_combat.GetEnemyHp(), m_combat.GetEnemyMaxHp());
+    ImGui::ProgressBar(m_combat.GetEnemyHp() / m_combat.GetEnemyMaxHp(), ImVec2(-1.0f, 0.0f));
+	if (!m_enemies.empty())
+	{
+		ImGui::Text("敵の弱り具合: %s", m_enemies.front()->getConditionName());
+		// 弱り具合の見た目を確かめるための調整用。体力を直接書き換える。
+		// 一度悪くなった弱り具合は戻らないので、戻したいときはRで仕切り直す。
+		float enemyHp = m_combat.GetEnemyHp();
+		if (ImGui::SliderFloat("敵の体力を設定", &enemyHp, 1.0f, m_combat.GetEnemyMaxHp(), "%.0f"))
+			m_combat.SetEnemyHpForDebug(enemyHp);
+	}
     ImGui::EndTabItem();
 }
 

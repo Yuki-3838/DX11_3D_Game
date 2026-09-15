@@ -203,4 +203,106 @@ inline EnemyPoseOffset EnemyAttackPose(
     return offset;
 }
 
+namespace PoseTuning
+{
+// 怯みの大きさ。攻撃の構えより大きく、しかし一瞬で戻り切らない程度にする。
+inline constexpr float FLINCH_PITCH = -0.30f;  ///< のけぞる量(負で後ろへ反る)
+inline constexpr float FLINCH_YAW = 0.38f;     ///< 打たれた側から顔を背ける量
+inline constexpr float FLINCH_PEAK_SECONDS = 0.07f; ///< のけぞりが最大になるまで
+} // namespace PoseTuning
+
+/**
+ * @brief 怯みの姿勢のずらし量。
+ *
+ * 打たれた瞬間に一気にのけぞり、残りの時間でゆっくり戻す。
+ * 立ち上がりを遅くすると「攻撃が当たった結果」に見えず、別の動作に見えてしまう。
+ *
+ * @param flinchTime    怯み始めてからの経過秒。
+ * @param flinchSeconds 怯みの長さ。
+ * @param yawSign       顔を背ける向き(+1 / -1)。打たれた側と反対へ向ける。
+ */
+inline EnemyPoseOffset EnemyFlinchPose(float flinchTime, float flinchSeconds, float yawSign)
+{
+    EnemyPoseOffset offset{};
+    const float peak = PoseTuning::FLINCH_PEAK_SECONDS;
+    float envelope = 0.0f;
+    if (flinchTime < peak)
+    {
+        envelope = Detail::FastOut(flinchTime / peak);
+    }
+    else
+    {
+        const float settleSeconds = std::max(0.01f, flinchSeconds - peak);
+        envelope = 1.0f - Detail::SmoothStep01((flinchTime - peak) / settleSeconds);
+    }
+    offset.pitch = PoseTuning::FLINCH_PITCH * envelope;
+    offset.yaw = PoseTuning::FLINCH_YAW * yawSign * envelope;
+    return offset;
+}
+
+/** 敵の弱り具合。体力ゲージを出さない代わりに、体の動きで伝える。 */
+enum class EnemyCondition
+{
+    Healthy, ///< 通常
+    Tired,   ///< 疲れ(体力50%以下)
+    Dying,   ///< 瀕死(体力20%以下)
+};
+
+namespace PoseTuning
+{
+inline constexpr float TIRED_HEAD_DROOP = 0.05f;    ///< 疲れ: 頭の下がり
+inline constexpr float TIRED_BREATH_PITCH = 0.04f;  ///< 疲れ: 息で上下する量
+inline constexpr float TIRED_BREATH_SPEED = 2.4f;   ///< 疲れ: 呼吸の速さ(ラジアン/秒)
+inline constexpr float DYING_HEAD_DROOP = 0.12f;    ///< 瀕死: 頭の下がり
+inline constexpr float DYING_BREATH_PITCH = 0.07f;  ///< 瀕死: 肩で息をする量
+inline constexpr float DYING_BREATH_SPEED = 1.7f;   ///< 瀕死: 呼吸の速さ(遅く深い)
+inline constexpr float DYING_LIMP_PITCH = 0.14f;    ///< 瀕死: 足を引きずって前へつんのめる量
+inline constexpr float DYING_LIMP_YAW = 0.07f;      ///< 瀕死: 引きずる足の側へ体がぶれる量
+inline constexpr float DYING_STEP_SPEED = 4.2f;     ///< 瀕死: 一歩の速さ(ラジアン/秒)
+} // namespace PoseTuning
+
+/**
+ * @brief 弱り具合による姿勢のずらし量。
+ *
+ * 高さは足さない(接地計算がピッチを見て最下点を決めているため。高さを直接足すと埋まる)。
+ * 横倒し(ロール)も使わない。接地計算がロールを扱っておらず、片側の足が地面へ沈むため。
+ * 足を引きずる様子は、一歩ごとの前のめり(ピッチ)と体のぶれ(ヨー)で表す。
+ *
+ * @param condition  弱り具合。
+ * @param moving     歩いているか。瀕死のときだけ足を引きずる動きを足す。
+ * @param time       途切れずに進み続ける経過秒(状態が変わっても0へ戻さない)。
+ */
+inline EnemyPoseOffset EnemyConditionPose(EnemyCondition condition, bool moving, float time)
+{
+    EnemyPoseOffset offset{};
+    switch (condition)
+    {
+    case EnemyCondition::Tired:
+        offset.pitch = PoseTuning::TIRED_HEAD_DROOP +
+            PoseTuning::TIRED_BREATH_PITCH * std::sin(time * PoseTuning::TIRED_BREATH_SPEED);
+        break;
+    case EnemyCondition::Dying:
+        if (moving)
+        {
+            // 片足をかばうので、2歩に1回だけ大きくつんのめる。
+            // sinの正の側だけを使い、つんのめりを鋭く、戻りをゆっくりにする。
+            const float step = std::sin(time * PoseTuning::DYING_STEP_SPEED);
+            const float lurch = std::max(0.0f, step);
+            offset.pitch = PoseTuning::DYING_HEAD_DROOP +
+                PoseTuning::DYING_LIMP_PITCH * lurch * lurch;
+            offset.yaw = PoseTuning::DYING_LIMP_YAW * step;
+        }
+        else
+        {
+            offset.pitch = PoseTuning::DYING_HEAD_DROOP +
+                PoseTuning::DYING_BREATH_PITCH * std::sin(time * PoseTuning::DYING_BREATH_SPEED);
+        }
+        break;
+    case EnemyCondition::Healthy:
+    default:
+        break;
+    }
+    return offset;
+}
+
 } // namespace Combat
