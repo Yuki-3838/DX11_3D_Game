@@ -62,6 +62,11 @@ float enemy::getStateTime() const
 	return m_stateTime;
 }
 
+float enemy::getAttackElapsedSeconds() const
+{
+	return m_attackElapsed;
+}
+
 Combat::EnemyAttackKind enemy::getAttackKind() const
 {
 	return m_attackKind;
@@ -187,6 +192,13 @@ void enemy::update(uint64_t dt)
 	const Vector3 targetPosition = m_target->getSRT().pos;
 	const float distance = distanceToTarget(targetPosition);
 	m_stateTime += deltaSec;
+	// 予兆から隙までを1本のクリップとして再生するため、攻撃の間はまとめて時間を数える。
+	if (m_motionState == MotionState::Windup ||
+		m_motionState == MotionState::Active ||
+		m_motionState == MotionState::Recovery)
+	{
+		m_attackElapsed += deltaSec;
+	}
 	m_move = Vector3(0, 0, 0);
 	m_conditionTime += deltaSec;
 	// 攻撃を当てない時間が続くと怯み値は抜けていく。
@@ -246,11 +258,10 @@ void enemy::update(uint64_t dt)
 		if (m_stateTime >= windupSeconds()) changeState(MotionState::Active);
 		break;
 	case MotionState::Active:
-		// 攻撃判定中は短く踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
-		// 薙ぎ払いは射程が広い分だけ踏み込みも大きくし、
-		// 「距離を取るだけでは避けられない」ことが動きから読めるようにする。
-		moveInFacingDirection(
-			(m_attackKind == Combat::EnemyAttackKind::Sweep ? 68.0f : 48.0f) * deltaSec);
+		// 攻撃判定中は踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
+		// 速さは攻撃ごとの表から引く。判定の時間を短くしたので、以前の固定値(48/68)のままだと
+		// 踏み込む距離が1/4になり、「距離を取るだけでは避けられない」読み合いが消える。
+		moveInFacingDirection(Combat::EnemyLungeSpeedOf(m_attackKind) * deltaSec);
 		if (m_stateTime >= activeSeconds()) changeState(MotionState::Recovery);
 		break;
 	case MotionState::Recovery:
@@ -407,6 +418,9 @@ Combat::EnemyAttackPhase enemy::currentAttackPhase() const
 
 void enemy::changeState(MotionState nextState)
 {
+	// 攻撃の始まり(予兆)でだけ、攻撃の経過時間を数え直す。
+	if (nextState == MotionState::Windup)
+		m_attackElapsed = 0.0f;
 	m_motionState = nextState;
 	m_stateTime = 0.0f;
 }

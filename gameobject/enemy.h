@@ -30,6 +30,9 @@ public:
 	const char* getMotionStateName() const;
 	bool isInRecovery() const;
 	float getStateTime() const;
+	// 攻撃(予兆)を始めてからの経過時間。攻撃モーションの再生位置をこの時間から決める。
+	// 状態ごとの時間(getStateTime)は判定や隙へ移るたびに0へ戻るので、クリップの再生には使えない。
+	float getAttackElapsedSeconds() const;
 	SRT getRenderSRT() const;
 	void setVisualGroundOffsetY(float offsetY);
 
@@ -107,6 +110,8 @@ private:
 	player* m_target{nullptr};
 	MotionState m_motionState = MotionState::Approach;
 	float m_stateTime = 0.0f;
+	// 予兆・判定・隙をまたいで数える、攻撃を始めてからの時間。
+	float m_attackElapsed = 0.0f;
 	float m_circleDirection = 1.0f;
 	float m_visualGroundOffsetY = 0.0f;
 	Combat::EnemyAttackKind m_attackKind = Combat::EnemyAttackKind::Slam;

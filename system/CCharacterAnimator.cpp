@@ -595,6 +595,7 @@ void CCharacterAnimator::PlayImportedComboStep(
 	m_importedAnimationFrameRate = keysPerSecond * step.playbackRate / 60.0f;
 	// 踏み込みは再生を始めた位置から数える(飛ばした溜めの分の移動は足さない)。
 	m_rootMotionPreviousTime = std::clamp(step.clipStart / clipSeconds, 0.0f, 0.9999f);
+	m_attackRootMotionScale = step.rootMotionScale;
 }
 
 void CCharacterAnimator::PlayDashAttackMotion()
@@ -853,6 +854,8 @@ void CCharacterAnimator::PlayDodgeMotion()
 	m_attackBlendPending = false;
 	m_locomotionBlendActive = false;
 	BuildFallbackDodgeMotion();
+	// 次のUpdateで、回避を始めた瞬間の姿勢(腕の構え)を保存する。
+	m_dodgeBasePosePending = true;
 	m_motionTime = 0.0f;
 	m_motionLoop = false;
 	m_motionPlaying = !m_motionKeys.empty();
@@ -1000,6 +1003,7 @@ CCharacterAnimator::EditorSnapshot CCharacterAnimator::CaptureEditorSnapshot() c
 void CCharacterAnimator::RestoreEditorSnapshot(const EditorSnapshot& snapshot)
 {
 	m_motionKeys = snapshot.motionKeys;
+	m_dodgeMotion = false;
 	m_editorKey = snapshot.editorKey;
 	m_motionTime = snapshot.motionTime;
 	m_motionDuration = snapshot.motionDuration;
@@ -1289,8 +1293,10 @@ void CCharacterAnimator::Update(
 					m_importedAttackAnimation, m_rootMotionPreviousTime, m_pelvis);
 				const Vector3 current = mesh.SampleBonePositionOffset(
 					m_importedAttackAnimation, attackTime, m_pelvis);
-				m_pendingRootMotionForward += -(current.z - previous.z) * m_clipToWorld;
-				m_pendingRootMotionRight += -(current.x - previous.x) * m_clipToWorld;
+				m_pendingRootMotionForward +=
+					-(current.z - previous.z) * m_clipToWorld * m_attackRootMotionScale;
+				m_pendingRootMotionRight +=
+					-(current.x - previous.x) * m_clipToWorld * m_attackRootMotionScale;
 				m_rootMotionPreviousTime = attackTime;
 			}
 			else if (lowerBodyAnimation != nullptr)
@@ -1354,6 +1360,13 @@ void CCharacterAnimator::Update(
 			{
 				m_motionTime = m_motionDuration;
 				m_motionPlaying = false;
+				if (m_dodgeMotion)
+				{
+					// 前転の最後の姿勢から待機・移動へ補間して戻す(戻さないと起き上がりの瞬間に姿勢が跳ぶ)。
+					m_locomotionBlendFromPose = mesh.CaptureCurrentLocalPose();
+					m_locomotionBlendTime = 0.0f;
+					m_locomotionBlendActive = true;
+				}
 			}
 		}
 	}
@@ -1414,6 +1427,34 @@ void CCharacterAnimator::Update(
 			{
 				if (NormalizeBoneName(boneName).find("shield") != std::string::npos)
 					customPose[boneName] = hiddenPose;
+			}
+		}
+		if (m_dodgeMotion && m_motionPlaying)
+		{
+			if (m_dodgeBasePosePending)
+			{
+				// 回避を始めた瞬間の姿勢。前転の出だしはこの姿勢から補間する。
+				// UpdateManualPose()は「休止姿勢からの差」を受け取る(差 * 休止姿勢)ので、
+				// 保存したローカル行列(差 * 休止姿勢そのもの)から休止姿勢を外して差へ直す。
+				// そのまま渡すと休止姿勢が二重に掛かる。
+				m_dodgeBasePose.clear();
+				for (const auto& [boneName, local] : mesh.CaptureCurrentLocalPose())
+					m_dodgeBasePose[boneName] = local * mesh.GetRestLocalMatrix(boneName).Invert();
+				m_attackBlendFromPose = m_dodgeBasePose;
+				m_attackBlendTime = 0.0f;
+				m_dodgeBasePosePending = false;
+			}
+			// 肩から先は構えたまま転がる(モンスターハンターの前転も武器を構えたまま転がる)。
+			// 前転のキーの腕の値は休止姿勢(Tポーズ)からの差なので、使うと両腕を横へ広げた形になっていた。
+			for (const auto& [boneName, basePose] : m_dodgeBasePose)
+			{
+				const std::string normalized = NormalizeBoneName(boneName);
+				if (normalized.find("shoulder") != std::string::npos ||
+					normalized.find("arm") != std::string::npos ||
+					normalized.find("hand") != std::string::npos)
+				{
+					customPose[boneName] = basePose;
+				}
 			}
 		}
 		if (m_motionPlaying && m_attackBlendTime < m_attackBlendDuration)
@@ -1754,6 +1795,7 @@ void CCharacterAnimator::BuildFallbackAttackMotion()
 {
 	m_importedAttackPose = false;
 	m_motionKeys.clear();
+	m_dodgeMotion = false;
 	m_motionDuration = 0.95f;
 	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
 		if (boneName.empty())
@@ -2130,18 +2172,21 @@ void CCharacterAnimator::BuildFallbackDodgeMotion()
 {
 	m_importedAttackPose = false;
 	m_motionKeys.clear();
-	m_motionDuration = 0.40f;
+	m_dodgeMotion = true;
+	// 前転の長さはプレイヤーの移動と同じ定数を使う(モーションだけ先に終わると、滑りながら立ち上がって見える)。
+	m_motionDuration = Combat::Tuning::PLAYER_DODGE_SECONDS;
 	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
 		if (boneName.empty()) return;
 		BoneKeys& keys = m_motionKeys[boneName];
-		// 60fpsで24フレーム相当の回避動作にする。
+		// キーの位置は元の0.4秒の回避で作った割合のまま、長さに合わせて伸ばす。
 		// 中間角度の差を意図的にPIより大きくし、Quaternion::Slerpが立ち姿勢への最短経路ではなく
 		// 前転の一回転全体を補間するようにする。
 		const float times[] = { 0.00f, 0.05f, 0.12f, 0.20f, 0.29f, 0.36f, 0.40f };
+		const float timeScale = m_motionDuration / 0.40f;
 		for (size_t i = 0; i < rotations.size() && i < 7; ++i)
 		{
 			MotionKeyframe key;
-			key.time = times[i];
+			key.time = times[i] * timeScale;
 			key.rotation = rotations[i];
 			keys.push_back(key);
 		}
@@ -2468,6 +2513,7 @@ bool CCharacterAnimator::LoadMotion(const std::string& filename)
 		}
 	}
 	m_motionKeys = std::move(loadedKeys);
+	m_dodgeMotion = false;
 	m_importedAttackPose = isImportedSwordAttack;
 	if (isImportedSwordAttack)
 		StripAttackLowerBody();

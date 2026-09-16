@@ -234,6 +234,15 @@ LRESULT CALLBACK Application::WndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     break;
 
+    case WM_SYSCOMMAND:
+    {
+        // Altを単独で押すと、Windowsはウィンドウのメニューを開こうとしてキー入力を奪い、
+        // その後の移動キーなどが効かなくなる。ゲームではAltをカーソルの出し入れに使うので止める。
+        if ((wp & 0xFFF0) == SC_KEYMENU)
+            return 0;
+    }
+    break;
+
     default:
     { /* DO_NOTHING */ }
     break;

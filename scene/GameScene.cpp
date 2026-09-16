@@ -796,6 +796,22 @@ void GameScene::update(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
 	const float deltaSeconds = std::clamp(static_cast<float>(deltatime) * 0.000001f, 0.0f, 0.1f);
+	// 視点操作。フロム作品(PC版)と同じく、マウスを動かすだけでカメラが回る。
+	// そのためカーソルをゲーム画面に閉じ込めて隠す。デバッグ表示を触るときは左Altでカーソルを出す。
+	if (input.IsKeyTriggered(DIK_LMENU))
+		m_mouseLookCaptured = !m_mouseLookCaptured;
+	// 調整用: dev_settings.ini の auto_walk で自動的に歩かせる(1=前へ、2=右へ、3=左へ)。
+	// 撮影で動きを確認するとき、外からキー入力を送らずに済ませるため。
+	if (m_player)
+	{
+		static const std::string autoWalk = GetDevSetting("auto_walk", "0");
+		m_player->setDebugForcedMove(
+			autoWalk == "1" ? 1.0f : 0.0f,
+			autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f));
+	}
+	const bool lockCursor = m_mouseLookCaptured && !m_resultRequested;
+	DebugUI::SetCursorLocked(lockCursor);
+	DebugUI::SetCursorVisible(!lockCursor);
 	if (!m_enemyIntroActive && !ImGui::GetIO().WantCaptureKeyboard &&
 		input.IsKeyTriggered(DIK_TAB))
 	{
@@ -806,6 +822,12 @@ void GameScene::update(uint64_t deltatime)
 		else if (!m_enemies.empty() && !m_combat.IsEnemyDefeated())
 		{
 			m_lockOnTarget = true;
+		}
+		else if (m_player)
+		{
+			// ロックオンできる相手がいないときは、カメラをプレイヤーの背後へ回す
+			// (フロム作品でロックオン対象がいないときの挙動)。
+			m_camera.RequestRecenter(m_player->getSRT().rot.y);
 		}
 	}
 
@@ -940,6 +962,11 @@ void GameScene::update(uint64_t deltatime)
 
 	playerSrt.pos = prevPlayerSrt.pos + adjustedPlayerMove;
 	m_player->setSRT(playerSrt);
+	// カメラの自動追従に使う実際の移動速度。吹き飛ばされている間は自分で動いていないので0にする
+	// (飛ばされた向きへカメラが回ると、何に飛ばされたのかが画面から外れる)。
+	m_playerWorldVelocity = (deltaSeconds > 0.0001f && !m_player->isKnockedBack())
+		? adjustedPlayerMove / deltaSeconds
+		: Vector3(0.0f, 0.0f, 0.0f);
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		m_player->setVel(Vector3(0, 0, 0));
 	}
@@ -986,6 +1013,28 @@ void GameScene::update(uint64_t deltatime)
 				velocityRight,
 				velocityForward
 			});
+
+		// 前転中の接地。前転のモーションは腰を中心に体を一回転させるので、立ったときの高さのままだと
+		// 腰の高さで宙返りしているように見え、影からも離れる(実機キャプチャで確認)。
+		// 変形後の体の一番低い点を地面に合わせ、転がる体が地面に着くようにする。
+		// 前転の最初と最後は立ち姿勢なので、段差が出ないよう途中だけ効かせる(sinで0→1→0)。
+		// 体のすべての頂点をCPUで変形するので、回避中だけ計算する。
+		if (m_player->isDodging())
+		{
+			const float progress = m_player->getDodgeProgress();
+			const float weight = std::sin(progress * PI);
+			const float groundedOffset = m_playerGroundY -
+				m_playerAnimationMesh->GetAnimatedLocalMinY() * m_player->getSRT().scale.y;
+			m_player->setVisualGroundOffsetY(
+				m_playerStandingGroundOffsetY +
+				(groundedOffset - m_playerStandingGroundOffsetY) * weight);		}
+		else
+		{
+			m_player->setVisualGroundOffsetY(m_playerStandingGroundOffsetY);
+		}
+
+		// 接地している足のつま先をワールドへ固定し、脚をIKで合わせる(足の滑りを消す)。
+		UpdateFootLock(deltaSeconds);
 
 		// 攻撃の踏み込み。アニメーターが溜めた「キャラクターから見た移動量」を
 		// ワールドの向きへ直し、次の更新でプレイヤーの位置へ足す(壁の衝突補正を通る)。
@@ -1278,14 +1327,76 @@ void GameScene::update(uint64_t deltatime)
 	}
 }
 
+void GameScene::UpdateFootLock(float deltaSeconds)
+{
+	if (!m_playerAnimationMesh || !m_player)
+		return;
+	if (!m_legChainsResolved)
+	{
+		// 調整用: dev_settings.ini の foot_lock=0 で切れる(効果の比較に使う)。
+		m_footLockEnabled = GetDevSetting("foot_lock", "1") != "0";
+		// 骨の名前から左右の脚を1度だけ探す。モデルを差し替えても名前から拾えるようにしている。
+		FootLock::LegBoneNames left{};
+		FootLock::LegBoneNames right{};
+		FootLock::FindLegBones(m_playerAnimationMesh->GetBoneNames(), left, right);
+		if (left.IsValid())
+			m_leftLegChain = { left.upperLeg, left.lowerLeg, left.foot, left.toe };
+		if (right.IsValid())
+			m_rightLegChain = { right.upperLeg, right.lowerLeg, right.foot, right.toe };
+		m_legChainsResolved = true;
+	}
+	// 移動と待機のときだけ効かせる。攻撃・回避・吹き飛ばしは脚が地面から離れる動きで、
+	// 固定すると元のモーションを壊してしまう(記事の「少し滑るほうが、モーションを壊すよりまし」)。
+	const bool locomotion =
+		!m_combat.IsPlayerAttacking() &&
+		!m_playerAnimator.IsMotionPlaying() &&
+		!m_player->isDodging() &&
+		!m_player->isKnockedBack();
+	if (!m_footLockEnabled || !locomotion ||
+		m_leftLegChain.toe.empty() || m_rightLegChain.toe.empty())
+	{
+		m_footLockLeft.Reset();
+		m_footLockRight.Reset();
+		return;
+	}
+
+	const Matrix4x4 playerWorld = m_player->getRenderSRT().GetMatrix();
+	const Matrix4x4 worldToModel = playerWorld.Invert();
+	bool solvedAny = false;
+	const auto solveFoot = [&](const CAnimationMesh::LegIKChain& chain, FootLock::FootState& state)
+	{
+		Vector3 toeModel{};
+		if (!m_playerAnimationMesh->GetBoneModelPosition(chain.toe, toeModel))
+			return;
+		const Vector3 toeWorld = Vector3::Transform(toeModel, playerWorld);
+		const Vector3 targetWorld =
+			FootLock::Update(state, toeWorld, deltaSeconds, m_footLockSettings);
+		if ((targetWorld - toeWorld).LengthSquared() < 0.000001f)
+			return;
+		const Vector3 targetModel = Vector3::Transform(targetWorld, worldToModel);
+		if (m_playerAnimationMesh->SolveLegIK(chain, targetModel))
+			solvedAny = true;
+	};
+	solveFoot(m_leftLegChain, m_footLockLeft);
+	solveFoot(m_rightLegChain, m_footLockRight);
+	if (solvedAny)
+		m_playerAnimationMesh->RefreshBoneMatrices(m_playerBoneComb);
+}
+
 void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 {
 	if (!m_enemyAnimationMesh || m_enemies.empty())
 		return;
 
-	constexpr float recoveryPoseHoldSeconds = 0.4f;
 	const enemy::MotionState state = m_enemies.front()->getMotionState();
-	const bool holdRecoveryPose =
+	// 攻撃は予兆・判定・隙をまたいで1本のクリップとして再生する(下のclipDrivenAttack)。
+	// 以前は判定までで再生を打ち切り、隙の間は最後の姿勢を0.4秒だけ保持してから待機へ戻していた。
+	const bool clipDrivenAttack = m_enemyAttackAnimation != nullptr &&
+		(state == enemy::MotionState::Windup ||
+		 state == enemy::MotionState::Active ||
+		 state == enemy::MotionState::Recovery);
+	constexpr float recoveryPoseHoldSeconds = 0.4f;
+	const bool holdRecoveryPose = !clipDrivenAttack &&
 		state == enemy::MotionState::Recovery &&
 		m_enemies.front()->getStateTime() < recoveryPoseHoldSeconds;
 	int recoveryPoseFrame = 0;
@@ -1319,34 +1430,58 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAnimationFrame = 0;
 			m_enemyAnimationTick = 0.0f;
 		}
+		// 攻撃へ入る瞬間の姿勢を控えておき、攻撃クリップの先頭へ短くつなぐ。
+		// 噛みつきはクリップの途中(頭を上げかけた姿勢)から再生するため、つながないと姿勢が飛ぶ。
+		if (state == enemy::MotionState::Windup && m_enemyAttackAnimation != nullptr)
+		{
+			m_enemyAttackBlendFromAnimation =
+				m_previousEnemyMotionState == enemy::MotionState::Approach ||
+				m_previousEnemyMotionState == enemy::MotionState::Circle ||
+				m_previousEnemyMotionState == enemy::MotionState::Retreat
+					? m_enemyWalkAnimation
+					: m_enemyIdleAnimation;
+			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
+			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+			m_enemyAttackBlendTime = 0.0f;
+			m_enemyAttackBlendActive = m_enemyAttackBlendFromAnimation != nullptr;
+		}
 		m_previousEnemyMotionState = state;
 	}
-	const bool attackMotion =
-		state == enemy::MotionState::Windup ||
-		state == enemy::MotionState::Active;
 	// ドラゴンの歩きモーションは約1.67秒に9キーある。
 	// 約10回の固定更新ごとに1キー進め、足が地面を滑らないようにする。
 	// 弱って移動が遅くなったら、歩きのアニメーションも同じ割合で遅くする。
 	// 足の運びと移動量が合わないと、足が地面を滑って見える。
-	int framesPerKey = std::clamp(
+	const int framesPerKey = std::clamp(
 		static_cast<int>(std::lround(10.0f / std::max(0.1f, m_enemies.front()->getMoveSpeedScale()))),
 		10, 24);
-	if (attackMotion)
+	if (clipDrivenAttack)
 	{
-		// 敵の攻撃モーションは1本しか無いため、攻撃の種類ごとの速さの違いを
-		// 再生速度で表現する。噛みつき(予兆が短い)は速く、薙ぎ払い(予兆が長い)は遅く見せ、
-		// 「予兆の長さ」が数値だけでなく見た目からも読み取れるようにする。
-		const Combat::AttackData& attack = m_enemies.front()->getAttackData();
-		const float attackSeconds =
-			attack.frames.anticipationSeconds + attack.frames.activeSeconds;
-		const float baseSeconds =
-			Combat::Tuning::ENEMY_ANTICIPATION + Combat::Tuning::ENEMY_ACTIVE;
-		framesPerKey = std::clamp(
-			static_cast<int>(std::lround(10.0f * attackSeconds / baseSeconds)),
-			4,
-			16);
+		// 攻撃クリップの再生位置を「攻撃を始めてからの時間」から直接求める。
+		// 敵の攻撃モーションは1本しか無いので、種類ごとに再生速度と使う区間を変えて
+		// 「速い噛みつき」「遅い薙ぎ払い」を作る(Combat::EnemyAttackClipOf)。
+		// クリップを再生し終えた後の隙は、最後の姿勢のまま待つ。
+		const Combat::Tuning::EnemyAttackClip& clip =
+			Combat::EnemyAttackClipOf(m_enemies.front()->getAttackKind());
+		const double ticksPerSecond = m_enemyAttackAnimation->mTicksPerSecond > 0.0
+			? m_enemyAttackAnimation->mTicksPerSecond
+			: 30.0;
+		const float clipSeconds =
+			static_cast<float>(m_enemyAttackAnimation->mDuration / ticksPerSecond);
+		const int keyCount = recoveryPoseFrame + 1;
+		if (clipSeconds > 0.0f && keyCount > 1)
+		{
+			const float keysPerSecond = static_cast<float>(keyCount - 1) / clipSeconds;
+			const float clipTime = std::min(
+				clip.clipStart +
+					m_enemies.front()->getAttackElapsedSeconds() * clip.playbackRate,
+				clip.clipEnd);
+			const float keyPosition = std::clamp(
+				clipTime * keysPerSecond, 0.0f, static_cast<float>(keyCount - 1));
+			m_enemyAnimationFrame = static_cast<int>(keyPosition);
+			m_enemyAnimationTick = keyPosition - std::floor(keyPosition);
+		}
 	}
-	if (state == enemy::MotionState::Recovery && !holdRecoveryPose &&
+	if (state == enemy::MotionState::Recovery && !holdRecoveryPose && !clipDrivenAttack &&
 		m_enemyAnimationFrame == recoveryPoseFrame + 1)
 	{
 		m_enemyAnimationFrame = 0;
@@ -1368,7 +1503,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			animation = m_enemyAttackAnimation;
 			break;
 		case enemy::MotionState::Recovery:
-			if (holdRecoveryPose && m_enemyAttackAnimation != nullptr)
+			// 隙の間も攻撃クリップの続き(頭を戻す動き)をそのまま見せる。
+			if (clipDrivenAttack)
+			{
+				animation = m_enemyAttackAnimation;
+			}
+			else if (holdRecoveryPose && m_enemyAttackAnimation != nullptr)
 			{
 				animation = m_enemyAttackAnimation;
 				m_enemyAnimationFrame = recoveryPoseFrame;
@@ -1410,6 +1550,28 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyIntroBattleBlendTime += std::max(deltaSeconds, 0.0f);
 			if (m_enemyIntroBattleBlendTime >= ENEMY_INTRO_BATTLE_BLEND_SECONDS)
 				m_enemyIntroBattleBlendActive = false;
+		}
+		else if (m_enemyAttackBlendActive && clipDrivenAttack)
+		{
+			// 攻撃の入り。直前の姿勢から攻撃クリップの再生位置へ短くつなぐ。
+			const float blendRate = std::clamp(
+				m_enemyAttackBlendTime / ENEMY_ATTACK_BLEND_SECONDS, 0.0f, 1.0f);
+			m_enemyLastSampledFrame = m_enemyAnimationFrame;
+			m_enemyLastSampledFraction = fraction;
+			m_enemyAnimationMesh->UpdateBlendedRotationAnimation(
+				m_enemyBoneComb,
+				m_enemyAttackBlendFromAnimation,
+				m_enemyAttackBlendFromFrame,
+				m_enemyAttackBlendFromFraction,
+				true,
+				animation,
+				m_enemyAnimationFrame,
+				fraction,
+				false,
+				blendRate);
+			m_enemyAttackBlendTime += std::max(deltaSeconds, 0.0f);
+			if (m_enemyAttackBlendTime >= ENEMY_ATTACK_BLEND_SECONDS)
+				m_enemyAttackBlendActive = false;
 		}
 		else
 		{
@@ -1461,6 +1623,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	}
 	else
 	{
+		// 攻撃中は再生位置をクリップの時間から直接決めているので、ここでは進めない。
+		if (clipDrivenAttack)
+			return;
 		// 経過時間でキーを進める。
 		// 以前は「更新1回ごとに1カウント、framesPerKey回で1キー」だったため、
 		// fpsが違う機種(30fpsのSwitchなど)では敵のアニメーションの速さが変わっていた。
@@ -1755,13 +1920,13 @@ void GameScene::DrawGameplayHud()
 	drawList->AddText(ImVec2(panelMax.x - 62.0f, panelMin.y + 9.0f),
 		IM_COL32(190, 198, 210, 255), "TAB");
 
-	const SRT targetRenderSrt = m_enemies.front()->getRenderSRT();
-	const float targetHeight = std::max(
-		(m_localEnemyMeshBounds.max.y - m_localEnemyMeshBounds.min.y) *
-		targetRenderSrt.scale.y,
-		40.0f);
-	const Vector3 markerWorldPosition = targetRenderSrt.pos +
-		Vector3(0.0f, targetHeight * 0.68f, 0.0f);
+	// 照準は敵の胸の高さに出す。以前は境界ボックスのY寸法(ドラゴンでは体の長さ)を高さとして使っていて、
+	// 照準がドラゴンの頭上の空中に出ていた。
+	float targetBottomY = 0.0f;
+	float targetHeight = 40.0f;
+	GetEnemyVisualVerticalExtent(targetBottomY, targetHeight);
+	Vector3 markerWorldPosition = m_enemies.front()->getSRT().pos;
+	markerWorldPosition.y = targetBottomY + targetHeight * 0.6f;
 	ImVec2 marker{};
 	if (!ProjectWorldToScreen(
 		m_camera.GetViewMatrix(), m_camera.GetProjMatrix(),
@@ -2115,8 +2280,10 @@ void GameScene::init()
 		// getRenderSRT()を使うことで、足をフィールドへ正確に接地させる。
 		const float playerGroundY = playerProfile.groundY;
 		const float playerScaleY = m_player->getSRT().scale.y;
-		m_player->setVisualGroundOffsetY(
-			playerGroundY - m_localPlayerMeshBounds.min.y * playerScaleY);
+		m_playerGroundY = playerGroundY;
+		m_playerStandingGroundOffsetY =
+			playerGroundY - m_localPlayerMeshBounds.min.y * playerScaleY;
+		m_player->setVisualGroundOffsetY(m_playerStandingGroundOffsetY);
 	}
 
 	// 敵のローカル境界球とモデル境界を作成する。
@@ -2466,6 +2633,16 @@ void GameScene::DebugPlayerSRT()
 	if (!ImGui::BeginTabItem("プレイヤー"))
 		return;
 
+	ImGui::SeparatorText("足の接地(フットロック)");
+	ImGui::Checkbox("接地した足をその場へ固定する", &m_footLockEnabled);
+	ImGui::Text("左足: %s (速さ %.0f)  /  右足: %s (速さ %.0f)",
+		m_footLockLeft.locked ? "接地" : "離れている", m_footLockLeft.speed,
+		m_footLockRight.locked ? "接地" : "離れている", m_footLockRight.speed);
+	ImGui::SliderFloat("固定する速さの上限", &m_footLockSettings.lockSpeed, 1.0f, 30.0f, "%.0f");
+	ImGui::SliderFloat("解除する速さ", &m_footLockSettings.unlockSpeed, 4.0f, 60.0f, "%.0f");
+	ImGui::SliderFloat("解除する距離", &m_footLockSettings.unlockDistance, 4.0f, 60.0f, "%.0f");
+	ImGui::SliderFloat("接地とみなす高さ", &m_footLockSettings.groundContactHeight, 0.5f, 12.0f, "%.1f");
+	ImGui::Separator();
 
 	SRT playercurrentsrt = m_player->getSRT();
 	Vector3 scale = playercurrentsrt.scale;
@@ -2513,7 +2690,8 @@ void GameScene::UpdateArenaCameraCollision()
 		std::sinf(yaw),
 		0.0f,
 		-std::cosf(yaw));
-	const float desiredDistance = m_camera.GetLookDistance();
+	// 通常時とロックオン中で取りたい距離が違う(ロックオンは最大112)ので、カメラが今取りたい距離を使う。
+	const float desiredDistance = m_camera.GetDesiredDistance();
 	const float desiredHorizontalDistance = desiredDistance * cosPitch;
 
 	// |playerXZ + boomDirectionXZ * distance| <= safeRadiusを解く。
@@ -2566,6 +2744,29 @@ void GameScene::UpdateArenaCameraCollision()
 		m_camera.SetCollisionDistance(-1.0f);
 }
 
+void GameScene::GetEnemyVisualVerticalExtent(float& bottomY, float& height) const
+{
+	bottomY = 0.0f;
+	height = 40.0f;
+	if (m_enemies.empty() || !m_enemies.front())
+		return;
+	const Matrix4x4 world = m_enemies.front()->getRenderSRT().GetMatrix();
+	float minY = std::numeric_limits<float>::max();
+	float maxY = std::numeric_limits<float>::lowest();
+	for (int corner = 0; corner < 8; ++corner)
+	{
+		const Vector3 local(
+			(corner & 1) ? m_localEnemyMeshBounds.max.x : m_localEnemyMeshBounds.min.x,
+			(corner & 2) ? m_localEnemyMeshBounds.max.y : m_localEnemyMeshBounds.min.y,
+			(corner & 4) ? m_localEnemyMeshBounds.max.z : m_localEnemyMeshBounds.min.z);
+		const float y = Vector3::Transform(local, world).y;
+		minY = std::min(minY, y);
+		maxY = std::max(maxY, y);
+	}
+	bottomY = minY;
+	height = std::max(maxY - minY, 1.0f);
+}
+
 float GameScene::CalcEnemyOccludedCameraDistance(float desiredDistance) const
 {
 	if (m_enemies.empty() || !m_enemies.front())
@@ -2584,9 +2785,11 @@ float GameScene::CalcEnemyOccludedCameraDistance(float desiredDistance) const
 	// 敵を球で近似する。実頂点から作った境界球を使うので、
 	// モデルを差し替えても大きさが自動で追従する。
 	const SRT enemySrt = m_enemies.front()->getRenderSRT();
-	const Vector3 enemyCenter = enemySrt.pos +
-		Vector3(0.0f, (m_localEnemyMeshBounds.max.y - m_localEnemyMeshBounds.min.y) *
-			std::abs(enemySrt.scale.y) * 0.35f, 0.0f);
+	float enemyBottomY = 0.0f;
+	float enemyHeight = 40.0f;
+	GetEnemyVisualVerticalExtent(enemyBottomY, enemyHeight);
+	Vector3 enemyCenter = m_enemies.front()->getSRT().pos;
+	enemyCenter.y = enemyBottomY + enemyHeight * 0.45f;
 	// 境界球そのものだと尻尾や翼まで含んで大きすぎ、少し離れただけで
 	// カメラが寄ってしまう。胴体の太さに近い範囲へ絞る。
 	const float enemyRadius = std::max(
@@ -2716,12 +2919,13 @@ void GameScene::RenderShadowMap()
 
 void GameScene::UpdateCombatCameraDistance(float deltaSeconds)
 {
-	// 攻撃中はカメラを寄せる。
-	// 引いた画面のままだとキャラクターが小さく、振りの迫力が出ない。
-	// ただし瞬間的に切り替えると酔うので、指数的に滑らかへ寄せる。
-	constexpr float ATTACK_DISTANCE_RATE = 0.62f;   // 通常時に対する攻撃中の距離比
-	constexpr float APPROACH_SPEED = 7.0f;          // 寄る速さ
-	constexpr float RETURN_SPEED = 3.2f;            // 戻る速さ(戻りは緩やかにする)
+	// 攻撃中はカメラをわずかに寄せる。
+	// 以前は0.62倍まで寄せていたが、攻撃のたびにカメラが前後し、足元や敵の予兆が画面から切れていた
+	// (実機キャプチャで足が画面外になることを確認)。フロム作品は攻撃でカメラを寄せないので、
+	// 迫力の手掛かりとしてごく少しだけ残す(ユーザー判断 2026-09-15)。
+	constexpr float ATTACK_DISTANCE_RATE = 0.90f;   // 通常時に対する攻撃中の距離比
+	constexpr float APPROACH_SPEED = 3.0f;          // 寄る速さ
+	constexpr float RETURN_SPEED = 2.0f;            // 戻る速さ(戻りは緩やかにする)
 	// 注視点(m_targetHeight)は動かさない。
 	// 一度は「キャラクターが画面下寄りになるので注視点も下げる」を試したが、
 	// 実機で確認すると地面寄りを見る構図になり、近づいた敵に視界を塞がれて
@@ -2743,23 +2947,32 @@ void GameScene::UpdateGameplayCamera(float deltaSeconds)
 
 	if (m_lockOnTarget && !m_enemies.empty())
 	{
-		const SRT targetSrt = m_enemies.front()->getRenderSRT();
-		const float targetHeight = std::max(
-			(m_localEnemyMeshBounds.max.y - m_localEnemyMeshBounds.min.y) *
-			targetSrt.scale.y,
-			40.0f);
+		float targetBottomY = 0.0f;
+		float targetHeight = 40.0f;
+		GetEnemyVisualVerticalExtent(targetBottomY, targetHeight);
+		Vector3 targetFeet = m_enemies.front()->getSRT().pos;
+		targetFeet.y = targetBottomY;
 		m_camera.UpdateLockOn(
 			m_player->getSRT().pos,
-			targetSrt.pos + Vector3(0.0f, targetHeight * 0.5f, 0.0f),
-			false,
+			targetFeet,
+			targetHeight,
 			deltaSeconds);
 	}
 	else
 	{
+		// マウスの移動量(DirectInputの相対値)。カーソルを閉じ込めている間だけ視点に使う。
+		// カーソルを出しているときにマウスで視点が回ると、デバッグ表示を触れない。
+		CameraLookInput look{};
+		look.active = DebugUI::IsCursorLocked();
+		if (look.active)
+		{
+			look.deltaX = static_cast<float>(CDirectInput::GetInstance().GetMouseDeltaX());
+			look.deltaY = static_cast<float>(CDirectInput::GetInstance().GetMouseDeltaY());
+		}
 		m_camera.Update(
 			m_player->getSRT().pos,
-			m_player->getSRT().rot.y,
-			!ImGui::GetIO().WantCaptureMouse,
+			m_playerWorldVelocity,
+			look,
 			deltaSeconds);
 	}
 }
@@ -2769,27 +2982,20 @@ void GameScene::DebugCamera()
 	if (!ImGui::BeginTabItem("カメラ"))
 		return;
 
-	bool mouseLookEnabled = m_camera.IsMouseLookEnabled();
-	if (ImGui::Checkbox("マウスでカメラを操作する", &mouseLookEnabled))
-	{
-		m_camera.SetMouseLookEnabled(mouseLookEnabled);
-	}
-	ImGui::Text("三人称カメラ: 常に有効");
-	ImGui::Text("中ボタンのドラッグ: 周回  /  WASD: 移動");
-	ImGui::Text("ロックオン中は自分と敵を同時に画面へ収める");
-	ImGui::Text("Tab: ロックオンの切り替え");
+	ImGui::Text("マウス: 視点  /  左Alt: カーソルの表示切り替え");
+	ImGui::Text("Tab: ロックオン(相手がいないときはカメラを背後へ回す)");
+	ImGui::Text("視点を %s", DebugUI::IsCursorLocked() ? "マウスで操作中" : "操作していない(カーソル表示中)");
 
-	const ImVec2 viewportSize(360.0f, 200.0f);
-	ImGui::InvisibleButton("CameraOrbitViewport", viewportSize);
-	const ImVec2 viewportMin = ImGui::GetItemRectMin();
-	const ImVec2 viewportMax = ImGui::GetItemRectMax();
-	ImDrawList* drawList = ImGui::GetWindowDrawList();
-	drawList->AddRectFilled(viewportMin, viewportMax, IM_COL32(28, 34, 42, 255));
-	drawList->AddRect(viewportMin, viewportMax, IM_COL32(90, 150, 220, 255));
-	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 12.0f),
-		IM_COL32(230, 235, 245, 255), "カメラ表示域");
-	drawList->AddText(ImVec2(viewportMin.x + 12.0f, viewportMin.y + 38.0f),
-		IM_COL32(190, 200, 215, 255), "ゲーム画面を中ボタンでドラッグすると周回します");
+	float sensitivity = m_camera.GetMouseSensitivity() * 1000.0f;
+	if (ImGui::SliderFloat("マウス感度", &sensitivity, 0.2f, 4.0f, "%.1f"))
+		m_camera.SetMouseSensitivity(sensitivity / 1000.0f);
+	bool autoFollow = m_camera.IsAutoFollowEnabled();
+	if (ImGui::Checkbox("横へ走るとカメラが背後へ回り込む(自動追従)", &autoFollow))
+		m_camera.SetAutoFollowEnabled(autoFollow);
+	ImGui::Text("向き %.0f度 / 高さ %.0f度 / 距離 %.0f",
+		m_camera.GetYaw() * 180.0f / PI,
+		m_camera.GetPitch() * 180.0f / PI,
+		m_camera.GetDesiredDistance());
 
 	if (ImGui::Button("カメラを初期位置へ戻す"))
 	{
@@ -2843,6 +3049,7 @@ void GameScene::DebugCombat()
 	ImGui::SeparatorText("操作");
 	ImGui::Text("WASD: 移動  /  左Shift: ダッシュ  /  Space: 回避");
 	ImGui::Text("左クリック: 通常攻撃  /  右クリック: 強攻撃");
+	ImGui::Text("マウス: 視点  /  左Alt: カーソルを出す(デバッグ表示を触るとき)");
 	ImGui::Text("Tab: %s", m_lockOnTarget ? "ロックオン中" : "ロックオン解除中");
 	ImGui::Text("R: 仕切り直し");
 	ImGui::SeparatorText("回避の無敵時間 (60フレーム/秒)");

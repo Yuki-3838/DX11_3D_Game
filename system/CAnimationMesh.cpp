@@ -1065,14 +1065,22 @@ float CAnimationMesh::GetAnimatedLocalMaxZ() const
 
 float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) const
 {
-	if (m_vertices.empty())
-		return 0.0f;
-
 	// 行ベクトル規約でX軸へθ回転すると、ワールドYは y*cosθ - z*sinθ になる。
 	// 基準姿勢のθ=90度では -z となり、Z最大の頂点が最下点になる(従来の実装)。
 	// θ=90度+pのときは cos=-sin(p)、sin=cos(p) なので、高さは -y*sin(p) - z*cos(p)。
-	const float sinPitch = std::sin(extraPitchRadians);
-	const float cosPitch = std::cos(extraPitchRadians);
+	return GetAnimatedLowestAlong(
+		Vector3(0.0f, -std::sin(extraPitchRadians), -std::cos(extraPitchRadians)));
+}
+
+float CAnimationMesh::GetAnimatedLocalMinY() const
+{
+	return GetAnimatedLowestAlong(Vector3(0.0f, 1.0f, 0.0f));
+}
+
+float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
+{
+	if (m_vertices.empty())
+		return 0.0f;
 
 	std::array<const BONE*, MAX_BONE> bonesByIndex{};
 	for (const auto& [name, bone] : m_BoneDictionary)
@@ -1114,7 +1122,7 @@ float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) cons
 			skinned = vertex.Position;
 		}
 
-		const float height = -skinned.y * sinPitch - skinned.z * cosPitch;
+		const float height = skinned.Dot(upAxis);
 		lowestHeight = std::min(lowestHeight, height);
 		hasVertex = true;
 	}
@@ -1431,6 +1439,186 @@ void CAnimationMesh::UpdateLayeredAnimation(
 			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
 				bone.second.Matrix.Transpose();
 	}
+}
+
+namespace
+{
+	// 行ベクトル規約で、点pを中心にrotだけ回す行列。
+	Matrix4x4 RotateAboutPoint(const Vector3& p, const Matrix4x4& rot)
+	{
+		return Matrix4x4::CreateTranslation(-p) * rot * Matrix4x4::CreateTranslation(p);
+	}
+
+	Vector3 MatrixPosition(const Matrix4x4& m)
+	{
+		return Vector3(m._41, m._42, m._43);
+	}
+
+	float SafeAcos(float value)
+	{
+		return std::acos(std::clamp(value, -1.0f, 1.0f));
+	}
+
+	// 目標までの距離を、脚を伸ばしきる長さの手前で滑らかに抑える。
+	// 硬く切ると、遠い目標のときに膝が急に伸びきって棒のような脚になる。
+	float SoftClampDistance(float distance, float maxLength, float softening)
+	{
+		const float soft = std::max(softening, 0.0001f);
+		const float threshold = std::max(maxLength - soft, 0.0f);
+		if (distance <= threshold)
+			return distance;
+		const float over = distance - threshold;
+		return threshold + soft * (1.0f - std::exp(-over / soft));
+	}
+}
+
+bool CAnimationMesh::GetBoneModelPosition(const std::string& boneName, Vector3& outPosition) const
+{
+	const auto found = m_DebugBoneMatrices.find(boneName);
+	if (found == m_DebugBoneMatrices.end())
+		return false;
+	outPosition = MatrixPosition(found->second);
+	return true;
+}
+
+void CAnimationMesh::RefreshBoneMatrices(BoneCombMatrix& bonecombarray)
+{
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		(void)name;
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.idx] = bone.Matrix.Transpose();
+	}
+}
+
+bool CAnimationMesh::SolveLegIK(
+	const LegIKChain& chain,
+	const Vector3& targetToeModelPosition,
+	float maxExtensionRatio,
+	float softening)
+{
+	auto upperIt = m_BoneDictionary.find(chain.upperLeg);
+	auto lowerIt = m_BoneDictionary.find(chain.lowerLeg);
+	auto footIt = m_BoneDictionary.find(chain.foot);
+	if (upperIt == m_BoneDictionary.end() ||
+		lowerIt == m_BoneDictionary.end() ||
+		footIt == m_BoneDictionary.end())
+	{
+		return false;
+	}
+	const auto upperGlobalIt = m_DebugBoneMatrices.find(chain.upperLeg);
+	const auto lowerGlobalIt = m_DebugBoneMatrices.find(chain.lowerLeg);
+	const auto footGlobalIt = m_DebugBoneMatrices.find(chain.foot);
+	const auto toeGlobalIt = m_DebugBoneMatrices.find(chain.toe);
+	if (upperGlobalIt == m_DebugBoneMatrices.end() ||
+		lowerGlobalIt == m_DebugBoneMatrices.end() ||
+		footGlobalIt == m_DebugBoneMatrices.end() ||
+		toeGlobalIt == m_DebugBoneMatrices.end())
+	{
+		return false;
+	}
+
+	const Matrix4x4 upperGlobal = upperGlobalIt->second;
+	const Matrix4x4 lowerGlobal = lowerGlobalIt->second;
+	const Matrix4x4 footGlobal = footGlobalIt->second;
+	const Matrix4x4 toeGlobal = toeGlobalIt->second;
+
+	// a=股、b=膝、c=足首。tは足首の目標。
+	// 足首を目標にするのは、足の向きを元の姿勢のまま残すため。
+	// つま先を目標にして解いてから足の向きを戻すと、その分つま先が目標からずれる
+	// (実測でロック中も1コマ0.1ほど動いていた)。
+	// 足首の目標 = つま先の目標 + 「元の姿勢での足首とつま先の差」。
+	const Vector3 a = MatrixPosition(upperGlobal);
+	const Vector3 b = MatrixPosition(lowerGlobal);
+	const Vector3 c = MatrixPosition(footGlobal);
+	const Vector3 toeToFoot = MatrixPosition(footGlobal) - MatrixPosition(toeGlobal);
+	Vector3 t = targetToeModelPosition + toeToFoot;
+
+	const float lab = (b - a).Length();
+	const float lcb = (c - b).Length();
+	if (lab < 0.0001f || lcb < 0.0001f)
+		return false;
+
+	Vector3 toTarget = t - a;
+	const float rawDistance = toTarget.Length();
+	if (rawDistance < 0.0001f)
+		return false;
+	const float maxLength = (lab + lcb) * std::clamp(maxExtensionRatio, 0.1f, 1.0f);
+	const float lat = std::max(SoftClampDistance(rawDistance, maxLength, softening), 0.0001f);
+	toTarget /= rawDistance;
+	t = a + toTarget * lat;
+
+	Vector3 ac = c - a;
+	Vector3 ab = b - a;
+	Vector3 ba = a - b;
+	Vector3 bc = c - b;
+	if (ac.Length() < 0.0001f)
+		return false;
+
+	// 今の角度と、目標へ届くための角度(余弦定理)。
+	Vector3 acN = ac; acN.Normalize();
+	Vector3 abN = ab; abN.Normalize();
+	Vector3 baN = ba; baN.Normalize();
+	Vector3 bcN = bc; bcN.Normalize();
+	const float currentHipAngle = SafeAcos(acN.Dot(abN));
+	const float currentKneeAngle = SafeAcos(baN.Dot(bcN));
+	const float aimAngle = SafeAcos(acN.Dot(toTarget));
+	const float desiredHipAngle = SafeAcos(
+		(lcb * lcb - lab * lab - lat * lat) / (-2.0f * lab * lat));
+	const float desiredKneeAngle = SafeAcos(
+		(lat * lat - lab * lab - lcb * lcb) / (-2.0f * lab * lcb));
+
+	// 膝の曲がる面の法線。脚が伸びきっていると求められないので、そのときは足の向きから補う。
+	Vector3 bendAxis = ac.Cross(ab);
+	if (bendAxis.Length() < 0.0001f)
+		bendAxis = Vector3(footGlobal._11, footGlobal._12, footGlobal._13);
+	if (bendAxis.Length() < 0.0001f)
+		return false;
+	bendAxis.Normalize();
+	Vector3 aimAxis = ac.Cross(t - a);
+	const bool hasAim = aimAxis.Length() > 0.0001f;
+	if (hasAim)
+		aimAxis.Normalize();
+
+	// 股の回転(膝の角度合わせ + 目標へ向ける)をモデル空間で作る。
+	Matrix4x4 hipRotation = Matrix4x4::CreateFromAxisAngle(
+		bendAxis, desiredHipAngle - currentHipAngle);
+	if (hasAim)
+		hipRotation = hipRotation * Matrix4x4::CreateFromAxisAngle(aimAxis, aimAngle);
+	const Matrix4x4 hipTransform = RotateAboutPoint(a, hipRotation);
+
+	const Matrix4x4 upperGlobalNew = upperGlobal * hipTransform;
+	const Matrix4x4 lowerGlobalAfterHip = lowerGlobal * hipTransform;
+	const Matrix4x4 footGlobalAfterHip = footGlobal * hipTransform;
+
+	// 膝の回転は、股を回した後の位置と面で作る。
+	const Vector3 bAfter = MatrixPosition(lowerGlobalAfterHip);
+	const Vector3 cAfter = MatrixPosition(footGlobalAfterHip);
+	Vector3 kneeAxis = (cAfter - a).Cross(bAfter - a);
+	if (kneeAxis.Length() < 0.0001f)
+		kneeAxis = bendAxis;
+	kneeAxis.Normalize();
+	const Matrix4x4 kneeTransform = RotateAboutPoint(
+		bAfter,
+		Matrix4x4::CreateFromAxisAngle(kneeAxis, desiredKneeAngle - currentKneeAngle));
+
+	const Matrix4x4 lowerGlobalNew = lowerGlobalAfterHip * kneeTransform;
+	const Matrix4x4 footGlobalChain = footGlobalAfterHip * kneeTransform;
+
+	// 足首は元の向きのまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
+	Matrix4x4 footGlobalNew = footGlobal;
+	const Vector3 footPosition = MatrixPosition(footGlobalChain);
+	footGlobalNew._41 = footPosition.x;
+	footGlobalNew._42 = footPosition.y;
+	footGlobalNew._43 = footPosition.z;
+
+	// ローカル行列へ戻す。親の行列は「今のローカル行列の逆 × 今のモデル空間の行列」で求まる。
+	const Matrix4x4 upperParent = upperIt->second.AnimationMatrix.Invert() * upperGlobal;
+	upperIt->second.AnimationMatrix = upperGlobalNew * upperParent.Invert();
+	lowerIt->second.AnimationMatrix = lowerGlobalNew * upperGlobalNew.Invert();
+	footIt->second.AnimationMatrix = footGlobalNew * lowerGlobalNew.Invert();
+	return true;
 }
 
 std::unordered_map<std::string, Matrix4x4> CAnimationMesh::CaptureCurrentLocalPose() const

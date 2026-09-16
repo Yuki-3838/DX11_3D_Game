@@ -250,6 +250,11 @@ private:
 	bool m_locomotionBlendActive = false;
 	bool m_useCustomMotion = false;
 	bool m_motionPlaying = false;
+	// 再生中の手続きモーションが前転か。前転の間は腕を回避を始めた瞬間の姿勢(剣と盾の構え)のまま保つ。
+	// 前転のキーは休止姿勢(Tポーズ)からの差で作られていて、腕にそのまま使うと両腕を横へ広げて転がるため。
+	bool m_dodgeMotion = false;
+	bool m_dodgeBasePosePending = false;
+	std::unordered_map<std::string, Matrix4x4> m_dodgeBasePose;
 	bool m_motionLoop = true;
 	bool m_editorInitialized = false;
 	bool m_editorEnabled = false;
@@ -308,6 +313,8 @@ private:
 	float m_blendSpacePhase = 0.0f;
 	// クリップの単位 → ゲーム内の単位。移動の足合わせと攻撃の踏み込みの両方で使う。
 	float m_clipToWorld = 0.0f;
+	// 再生中の技の踏み込みの倍率(Combat::PlayerComboStep::rootMotionScale)。
+	float m_attackRootMotionScale = 1.0f;
 	// 攻撃の踏み込み: 前回サンプルした正規化時間と、まだ取り出されていない移動量。
 	float m_rootMotionPreviousTime = 0.0f;
 	float m_pendingRootMotionRight = 0.0f;

@@ -7,6 +7,7 @@
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"	
 #include	"../Application.h"
+#include	"../system/CombatAttackTable.h"
 
 player::player(IScene* scene)
 	: gameobject(scene)
@@ -53,6 +54,13 @@ int player::getDodgeFrame() const
 	return static_cast<int>(m_dodgeTime * 60.0f);
 }
 
+float player::getDodgeProgress() const
+{
+	if (!m_isDodging)
+		return 0.0f;
+	return std::clamp(m_dodgeTime / Combat::Tuning::PLAYER_DODGE_SECONDS, 0.0f, 1.0f);
+}
+
 void player::setVel(const Vector3& vel)
 {
 	m_move = vel;
@@ -88,10 +96,16 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 			(gameIsForeground && (GetAsyncKeyState(virtualKey) & 0x8000) != 0);
 	};
 
-	const bool moveForward = !movementLocked && isMoveKeyPressed(DIK_W, 'W');
-	const bool moveBackward = !movementLocked && isMoveKeyPressed(DIK_S, 'S');
-	const bool moveLeft = !movementLocked && isMoveKeyPressed(DIK_A, 'A');
-	const bool moveRight = !movementLocked && isMoveKeyPressed(DIK_D, 'D');
+	// 調整用の自動移動(dev_settings.iniのauto_walk)。撮影で確認するときに、外からキー入力を
+	// 送らずに歩かせるためのもの。撮影ツールのキー入力は、ゲームが前面でないと別のアプリへ飛んでしまう。
+	const bool moveForward = !movementLocked &&
+		(isMoveKeyPressed(DIK_W, 'W') || m_debugForcedForward > 0.0f);
+	const bool moveBackward = !movementLocked &&
+		(isMoveKeyPressed(DIK_S, 'S') || m_debugForcedForward < 0.0f);
+	const bool moveLeft = !movementLocked &&
+		(isMoveKeyPressed(DIK_A, 'A') || m_debugForcedRight < 0.0f);
+	const bool moveRight = !movementLocked &&
+		(isMoveKeyPressed(DIK_D, 'D') || m_debugForcedRight > 0.0f);
 	const bool jumpTriggered = false;
 	if (movementLocked)
 	{
@@ -163,10 +177,19 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 	}
 	if (m_isDodging)
 	{
+		// 前転の移動。進んだ割合を「1 - (1 - 経過の割合)^2」(出だしが速く、止まり際で0になる)で決め、
+		// 前のフレームとの差だけ進める。以前は速さ180の等速で0.4秒(約72)進み、
+		// 体格に対して飛びすぎていたうえ、止まる瞬間に急停止して見えた。
+		// 割合の差で進めるので、fpsが違っても進む距離は変わらない。
+		const float seconds = Combat::Tuning::PLAYER_DODGE_SECONDS;
+		const float before = std::clamp(m_dodgeTime / seconds, 0.0f, 1.0f);
 		m_dodgeTime += deltaSec;
+		const float after = std::clamp(m_dodgeTime / seconds, 0.0f, 1.0f);
+		const auto easeOut = [](float t) { return 1.0f - (1.0f - t) * (1.0f - t); };
 		m_motionState = MotionState::Dodge;
-		m_move = m_dodgeDirection * (180.0f * deltaSec);
-		if (m_dodgeTime >= 0.40f)
+		m_move = m_dodgeDirection *
+			(Combat::Tuning::PLAYER_DODGE_DISTANCE * (easeOut(after) - easeOut(before)));
+		if (m_dodgeTime >= seconds)
 		{
 			m_isDodging = false;
 			m_dodgeTime = 0.0f;

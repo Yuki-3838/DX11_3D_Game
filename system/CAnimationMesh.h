@@ -218,6 +218,43 @@ public:
 
 	std::vector<std::string> GetBoneNames() const;
 	std::unordered_map<std::string, std::string> GetDebugBoneParentNames() const;
+
+	/** 脚の2ボーンIKで使う骨の名前。 */
+	struct LegIKChain
+	{
+		std::string upperLeg;  ///< 股(ももの付け根)
+		std::string lowerLeg;  ///< 膝
+		std::string foot;      ///< 足首
+		std::string toe;       ///< つま先
+	};
+
+	/**
+	 * @brief つま先を目標位置へ動かす脚の2ボーンIK。
+	 *
+	 * @param chain 脚の骨の名前。
+	 * @param targetToeModelPosition つま先の目標位置(モデル空間)。
+	 * @param maxExtensionRatio 脚を伸ばしきる割合の上限(1.0で完全に伸ばす)。
+	 * @param softening 上限へ近づいたときに滑らかに抑え始める距離(モデル単位)。
+	 * @return 解けたらtrue。
+	 *
+	 * @details
+	 * 今の姿勢をできるだけ残したまま、股と膝の回転だけを足して目標へ寄せる
+	 * (アニメーションを置き換えるのではなく、最小限だけ直す)。
+	 * 足首の向きは元の姿勢のまま保つので、足の裏が地面と平行なまま残る。
+	 * 脚が伸びきる手前から滑らかに制限し、棒のような脚(過伸展)にならないようにする。
+	 * 呼んだ後は RefreshBoneMatrices() で階層と定数バッファへ反映すること。
+	 */
+	bool SolveLegIK(
+		const LegIKChain& chain,
+		const Vector3& targetToeModelPosition,
+		float maxExtensionRatio = 0.985f,
+		float softening = 1.5f);
+
+	/** 骨のモデル空間での位置(今の姿勢)。 */
+	bool GetBoneModelPosition(const std::string& boneName, Vector3& outPosition) const;
+
+	/** IKで書き換えたローカル行列を、親子関係とGPUへ渡す行列へ反映する。 */
+	void RefreshBoneMatrices(BoneCombMatrix& bonecombarray);
 	const std::unordered_map<std::string, Matrix4x4>& GetDebugBoneMatrices() const
 	{
 		return m_DebugBoneMatrices;
@@ -233,6 +270,11 @@ public:
 	// 「Z最大値=最下点」という前提が崩れて敵が地面へ埋まる。
 	// extraPitchRadians=0のとき、戻り値は -GetAnimatedLocalMaxZ() に一致する。
 	float GetAnimatedLowestLocalHeight(float extraPitchRadians) const;
+	// 現在のボーン行列でスキニングした頂点のローカルY最小値(モデル単位・スケール前)。
+	// 回転させずに描くモデル(プレイヤー)で、前転など体が大きく回る動きの接地に使う。
+	float GetAnimatedLocalMinY() const;
+	// 現在のボーン行列でスキニングした頂点を、upAxis方向の成分で見たときの最小値。
+	float GetAnimatedLowestAlong(const Vector3& upAxis) const;
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);

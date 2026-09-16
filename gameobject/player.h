@@ -51,6 +51,14 @@ public:
 	bool isDodging() const;
 	bool isInvincible() const;
 	int getDodgeFrame() const;
+	// 前転の進み具合(0〜1)。回避していないときは0。
+	float getDodgeProgress() const;
+	// 調整用: キー入力の代わりに移動させる(前後・左右。-1〜1)。撮影での確認に使う。
+	void setDebugForcedMove(float forward, float right)
+	{
+		m_debugForcedForward = forward;
+		m_debugForcedRight = right;
+	}
 	void resetMotion();
 
 	// 敵の攻撃を食らったときに吹き飛ばす。directionは飛ばされる向き(水平)。
@@ -78,6 +86,8 @@ private:
 	bool m_jumpWasPressed = false;
 	bool m_isJumping = false;
 	bool m_isDodging = false;
+	float m_debugForcedForward = 0.0f;
+	float m_debugForcedRight = 0.0f;
 	float m_dodgeTime = 0.0f;
 	Vector3 m_dodgeDirection{0, 0, 0};
 	Vector3 m_pendingRootMotion{0, 0, 0};

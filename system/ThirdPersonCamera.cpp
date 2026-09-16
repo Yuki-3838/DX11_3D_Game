@@ -3,8 +3,69 @@
 #include <algorithm>
 #include <cmath>
 
-#include "Inputmanager.h"
-#include "imgui/imgui.h"
+namespace
+{
+	// 角度の差を -PI〜PI へ収める。そのまま引くと、-179度と179度の差が358度になり逆回りする。
+	float WrapAngle(float radians)
+	{
+		const float twoPi = PI * 2.0f;
+		radians = std::fmod(radians + PI, twoPi);
+		if (radians < 0.0f)
+			radians += twoPi;
+		return radians - PI;
+	}
+
+	// 経過時間に対する指数補間の係数。fpsが違っても同じ秒数で同じだけ近づく。
+	float ExpBlend(float rate, float deltaSeconds)
+	{
+		return 1.0f - std::exp(-rate * std::max(deltaSeconds, 0.0f));
+	}
+
+	// --- 調整値(秒・ラジアン・ワールド単位) ---
+	// 自動追従: 視点を最後に触ってから、この秒数が経つまでは回さない。
+	// 自分で合わせた視点を勝手に戻されると、操作を奪われたように感じるため。
+	constexpr float AUTO_FOLLOW_DELAY = 0.8f;
+	// 自動追従の最大の速さ(ラジアン/秒)。真横へ全力で走ったときにこの速さになる。
+	// 最初は約57度/秒にしたが、実測するとダッシュで横へ走り続けたときに半径約46(身長の2.5倍)の円を
+	// 約6秒で一周してしまい、カメラに振り回される。約29度/秒(半径約90、一周約12秒)へ下げた。
+	constexpr float AUTO_FOLLOW_MAX_RATE = 0.5f;
+	// これ以上カメラ側へ向かって走っているときは回さない(約130度)。
+	// 手前へ走るたびにカメラが半回転すると、前後の移動が成り立たない。
+	constexpr float AUTO_FOLLOW_MAX_ANGLE = 2.3f;
+	constexpr float AUTO_FOLLOW_FULL_SPEED = 45.0f;
+
+	// 追従点。水平は速く、上下はゆっくり追う(回避や吹き飛ばしで画面が上下に揺れないように)。
+	constexpr float ANCHOR_HORIZONTAL_RATE = 14.0f;
+	constexpr float ANCHOR_VERTICAL_RATE = 6.0f;
+
+	// 衝突で寄るときは速く(壁にめり込む瞬間を見せない)、離れるときはゆっくり戻す。
+	constexpr float DISTANCE_PULL_IN_RATE = 20.0f;
+	constexpr float DISTANCE_RELEASE_RATE = 3.5f;
+
+	// ロックオン: 向きの補間の速さと、向きが変わる速さの上限(ラジアン/秒)。
+	// 上限が無いと、敵がプレイヤーの真横や頭上を横切ったときにカメラが一瞬で半回転する。
+	constexpr float LOCK_ON_YAW_RATE = 8.0f;
+	constexpr float LOCK_ON_MAX_YAW_SPEED = 3.5f;
+	constexpr float LOCK_ON_PITCH_RATE = 5.0f;
+	// 注視点をプレイヤーから敵の方へ寄せる割合。0.5で中間。
+	// プレイヤーを画面の下寄りに、敵を上寄りに置き、両方の足元と敵の予兆を同時に読めるようにする。
+	constexpr float LOCK_ON_LOOK_TOWARD_TARGET = 0.45f;
+	constexpr float LOOK_OFFSET_RATE = 8.0f;
+	constexpr float LOCK_ON_MIN_DISTANCE = 64.0f;
+	constexpr float LOCK_ON_MAX_DISTANCE = 112.0f;
+	constexpr float LOCK_ON_SHOULDER_OFFSET = 5.0f;
+
+	constexpr float RECENTER_RATE = 12.0f;
+
+	// プレイヤーの背後から、プレイヤーと同じ向きを見るカメラのYaw。
+	// プレイヤーの正面は (-sin, -cos)、カメラの見る向きは (-sin, cos) なので、両者が一致するのは
+	// 「PI - プレイヤーのYaw」。以前は「プレイヤーのYaw + PI」にしていて、Yaw=0(初期の向き)のときしか合わず、
+	// 横を向いたプレイヤーでは正面側へ回っていた。
+	float BehindPlayerYaw(float playerYaw)
+	{
+		return WrapAngle(PI - playerYaw);
+	}
+}
 
 void ThirdPersonCamera::Init()
 {
@@ -13,112 +74,181 @@ void ThirdPersonCamera::Init()
 	Reset(Vector3(0.0f, 0.0f, 0.0f));
 }
 
+void ThirdPersonCamera::UpdateAnchor(const Vector3& playerPosition, float deltaSeconds)
+{
+	const Vector3 desired = playerPosition + Vector3(0.0f, m_targetHeight, 0.0f);
+	if (!m_anchorInitialized || deltaSeconds <= 0.0f)
+	{
+		m_anchor = desired;
+		m_anchorInitialized = true;
+		return;
+	}
+	const float horizontal = ExpBlend(ANCHOR_HORIZONTAL_RATE, deltaSeconds);
+	const float vertical = ExpBlend(ANCHOR_VERTICAL_RATE, deltaSeconds);
+	m_anchor.x += (desired.x - m_anchor.x) * horizontal;
+	m_anchor.z += (desired.z - m_anchor.z) * horizontal;
+	m_anchor.y += (desired.y - m_anchor.y) * vertical;
+}
+
+void ThirdPersonCamera::UpdateDistance(float desiredDistance, float deltaSeconds)
+{
+	m_desiredDistance = desiredDistance;
+	const float limited = m_collisionDistance >= 0.0f
+		? std::min(desiredDistance, m_collisionDistance)
+		: desiredDistance;
+	if (deltaSeconds <= 0.0f)
+	{
+		m_currentDistance = limited;
+		return;
+	}
+	const float rate = limited < m_currentDistance ? DISTANCE_PULL_IN_RATE : DISTANCE_RELEASE_RATE;
+	m_currentDistance += (limited - m_currentDistance) * ExpBlend(rate, deltaSeconds);
+}
+
+Vector3 ThirdPersonCamera::BoomOffset(float distance) const
+{
+	const float cosPitch = std::cos(m_pitch);
+	return Vector3(
+		std::sin(m_cameraYaw) * cosPitch * distance,
+		std::sin(m_pitch) * distance,
+		-std::cos(m_cameraYaw) * cosPitch * distance);
+}
+
 void ThirdPersonCamera::Update(
 	const Vector3& playerPosition,
-	float playerYaw,
-	bool viewportHovered,
+	const Vector3& playerVelocity,
+	const CameraLookInput& look,
 	float deltaSeconds)
 {
-	(void)viewportHovered;
-	m_playerYaw = playerYaw;
-	if (m_mouseLookEnabled && viewportHovered)
+	// --- 視点操作 ---
+	// マウスの右 = 画面が右へ回る。カメラの向きは (-sin, cos) を見ているので、右へ回すにはYawを減らす。
+	// マウスの下 = 見下ろす(カメラが上がる)。
+	const bool manualLook = look.active &&
+		(std::abs(look.deltaX) > 0.0f || std::abs(look.deltaY) > 0.0f);
+	if (manualLook)
 	{
-		auto& input = CInputManager::GetInstance();
-		const bool orbiting = input.IsMousePressed(CInputManager::MOUSE_CENTER);
-		if (orbiting)
-		{
-			const int mouseX = input.GetMouseX();
-			const int mouseY = input.GetMouseY();
-			if (!m_mouseInitialized)
-			{
-				m_lastMouseX = mouseX;
-				m_lastMouseY = mouseY;
-				m_mouseInitialized = true;
-			}
-			else
-			{
-				m_yaw += static_cast<float>(mouseX - m_lastMouseX) * m_mouseSensitivity;
-				m_pitch = std::clamp(
-					m_pitch - static_cast<float>(mouseY - m_lastMouseY) * m_mouseSensitivity,
-					-0.15f,
-					0.72f);
-				m_lastMouseX = mouseX;
-				m_lastMouseY = mouseY;
-			}
-			m_orbiting = true;
-		}
-		else
-		{
-			m_mouseInitialized = false;
-			m_orbiting = false;
-		}
+		m_cameraYaw = WrapAngle(m_cameraYaw - look.deltaX * m_mouseSensitivity);
+		m_pitch = std::clamp(m_pitch + look.deltaY * m_mouseSensitivity, MIN_PITCH, MAX_PITCH);
+		m_timeSinceManualLook = 0.0f;
+		m_recenterActive = false;
 	}
 	else
 	{
-		m_mouseInitialized = false;
-		m_orbiting = false;
+		m_timeSinceManualLook += std::max(deltaSeconds, 0.0f);
 	}
-	ApplyTransform(playerPosition, deltaSeconds);
+
+	if (m_recenterActive)
+	{
+		const float diff = WrapAngle(m_recenterYaw - m_cameraYaw);
+		const float blend = ExpBlend(RECENTER_RATE, deltaSeconds);
+		m_cameraYaw = WrapAngle(m_cameraYaw + diff * blend);
+		m_pitch += (CAMERA_DEFAULT_PITCH - m_pitch) * blend;
+		if (std::abs(diff) < 0.005f)
+			m_recenterActive = false;
+	}
+	else if (m_autoFollowEnabled && m_timeSinceManualLook >= AUTO_FOLLOW_DELAY)
+	{
+		// --- 自動追従 ---
+		// 走っている向きの真後ろへ、横方向の速さに比例した速さで少しずつ回す。
+		// 奥へまっすぐ走っているとき(横成分なし)はほとんど回らず、真横へ走るほど回る。
+		const float speed = std::sqrt(
+			playerVelocity.x * playerVelocity.x + playerVelocity.z * playerVelocity.z);
+		if (speed > 5.0f)
+		{
+			// カメラが見ている向きを移動方向に合わせるYaw。
+			const float desiredYaw = std::atan2(-playerVelocity.x, playerVelocity.z);
+			const float diff = WrapAngle(desiredYaw - m_cameraYaw);
+			if (std::abs(diff) < AUTO_FOLLOW_MAX_ANGLE)
+			{
+				const float lateral = std::abs(std::sin(diff));
+				const float speedRatio = std::clamp(speed / AUTO_FOLLOW_FULL_SPEED, 0.0f, 1.0f);
+				const float step = AUTO_FOLLOW_MAX_RATE * lateral * speedRatio *
+					std::max(deltaSeconds, 0.0f);
+				m_cameraYaw = WrapAngle(
+					m_cameraYaw + std::copysign(std::min(std::abs(diff), step), diff));
+			}
+		}
+	}
+
+	UpdateAnchor(playerPosition, deltaSeconds);
+	UpdateDistance(m_lookDistance, deltaSeconds);
+
+	// ロックオンを外した直後は、注視点を敵寄りからプレイヤーへゆっくり戻す。
+	if (deltaSeconds > 0.0f)
+		m_lookOffset *= 1.0f - ExpBlend(LOOK_OFFSET_RATE, deltaSeconds);
+	else
+		m_lookOffset = Vector3(0.0f, 0.0f, 0.0f);
+
+	ApplyView(m_anchor + BoomOffset(m_currentDistance), m_anchor + m_lookOffset, deltaSeconds);
 }
 
 void ThirdPersonCamera::UpdateLockOn(
 	const Vector3& playerPosition,
 	const Vector3& targetPosition,
-	bool viewportHovered,
+	float targetHeight,
 	float deltaSeconds)
 {
-	(void)viewportHovered;
+	m_recenterActive = false;
+	// ロックオン中はマウスで向きを変えないので、解除した直後に自動追従が走らないよう数え直す。
+	m_timeSinceManualLook = 0.0f;
+
+	UpdateAnchor(playerPosition, deltaSeconds);
+
 	Vector3 flatDelta = targetPosition - playerPosition;
 	flatDelta.y = 0.0f;
-	const float targetDistance = std::max(flatDelta.Length(), 0.001f);
-	const Vector3 toTarget = flatDelta / targetDistance;
-	const Vector3 behindTarget = -toTarget;
+	const float targetDistance = flatDelta.Length();
+	const Vector3 toTarget = targetDistance > 0.001f
+		? flatDelta / targetDistance
+		: Vector3(-std::sin(m_cameraYaw), 0.0f, std::cos(m_cameraYaw));
 
-	// ロックオン対象だけに寄りすぎないようにカメラを少し引き、
-	// プレイヤーの全身と敵を同時に確認できる距離を確保する。
-	// Elden Ring寄りの「自キャラの操作感」と、Monster Hunter寄りの
-	// 「大型の相手を画面から逃がさない」構図の中間を狙った値。
-	const float framingDistance = std::clamp(targetDistance * 0.66f, 76.0f, 112.0f);
-	// GameSceneが攻撃中だけm_lookDistanceを縮めるため、ロックオン構図にも
-	// 同じ寄りを反映する。これを別管理にすると通常時と攻撃時で距離の責務が
-	// 分かれ、片方だけズームしない不整合が起きる。
-	const float distanceScale = std::clamp(m_lookDistance / 70.0f, 0.60f, 1.0f);
-	// 敵に密着したときも攻撃ズーム率だけを掛けると、
-	// 76 * 0.62 = 47.12単位までカメラが寄ってしまう。
-	// プレイヤーのモデル幅に対して近すぎ、モデルが巨大化したように見えるため、
-	// ロックオン戦闘では最低距離を設ける。遠距離時の攻撃ズームはこの制限に
-	// 掛からない範囲で従来どおり残す。
-	constexpr float MIN_LOCK_ON_CAMERA_DISTANCE = 64.0f;
+	// --- 向き ---
+	// カメラをプレイヤーの「敵と反対側」に置く。重なるほど近いときは向きを変えない。
+	if (targetDistance > 2.0f)
+	{
+		const float desiredYaw = std::atan2(-toTarget.x, toTarget.z);
+		const float diff = WrapAngle(desiredYaw - m_cameraYaw);
+		float step = diff * ExpBlend(LOCK_ON_YAW_RATE, deltaSeconds);
+		const float maxStep = LOCK_ON_MAX_YAW_SPEED * std::max(deltaSeconds, 0.0f);
+		step = std::clamp(step, -maxStep, maxStep);
+		m_cameraYaw = WrapAngle(m_cameraYaw + step);
+	}
+
+	// --- 高さ(見上げる角度) ---
+	// 敵の胴の高さがプレイヤーの注視点より高く、近いほど、カメラを下げて見上げる。
+	// 大型の敵に密着したとき、見下ろしたままだと頭(噛みつき・叩き付けの予兆)が画面の上へ切れる。
+	const Vector3 targetFocus = targetPosition + Vector3(0.0f, targetHeight * 0.5f, 0.0f);
+	const float elevation = std::atan2(
+		targetFocus.y - m_anchor.y,
+		std::max(targetDistance, 1.0f));
+	const float desiredPitch = std::clamp(CAMERA_DEFAULT_PITCH - elevation * 0.75f, 0.04f, 0.55f);
+	m_pitch += (desiredPitch - m_pitch) * ExpBlend(LOCK_ON_PITCH_RATE, deltaSeconds);
+
+	// --- 距離 ---
+	// 離れているほど引いて、自分と敵を同時に収める。
+	const float framingDistance = std::clamp(
+		targetDistance * 0.66f, 76.0f, LOCK_ON_MAX_DISTANCE);
+	// 攻撃中の寄り(GameSceneがm_lookDistanceを少し縮める)をロックオンにも反映する。
+	const float distanceScale = std::clamp(m_lookDistance / 70.0f, 0.85f, 1.0f);
+	// 近すぎるとプレイヤーのモデルが画面いっぱいになるので下限を設ける。
 	const float desiredDistance = std::clamp(
-		std::max(framingDistance * distanceScale, MIN_LOCK_ON_CAMERA_DISTANCE),
-		MIN_LOCK_ON_CAMERA_DISTANCE,
-		112.0f);
-	const float cameraDistance = m_collisionDistance >= 0.0f
-		? std::min(desiredDistance, m_collisionDistance)
-		: desiredDistance;
-	// 注視点は両者のほぼ中間より少しプレイヤー側へ寄せる。
-	// 敵だけを中央に置くより、回避方向と攻撃の届く距離を同時に読みやすい。
-	const Vector3 midpoint = playerPosition +
-		(targetPosition - playerPosition) * 0.46f + Vector3(0.0f, 9.0f, 0.0f);
-	const float horizontalDistance = cameraDistance * std::cos(m_pitch);
-	// カメラはプレイヤーの後方側に固定する。
-	// 中間点に置くと敵との距離が大きいときにプレイヤーより前へ出て、
-	// プレイヤーがニアクリップ面の後ろに隠れてしまうためである。
-	Vector3 cameraPosition = playerPosition +
-		Vector3(
-			behindTarget.x * horizontalDistance,
-			midpoint.y + cameraDistance * std::sin(m_pitch),
-			behindTarget.z * horizontalDistance);
-	// 完全な正面中央ではなく、わずかに肩越しへずらす。
-	// プレイヤーの攻撃方向を残しながら敵の全身を読みやすくする。
-	const Vector3 shoulder(-toTarget.z, 0.0f, toTarget.x);
-	cameraPosition += shoulder * 6.0f;
+		framingDistance * distanceScale, LOCK_ON_MIN_DISTANCE, LOCK_ON_MAX_DISTANCE);
+	UpdateDistance(desiredDistance, deltaSeconds);
 
-	m_cameraYaw = std::atan2(behindTarget.x, -behindTarget.z);
-	m_yaw = 0.0f;
-	m_orbiting = false;
-	m_mouseInitialized = false;
-	ApplyView(cameraPosition, midpoint, deltaSeconds);
+	// --- 注視点 ---
+	// プレイヤーと敵の間へ寄せる。切り替えの瞬間に画面が跳ねないよう、追従点からの「ずれ量」を補間する。
+	// 注視点の位置そのものを補間すると、走っている間は注視点が遅れてついて来て画面が揺れる。
+	const Vector3 desiredOffset = (targetFocus - m_anchor) * LOCK_ON_LOOK_TOWARD_TARGET;
+	if (deltaSeconds > 0.0f)
+		m_lookOffset += (desiredOffset - m_lookOffset) * ExpBlend(LOOK_OFFSET_RATE, deltaSeconds);
+	else
+		m_lookOffset = desiredOffset;
+
+	// カメラはプレイヤー(追従点)を基準に置く。注視点を基準にすると、敵と離れたときに
+	// カメラがプレイヤーより前へ出てしまう。わずかに肩越しへずらす。
+	const Vector3 shoulder(-toTarget.z, 0.0f, toTarget.x);
+	const Vector3 cameraPosition = m_anchor + BoomOffset(m_currentDistance) +
+		shoulder * LOCK_ON_SHOULDER_OFFSET;
+	ApplyView(cameraPosition, m_anchor + m_lookOffset, deltaSeconds);
 }
 
 void ThirdPersonCamera::Draw()
@@ -130,25 +260,25 @@ void ThirdPersonCamera::Reset(const Vector3& playerPosition, float playerYaw)
 {
 	m_battleTransitionActive = false;
 	m_battleTransitionTime = 0.0f;
-	m_yaw = 0.0f;
-	m_playerYaw = playerYaw;
-	// 初期方向はプレイヤーの後方に設定するが、プレイヤーの旋回や移動で
-	// カメラの向きは勝手に回さない。位置だけを追従して画面構図を保つ。
-	m_cameraYaw = playerYaw + PI;
-	m_pitch = 0.30f;
-	m_mouseSensitivity = 0.004f;
+	// 初期方向はプレイヤーの後方。
+	m_cameraYaw = BehindPlayerYaw(playerYaw);
+	m_pitch = CAMERA_DEFAULT_PITCH;
 	m_lookDistance = 70.0f;
+	m_desiredDistance = m_lookDistance;
+	m_currentDistance = m_lookDistance;
 	m_collisionDistance = -1.0f;
 	m_targetHeight = 25.0f;
-	m_orbiting = false;
-	m_mouseInitialized = false;
+	m_timeSinceManualLook = 10.0f;
+	m_recenterActive = false;
 	// リセット時は揺れと補間の状態も初期化する。
 	// 残っていると再戦の1フレーム目に前回の揺れが乗る。
 	m_shakeStrength = 0.0f;
 	m_shakeTime = 0.0f;
 	m_shakeDuration = 0.0f;
-	m_baseInitialized = false;
-	ApplyTransform(playerPosition);
+	m_anchorInitialized = false;
+	UpdateAnchor(playerPosition, 0.0f);
+	m_lookOffset = Vector3(0.0f, 0.0f, 0.0f);
+	ApplyView(m_anchor + BoomOffset(m_currentDistance), m_anchor, 0.0f);
 }
 
 void ThirdPersonCamera::BeginBattleTransition(
@@ -162,17 +292,24 @@ void ThirdPersonCamera::BeginBattleTransition(
 	m_battleTransitionTime = 0.0f;
 	m_battleTransitionActive = true;
 
-	m_yaw = 0.0f;
-	m_playerYaw = playerYaw;
-	m_cameraYaw = playerYaw + PI;
-	m_pitch = 0.30f;
-	m_mouseSensitivity = 0.004f;
+	m_cameraYaw = BehindPlayerYaw(playerYaw);
+	m_pitch = CAMERA_DEFAULT_PITCH;
 	m_lookDistance = 70.0f;
+	m_desiredDistance = m_lookDistance;
+	m_currentDistance = m_lookDistance;
 	m_collisionDistance = -1.0f;
 	m_targetHeight = 25.0f;
-	m_orbiting = false;
-	m_mouseInitialized = false;
-	(void)playerPosition;
+	m_timeSinceManualLook = 10.0f;
+	m_recenterActive = false;
+	m_anchorInitialized = false;
+	UpdateAnchor(playerPosition, 0.0f);
+	m_lookOffset = Vector3(0.0f, 0.0f, 0.0f);
+}
+
+void ThirdPersonCamera::RequestRecenter(float playerYaw)
+{
+	m_recenterYaw = BehindPlayerYaw(playerYaw);
+	m_recenterActive = true;
 }
 
 void ThirdPersonCamera::SetLookDistance(float distance)
@@ -182,28 +319,9 @@ void ThirdPersonCamera::SetLookDistance(float distance)
 
 void ThirdPersonCamera::SetCollisionDistance(float distance)
 {
-	m_collisionDistance = distance < 0.0f
-		? -1.0f
-		: std::clamp(distance, 3.0f, m_lookDistance);
-}
-
-void ThirdPersonCamera::ApplyTransform(
-	const Vector3& playerPosition,
-	float deltaSeconds)
-{
-	const Vector3 target = playerPosition + Vector3(0.0f, m_targetHeight, 0.0f);
-	// プレイヤーの正面とは反対側をカメラの初期位置にする。
-	const float cameraYaw = m_cameraYaw + m_yaw;
-	const float cosPitch = std::cos(m_pitch);
-	const float lookDistance = m_collisionDistance >= 0.0f
-		? m_collisionDistance
-		: m_lookDistance;
-	const Vector3 offset(
-		std::sin(cameraYaw) * cosPitch * lookDistance,
-		std::sin(m_pitch) * lookDistance,
-		-std::cos(cameraYaw) * cosPitch * lookDistance);
-
-	ApplyView(target + offset, target, deltaSeconds);
+	// 以前は通常時の距離(m_lookDistance)で上限を切っていたため、ロックオン中(最大112)に
+	// 衝突すると、ぶつかっていない分まで70へ縮んでいた。
+	m_collisionDistance = distance < 0.0f ? -1.0f : std::max(distance, 3.0f);
 }
 
 void ThirdPersonCamera::TriggerShake(float strength, float duration)
@@ -220,10 +338,12 @@ void ThirdPersonCamera::TriggerShake(float strength, float duration)
 }
 
 void ThirdPersonCamera::ApplyView(
-	const Vector3& desiredPosition,
-	const Vector3& desiredLookat,
+	const Vector3& position,
+	const Vector3& lookat,
 	float deltaSeconds)
 {
+	Vector3 basePosition = position;
+	Vector3 baseLookat = lookat;
 	if (m_battleTransitionActive)
 	{
 		m_battleTransitionTime += std::max(deltaSeconds, 0.0f);
@@ -234,42 +354,10 @@ void ThirdPersonCamera::ApplyView(
 		// smoothstepで開始・終了の速度を落とし、演出から操作カメラへの
 		// 切り替えを映像的に見せる。
 		const float t = linearT * linearT * (3.0f - 2.0f * linearT);
-		// 遷移中の位置をそのまま基準位置にしておく。
-		// これをしないと遷移終了時に、遷移前の古い基準位置から補間し直して跳ねる。
-		m_basePosition = Vector3::Lerp(
-			m_battleTransitionStartPosition, desiredPosition, t);
-		m_baseLookat = Vector3::Lerp(
-			m_battleTransitionStartLookat, desiredLookat, t);
-		m_baseInitialized = true;
-		m_camera.SetPosition(m_basePosition);
-		m_camera.SetLookat(m_baseLookat);
+		basePosition = Vector3::Lerp(m_battleTransitionStartPosition, position, t);
+		baseLookat = Vector3::Lerp(m_battleTransitionStartLookat, lookat, t);
 		if (linearT >= 1.0f)
 			m_battleTransitionActive = false;
-		return;
-	}
-
-	if (!m_baseInitialized)
-	{
-		m_basePosition = desiredPosition;
-		m_baseLookat = desiredLookat;
-		m_baseInitialized = true;
-	}
-
-	if (deltaSeconds <= 0.0f)
-	{
-		m_basePosition = desiredPosition;
-		m_baseLookat = desiredLookat;
-	}
-	else
-	{
-		// 毎フレームの即時配置ではなく指数補間にする。敵の移動・ロックオン
-		// 対象の位置変化を追いながら、カメラの首振りを抑える。
-		// 補間は揺れを含まない位置で行う。揺れた位置を補間元にすると
-		// 揺れが減衰せず残り続けてしまう。
-		const float positionBlend = 1.0f - std::exp(-11.0f * deltaSeconds);
-		const float lookatBlend = 1.0f - std::exp(-14.0f * deltaSeconds);
-		m_basePosition = Vector3::Lerp(m_basePosition, desiredPosition, positionBlend);
-		m_baseLookat = Vector3::Lerp(m_baseLookat, desiredLookat, lookatBlend);
 	}
 
 	// 命中時の揺れを最後に足す。
@@ -296,8 +384,8 @@ void ThirdPersonCamera::ApplyView(
 		}
 	}
 
-	m_camera.SetPosition(m_basePosition + shakeOffset);
+	m_camera.SetPosition(basePosition + shakeOffset);
 	// 注視点も少しだけ揺らす。位置だけ動かすと視線が固定されたままで、
 	// 揺れというより平行移動に見えてしまう。
-	m_camera.SetLookat(m_baseLookat + shakeOffset * 0.35f);
+	m_camera.SetLookat(baseLookat + shakeOffset * 0.35f);
 }

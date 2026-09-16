@@ -22,6 +22,11 @@ public:
 	static void SetVisible(bool visible);
 	static void ToggleVisible();
 	static void SetCursorVisible(bool visible);
+	// マウスで視点を回す間、カーソルをゲーム画面の中に閉じ込める。
+	// 閉じ込めている間はデバッグ表示をマウスで操作できない(ImGuiにマウスを渡さない)。
+	// カーソルを表示する要求(SetCursorVisible(true))が優先され、ゲームが前面にないときも外す。
+	static void SetCursorLocked(bool locked);
+	static bool IsCursorLocked();
 
     static void BeginFrame();
 

@@ -6,16 +6,16 @@
 
 class CDirectInput{
 private:
-	LPDIRECTINPUT8			m_dinput{};				// DirectInput8ƒIƒuƒWƒFƒNƒg
-	LPDIRECTINPUTDEVICE8	m_dikeyboard{};			// ƒL[ƒ{[ƒhƒfƒoƒCƒX
-	LPDIRECTINPUTDEVICE8	m_dimouse{};			// ƒ}ƒEƒXƒfƒoƒCƒX
-	char					m_keybuffer[256]{};		// ƒL[ƒ{[ƒhƒoƒbƒtƒ@
-	char					m_oldkeybuffer[256]{};	// ‘O‰ñ‚Ì“ü—ÍƒL[ƒ{[ƒhƒoƒbƒtƒ@
-	DIMOUSESTATE2			m_MouseState{};			// ƒ}ƒEƒX‚Ìó‘Ô
-	DIMOUSESTATE2			m_MouseStateTrigger{};	// ƒ}ƒEƒX‚Ìó‘Ô
-	POINT					m_MousePoint{};			// ƒ}ƒEƒXÀ•W
-	int						m_width{};				// ƒ}ƒEƒX‚Ì‚wÀ•WÅ‘å
-	int						m_height{};				// ƒ}ƒEƒX‚Ì‚xÀ•WÅ‘å
+	LPDIRECTINPUT8			m_dinput{};				// DirectInput8ï¿½Iï¿½uï¿½Wï¿½Fï¿½Nï¿½g
+	LPDIRECTINPUTDEVICE8	m_dikeyboard{};			// ï¿½Lï¿½[ï¿½{ï¿½[ï¿½hï¿½fï¿½oï¿½Cï¿½X
+	LPDIRECTINPUTDEVICE8	m_dimouse{};			// ï¿½}ï¿½Eï¿½Xï¿½fï¿½oï¿½Cï¿½X
+	char					m_keybuffer[256]{};		// ï¿½Lï¿½[ï¿½{ï¿½[ï¿½hï¿½oï¿½bï¿½tï¿½@
+	char					m_oldkeybuffer[256]{};	// ï¿½Oï¿½ï¿½Ì“ï¿½ï¿½ÍƒLï¿½[ï¿½{ï¿½[ï¿½hï¿½oï¿½bï¿½tï¿½@
+	DIMOUSESTATE2			m_MouseState{};			// ï¿½}ï¿½Eï¿½Xï¿½Ìï¿½ï¿½
+	DIMOUSESTATE2			m_MouseStateTrigger{};	// ï¿½}ï¿½Eï¿½Xï¿½Ìï¿½ï¿½
+	POINT					m_MousePoint{};			// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½W
+	int						m_width{};				// ï¿½}ï¿½Eï¿½Xï¿½Ì‚wï¿½ï¿½ï¿½Wï¿½Å‘ï¿½
+	int						m_height{};				// ï¿½}ï¿½Eï¿½Xï¿½Ì‚xï¿½ï¿½ï¿½Wï¿½Å‘ï¿½
 	HWND					m_hwnd{};
 	CDirectInput() :m_dinput(nullptr), m_dikeyboard(nullptr), m_dimouse(nullptr) {
 	}
@@ -36,14 +36,14 @@ public:
 	}
 
 	//----------------------------------
-	// DirectInput ‰Šúˆ—
+	// DirectInput ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	//
-	//		P1 : ƒCƒ“ƒXƒ^ƒ“ƒX’l
-	//		P2 : ƒEƒCƒ“ƒhƒEƒnƒ“ƒhƒ‹’l
+	//		P1 : ï¿½Cï¿½ï¿½ï¿½Xï¿½^ï¿½ï¿½ï¿½Xï¿½l
+	//		P2 : ï¿½Eï¿½Cï¿½ï¿½ï¿½hï¿½Eï¿½nï¿½ï¿½ï¿½hï¿½ï¿½ï¿½l
 	//
-	//	–ß‚è’l
-	//		true : ‰Šú‰»¬Œ÷
-	//		false : ‰Šú‰»Ž¸”s
+	//	ï¿½ß‚ï¿½l
+	//		true : ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	//		false : ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½s
 	//----------------------------------
 	bool Init(HINSTANCE hInst,HWND hwnd,int width,int height){
 		HRESULT	hr;
@@ -52,50 +52,50 @@ public:
 			return false;
 		}
 
-		// ƒL[ƒ{[ƒhƒfƒoƒCƒX¶¬
+		// ï¿½Lï¿½[ï¿½{ï¿½[ï¿½hï¿½fï¿½oï¿½Cï¿½Xï¿½ï¿½ï¿½ï¿½
 		m_dinput->CreateDevice(GUID_SysKeyboard, &m_dikeyboard, NULL);
 		if(FAILED(hr)) {
 			return false;
 		}
 
-		// ƒf[ƒ^ƒtƒH[ƒ}ƒbƒg‚ÌÝ’è
+		// ï¿½fï¿½[ï¿½^ï¿½tï¿½Hï¿½[ï¿½}ï¿½bï¿½gï¿½ÌÝ’ï¿½
 		hr = m_dikeyboard->SetDataFormat(&c_dfDIKeyboard);
 		if(FAILED(hr)) {
 			return false;
 		}
 		
-		// ‹¦’²ƒŒƒxƒ‹‚ÌÝ’è
+		// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½xï¿½ï¿½ï¿½ÌÝ’ï¿½
 		hr = m_dikeyboard->SetCooperativeLevel(hwnd, DISCL_FOREGROUND | DISCL_NONEXCLUSIVE);
 		if(FAILED(hr)) {
 			return false;
 		}
 
-		// ƒ}ƒEƒXƒfƒoƒCƒX¶¬
+		// ï¿½}ï¿½Eï¿½Xï¿½fï¿½oï¿½Cï¿½Xï¿½ï¿½ï¿½ï¿½
 		m_dinput->CreateDevice(GUID_SysMouse, &m_dimouse, NULL);
 		if(FAILED(hr)) {
 			return false;
 		}
 
-		// ƒf[ƒ^ƒtƒH[ƒ}ƒbƒg‚ÌÝ’è
+		// ï¿½fï¿½[ï¿½^ï¿½tï¿½Hï¿½[ï¿½}ï¿½bï¿½gï¿½ÌÝ’ï¿½
 		hr = m_dimouse->SetDataFormat(&c_dfDIMouse2);
 		if(FAILED(hr)) {
 			return false;
 		}
 		
-		// ‹¦’²ƒŒƒxƒ‹‚ÌÝ’è
+		// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½xï¿½ï¿½ï¿½ÌÝ’ï¿½
 		hr = m_dimouse->SetCooperativeLevel(hwnd, DISCL_FOREGROUND | DISCL_NONEXCLUSIVE);
 		if(FAILED(hr)) {
 			return false;
 		}
 
-		// ƒfƒoƒCƒX‚ÌÝ’è
+		// ï¿½fï¿½oï¿½Cï¿½Xï¿½ÌÝ’ï¿½
 		DIPROPDWORD diprop;
 		diprop.diph.dwSize = sizeof(diprop);
 		diprop.diph.dwHeaderSize = sizeof(diprop.diph);
 		diprop.diph.dwObj = 0;
 		diprop.diph.dwHow = DIPH_DEVICE;
-		diprop.dwData = DIPROPAXISMODE_REL;							// ‘Š‘Î’lƒ‚[ƒh
-		m_dimouse->SetProperty(DIPROP_AXISMODE, &diprop.diph);		// Ž²ƒ‚[ƒh‚ÌÝ’è
+		diprop.dwData = DIPROPAXISMODE_REL;							// ï¿½ï¿½ï¿½Î’lï¿½ï¿½ï¿½[ï¿½h
+		m_dimouse->SetProperty(DIPROP_AXISMODE, &diprop.diph);		// ï¿½ï¿½ï¿½ï¿½ï¿½[ï¿½hï¿½ÌÝ’ï¿½
 
 
 		DIPROPRANGE diprg;
@@ -106,12 +106,12 @@ public:
 		diprg.lMin = 0;
 		diprg.lMax = width - 1;
 
-		m_dimouse->SetProperty(DIPROP_RANGE, &diprg.diph);		// ‚w•ûŒü‚Ì”ÍˆÍ‚ðŽw’è
+		m_dimouse->SetProperty(DIPROP_RANGE, &diprg.diph);		// ï¿½wï¿½ï¿½ï¿½ï¿½ï¿½Ì”ÍˆÍ‚ï¿½ï¿½wï¿½ï¿½
 		diprg.diph.dwObj = DIJOFS_Y;
 		diprg.diph.dwHow = DIPH_BYOFFSET;
 		diprg.lMin = 0;
 		diprg.lMax = height - 1;
-		m_dimouse->SetProperty(DIPROP_RANGE, &diprg.diph);	// ‚x•ûŒü‚Ì”ÍˆÍ‚ðŽw’è
+		m_dimouse->SetProperty(DIPROP_RANGE, &diprg.diph);	// ï¿½xï¿½ï¿½ï¿½ï¿½ï¿½Ì”ÍˆÍ‚ï¿½ï¿½wï¿½ï¿½
 
 		m_hwnd = hwnd;
 
@@ -122,7 +122,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒXó‘ÔŽæ“¾ˆ—
+	// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ÔŽæ“¾ï¿½ï¿½ï¿½ï¿½
 	//----------------------------------
 	void GetMouseState(){
 		HRESULT	hr;
@@ -132,7 +132,7 @@ public:
 		GetCursorPos(&m_MousePoint);
 		ScreenToClient(m_hwnd, &m_MousePoint);
 
-		// ƒfƒoƒCƒX‚Ì”FŽ¯
+		// ï¿½fï¿½oï¿½Cï¿½Xï¿½Ì”Fï¿½ï¿½
 		hr = m_dimouse->Acquire();
 
 		hr = m_dimouse->GetDeviceState(sizeof(m_MouseState),&m_MouseState);
@@ -143,22 +143,27 @@ public:
 			}
 		}
 		else{
+			// å–å¾—ã«å¤±æ•—ã—ãŸãƒ•ãƒ¬ãƒ¼ãƒ ã¯å‰å›žã®ç§»å‹•é‡ãŒæ®‹ã‚‹ã®ã§0ã«ã™ã‚‹ã€‚
+			// æ®‹ã£ãŸã¾ã¾ã ã¨ã€ãƒžã‚¦ã‚¹ã‚’å‹•ã‹ã—ã¦ã„ãªã„ã®ã«è¦–ç‚¹ãŒå›žã‚Šç¶šã‘ã‚‹ã€‚
+			m_MouseState.lX = 0;
+			m_MouseState.lY = 0;
+			m_MouseState.lZ = 0;
 			if(hr == DIERR_INPUTLOST){
-				// ƒfƒoƒCƒX‚Ì”FŽ¯
+				// ï¿½fï¿½oï¿½Cï¿½Xï¿½Ì”Fï¿½ï¿½
 				hr = m_dimouse->Acquire();
 			}
 		}	
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX‚wÀ•WŽæ“¾ˆ—
+	// ï¿½}ï¿½Eï¿½Xï¿½wï¿½ï¿½ï¿½Wï¿½æ“¾ï¿½ï¿½ï¿½ï¿½
 	//----------------------------------
 	int GetMousePosX() const{
 		return m_MousePoint.x;
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX‚xÀ•WŽæ“¾ˆ—
+	// ï¿½}ï¿½Eï¿½Xï¿½xï¿½ï¿½ï¿½Wï¿½æ“¾ï¿½ï¿½ï¿½ï¿½
 	//----------------------------------
 	int GetMousePosY() const{
 		return m_MousePoint.y;
@@ -171,7 +176,7 @@ public:
 	int GetMouseDeltaY() const { return m_MouseState.lY; }
 
 	//----------------------------------
-	// ƒ}ƒEƒX¶ƒ{ƒ^ƒ“ƒ`ƒFƒbƒN
+	// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N
 	//----------------------------------
 	bool GetMouseLButtonCheck() const{
 		if(m_MouseState.rgbButtons[0] & 0x80){
@@ -182,7 +187,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX‰Eƒ{ƒ^ƒ“ƒ`ƒFƒbƒN
+	// ï¿½}ï¿½Eï¿½Xï¿½Eï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N
 	//----------------------------------
 	bool GetMouseRButtonCheck() const{
 		if(m_MouseState.rgbButtons[1] & 0x80){
@@ -193,7 +198,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX’†‰›ƒ{ƒ^ƒ“ƒ`ƒFƒbƒN
+	// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½ï¿½ï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N
 	//----------------------------------
 	bool GetMouseCButtonCheck() const{
 		if(m_MouseState.rgbButtons[2] & 0x80){
@@ -204,7 +209,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX¶ƒ{ƒ^ƒ“ƒ`ƒFƒbƒN(ƒgƒŠƒK[)
+	// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N(ï¿½gï¿½ï¿½ï¿½Kï¿½[)
 	//----------------------------------
 	bool GetMouseLButtonTrigger() const {
 		if (m_MouseStateTrigger.rgbButtons[0] & 0x80) {
@@ -216,7 +221,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX‰Eƒ{ƒ^ƒ“ƒ`ƒFƒbƒN(ƒgƒŠƒK[)
+	// ï¿½}ï¿½Eï¿½Xï¿½Eï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N(ï¿½gï¿½ï¿½ï¿½Kï¿½[)
 	//----------------------------------
 	bool GetMouseRButtonTrigger() const {
 		if (m_MouseStateTrigger.rgbButtons[1] & 0x80) {
@@ -228,7 +233,7 @@ public:
 	}
 
 	//----------------------------------
-	// ƒ}ƒEƒX’†‰›ƒ{ƒ^ƒ“ƒ`ƒFƒbƒN(ƒgƒŠƒK[)
+	// ï¿½}ï¿½Eï¿½Xï¿½ï¿½ï¿½ï¿½ï¿½{ï¿½^ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½N(ï¿½gï¿½ï¿½ï¿½Kï¿½[)
 	//----------------------------------
 	bool GetMouseCButtonTrigger() const {
 		if (m_MouseStateTrigger.rgbButtons[2] & 0x80) {
@@ -240,26 +245,26 @@ public:
 	}
 
 	//----------------------------------
-	// ƒL[ƒ{[ƒhƒoƒbƒtƒ@Žæ“¾ˆ—
+	// ï¿½Lï¿½[ï¿½{ï¿½[ï¿½hï¿½oï¿½bï¿½tï¿½@ï¿½æ“¾ï¿½ï¿½ï¿½ï¿½
 	//----------------------------------
 	void GetKeyBuffer(){
 		HRESULT	hr;
-		// ƒfƒoƒCƒX‚Ì”FŽ¯
+		// ï¿½fï¿½oï¿½Cï¿½Xï¿½Ì”Fï¿½ï¿½
 		hr = m_dikeyboard->Acquire();
-		// ‘O‰ñ‚Ìó‘Ô‚ð•Û‘¶
+		// ï¿½Oï¿½ï¿½Ìï¿½Ô‚ï¿½Û‘ï¿½
 		memcpy(&m_oldkeybuffer,m_keybuffer,sizeof(m_keybuffer));
 		hr = m_dikeyboard->GetDeviceState(sizeof(m_keybuffer),(LPVOID)&m_keybuffer);
 		if(hr == DIERR_INPUTLOST){
-			// ƒfƒoƒCƒX‚Ì”FŽ¯
+			// ï¿½fï¿½oï¿½Cï¿½Xï¿½Ì”Fï¿½ï¿½
 			hr = m_dikeyboard->Acquire();
 		}
 	}
 
 	//----------------------------------
-	// ƒL[‚ª‰Ÿ‚³‚ê‚Ä‚¢‚é‚©‚Ç‚¤‚©‚ðƒ`ƒFƒbƒN‚·‚é
-	//		p1 :@ƒ`ƒFƒbƒN‚µ‚½‚¢ƒL[”Ô†
-	//	–ß‚è’l
-	//		true : Žw’è‚³‚ê‚½ƒL[‚ª‰Ÿ‚³‚ê‚Ä‚¢‚é
+	// ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½é‚©ï¿½Ç‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½Nï¿½ï¿½ï¿½ï¿½
+	//		p1 :ï¿½@ï¿½`ï¿½Fï¿½bï¿½Nï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Lï¿½[ï¿½Ôï¿½
+	//	ï¿½ß‚ï¿½l
+	//		true : ï¿½wï¿½è‚³ï¿½ê‚½ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½
 	//----------------------------------
 	bool CheckKeyBuffer(int keyno){
 		if(m_keybuffer[keyno] & 0x80){
@@ -271,10 +276,10 @@ public:
 	}
 
 	//----------------------------------
-	// ƒL[‚ª‰Ÿ‚³‚ê‚Ä‚¢‚é‚©‚Ç‚¤‚©‚ðƒ`ƒFƒbƒN‚·‚é
-	//		p1 :@ƒ`ƒFƒbƒN‚µ‚½‚¢ƒL[”Ô†(ƒgƒŠƒK[)
-	//	–ß‚è’l
-	//		true : Žw’è‚³‚ê‚½ƒL[‚ª‰Ÿ‚³‚ê‚Ä‚¢‚é
+	// ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½é‚©ï¿½Ç‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½`ï¿½Fï¿½bï¿½Nï¿½ï¿½ï¿½ï¿½
+	//		p1 :ï¿½@ï¿½`ï¿½Fï¿½bï¿½Nï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Lï¿½[ï¿½Ôï¿½(ï¿½gï¿½ï¿½ï¿½Kï¿½[)
+	//	ï¿½ß‚ï¿½l
+	//		true : ï¿½wï¿½è‚³ï¿½ê‚½ï¿½Lï¿½[ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½
 	//----------------------------------
 	bool CheckKeyBufferTrigger(int keyno){
 		if(((m_keybuffer[keyno]^m_oldkeybuffer[keyno]) & m_keybuffer[keyno]) & 0x80){
@@ -286,7 +291,7 @@ public:
 	}
 
 	//----------------------------------
-	// DirectInput I—¹ˆ—
+	// DirectInput ï¿½Iï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	//----------------------------------
 	void Dispose(){
 		if(m_dikeyboard!=nullptr){
@@ -301,7 +306,7 @@ public:
 	}	
 
 	//----------------------------------
-	// ƒJ[ƒ\ƒ‹ˆÊ’u‚ð‰æ–Ê’†‰›‚É‚·‚é
+	// ï¿½Jï¿½[ï¿½\ï¿½ï¿½ï¿½Ê’uï¿½ï¿½ï¿½ï¿½Ê’ï¿½ï¿½ï¿½ï¿½É‚ï¿½ï¿½ï¿½
 	//----------------------------------
 	void SetCursorPosition() {
 

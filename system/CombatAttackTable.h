@@ -37,43 +37,103 @@ inline constexpr float ENEMY_MAX_HP = 2000.0f;
 inline constexpr int PLAYER_WEAK_DAMAGE = 25;
 inline constexpr int PLAYER_HEAVY_DAMAGE = 40;
 
+/**
+ * @brief 敵の攻撃クリップ(dragon_attack.dae)のどこで判定を出すか。
+ *
+ * 計測値(調査プログラム probe9。クリップ長1.71秒):
+ *   0.00〜0.90 頭を上げて構える(予兆)
+ *   0.90〜1.10 一気に振り下ろす(最速は1.00秒付近)
+ *   1.05〜1.10 頭が地面に到達 = 当たる瞬間
+ *   1.10〜1.30 頭を地面に着けたまま
+ *   1.30〜1.71 頭を戻す(隙)
+ *
+ * 以前は判定が出ている時間が叩き付け0.90秒・噛みつき0.55秒・薙ぎ払い0.85秒もあった
+ * (ユーザー指摘「当たり判定が出てる時間が長すぎる」)。
+ * モンスターハンターの大型モンスターは、予兆を長く見せる一方で**当たり判定が出るのは0.1〜0.3秒ほど**で、
+ * 残りは振り抜きと硬直(=反撃の機会)になっている。振り下ろしの前後だけを判定にし、その分を隙へ回す。
+ *
+ * 敵の攻撃クリップは1本しかないので、種類ごとに再生速度と使う区間を変えて
+ * 「速い噛みつき」「遅い薙ぎ払い」を作る。アニメーションもこの表の時間で再生する
+ * (見えている振り下ろしと、実際に当たる瞬間を一致させるため)。
+ */
+struct EnemyAttackClip
+{
+    float clipStart = 0.0f;   ///< 再生を始める位置(クリップの秒)
+    float hitStart = 0.0f;    ///< 攻撃判定が出始める位置(クリップの秒)
+    float impact = 0.0f;      ///< 実際にダメージが出る瞬間(クリップの秒)
+    float hitEnd = 0.0f;      ///< 攻撃判定が消える位置(クリップの秒)
+    float clipEnd = 0.0f;     ///< 再生を終える位置(クリップの秒)
+    float playbackRate = 1.0f;///< 再生速度(1 = クリップ本来の速さ)
+    float extraRecoverySeconds = 0.0f; ///< クリップを再生し終えた後、さらに動かずに硬直する時間
+
+    constexpr float WindupSeconds() const { return (hitStart - clipStart) / playbackRate; }
+    constexpr float ActiveSeconds() const { return (hitEnd - hitStart) / playbackRate; }
+    constexpr float RecoverySeconds() const
+    {
+        return (clipEnd - hitEnd) / playbackRate + extraRecoverySeconds;
+    }
+    /// Active開始から実際にダメージが出るまでの時間。
+    constexpr float FirstHitSeconds() const { return (impact - hitStart) / playbackRate; }
+    /// クリップを再生している長さ(予兆+判定+戻り。extraRecoveryは含まない)。
+    constexpr float ClipPlaySeconds() const { return (clipEnd - clipStart) / playbackRate; }
+};
+
+// 叩き付け: 等速。振り下ろしの手前から地面に着いた直後までを判定にする。
+inline constexpr EnemyAttackClip ENEMY_SLAM_CLIP{ 0.00f, 0.98f, 1.06f, 1.18f, 1.71f, 1.00f, 0.55f };
+// 噛みつき: 1.5倍速。構えを飛ばして0.45秒から再生し、判定も短い。
+inline constexpr EnemyAttackClip ENEMY_BITE_CLIP{ 0.45f, 0.98f, 1.04f, 1.16f, 1.60f, 1.50f, 0.10f };
+// 薙ぎ払い: 0.8倍速。予兆が最も長く、横へ振り抜く分だけ判定も少し長い。隙も最大。
+inline constexpr EnemyAttackClip ENEMY_SWEEP_CLIP{ 0.00f, 0.95f, 1.08f, 1.22f, 1.71f, 0.80f, 0.90f };
+
 // --- 敵の攻撃(叩き付け): 標準。予兆が長く、隙も大きい ---
 // 予兆(ANTICIPATION)は敵AIのWindup状態の長さと必ず一致させること。
 // 以前はAI・アニメーション側が0.80秒、戦闘判定側が0.72秒とズレており、
 // 予備動作アニメーションが終わる前に攻撃判定が始まっていた。
 // 「予兆を見てから回避するか踏み込むかを決める」という本作の核を守るため、
 // 長い方(0.80秒)へ統一し、判定がアニメーションより先に出ないようにする。
-inline constexpr float ENEMY_ANTICIPATION = 0.80f;
-inline constexpr float ENEMY_ACTIVE = 0.90f;
-inline constexpr float ENEMY_RECOVERY = 1.35f;
+// 時間はクリップの表から求める(予兆0.98秒 / 判定0.20秒 / 隙1.08秒)。
+inline constexpr float ENEMY_ANTICIPATION = ENEMY_SLAM_CLIP.WindupSeconds();
+inline constexpr float ENEMY_ACTIVE = ENEMY_SLAM_CLIP.ActiveSeconds();
+inline constexpr float ENEMY_RECOVERY = ENEMY_SLAM_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_COOLDOWN = 1.15f;
 inline constexpr int ENEMY_DAMAGE = 15;
 // 攻撃判定が届く距離。敵AIが攻撃を決断する距離(enemy.hのATTACK_DISTANCE)とは別物。
 inline constexpr float ENEMY_HIT_RANGE = 64.0f;
 // Active開始から実際にダメージが発生するまでの時間(叩き付けが当たる瞬間)。
-inline constexpr float ENEMY_FIRST_HIT_TIME = 0.18f;
+inline constexpr float ENEMY_FIRST_HIT_TIME = ENEMY_SLAM_CLIP.FirstHitSeconds();
 
 // --- 敵の攻撃(噛みつき): 速い。予兆が短く、隙も小さい ---
 // 「様子見しすぎると刺される」役割。射程は短いので、距離を取っていれば安全。
 // 隙が小さいので、これに反撃を欲張ると次の攻撃を食らう。
-inline constexpr float ENEMY_BITE_ANTICIPATION = 0.42f;
-inline constexpr float ENEMY_BITE_ACTIVE = 0.55f;
-inline constexpr float ENEMY_BITE_RECOVERY = 0.70f;
+// 予兆0.35秒 / 判定0.12秒 / 隙0.39秒。
+inline constexpr float ENEMY_BITE_ANTICIPATION = ENEMY_BITE_CLIP.WindupSeconds();
+inline constexpr float ENEMY_BITE_ACTIVE = ENEMY_BITE_CLIP.ActiveSeconds();
+inline constexpr float ENEMY_BITE_RECOVERY = ENEMY_BITE_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_BITE_COOLDOWN = 0.95f;
 inline constexpr int ENEMY_BITE_DAMAGE = 10;
 inline constexpr float ENEMY_BITE_HIT_RANGE = 48.0f;
-inline constexpr float ENEMY_BITE_FIRST_HIT_TIME = 0.10f;
+inline constexpr float ENEMY_BITE_FIRST_HIT_TIME = ENEMY_BITE_CLIP.FirstHitSeconds();
 
 // --- 敵の攻撃(薙ぎ払い): 遅い。予兆が非常に長く、隙が最大 ---
 // 「見えたら必ず回避、そして大きく反撃できる」役割。
 // 射程が広いので、回避せず距離を取るだけでは避けきれない。
-inline constexpr float ENEMY_SWEEP_ANTICIPATION = 1.10f;
-inline constexpr float ENEMY_SWEEP_ACTIVE = 0.85f;
-inline constexpr float ENEMY_SWEEP_RECOVERY = 1.80f;
+// 予兆1.19秒 / 判定0.34秒 / 隙1.51秒。
+inline constexpr float ENEMY_SWEEP_ANTICIPATION = ENEMY_SWEEP_CLIP.WindupSeconds();
+inline constexpr float ENEMY_SWEEP_ACTIVE = ENEMY_SWEEP_CLIP.ActiveSeconds();
+inline constexpr float ENEMY_SWEEP_RECOVERY = ENEMY_SWEEP_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_SWEEP_COOLDOWN = 1.30f;
 inline constexpr int ENEMY_SWEEP_DAMAGE = 22;
 inline constexpr float ENEMY_SWEEP_HIT_RANGE = 78.0f;
-inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = 0.22f;
+inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = ENEMY_SWEEP_CLIP.FirstHitSeconds();
+
+// --- 攻撃中の踏み込みの速さ(単位/秒) ---
+// 判定が出ている間だけ前へ出る。判定を短くした分だけ速くして、踏み込む距離を保つ
+// (叩き付けで約26、噛みつきで約11、薙ぎ払いで約34)。
+// モンスターハンターの大型モンスターも、攻撃の瞬間に体ごと前へ出る。距離を取るだけでは避けられない、
+// という読み合いをここで作っている。
+inline constexpr float ENEMY_LUNGE_SPEED = 130.0f;
+inline constexpr float ENEMY_BITE_LUNGE_SPEED = 90.0f;
+inline constexpr float ENEMY_SWEEP_LUNGE_SPEED = 100.0f;
 
 // --- 当たり判定の左右の広さ(正面からの片側角度・ラジアン) ---
 // 敵の攻撃判定は元々「距離だけ」で、どの攻撃も全方位に当たっていた。
@@ -139,6 +199,14 @@ inline constexpr float ENEMY_BITE_KNOCKBACK_SPEED = 150.0f;
 inline constexpr float ENEMY_BITE_KNOCKBACK_SECONDS = 0.22f;
 inline constexpr float ENEMY_SWEEP_KNOCKBACK_SPEED = 340.0f;
 inline constexpr float ENEMY_SWEEP_KNOCKBACK_SECONDS = 0.45f;
+
+// --- プレイヤーの回避(前転) ---
+// 移動の速さを体格に合わせた(歩き20・ダッシュ45、身長約18)のに、回避だけ速さ180で0.4秒=約72(身長の4倍、
+// 人間なら約7m)も飛んでいた。モンスターハンターの前転は約3m(身長の2倍弱)なので、それに合わせる。
+// 移動は出だしが最も速く、止まり際へ向けて落ちる(等速だと滑って見える)。
+// 距離と時間はプレイヤーの移動(player.cpp)と前転のモーション(CCharacterAnimator)の両方がここを見る。
+inline constexpr float PLAYER_DODGE_DISTANCE = 34.0f;
+inline constexpr float PLAYER_DODGE_SECONDS = 0.50f;
 } // namespace Tuning
 
 /**
@@ -168,6 +236,10 @@ struct PlayerComboStep
     float clipEnd = 0.0f;        ///< 次の入力が無いときに攻撃が終わる位置(クリップの秒)
     float playbackRate = 1.0f;   ///< 再生速度(1 = クリップ本来の速さ)
     float comboLinkSeconds = 0.0f; ///< 判定が消えてから、予約した次の段へ移れるまでの時間(ゲーム内の秒)
+    /// 踏み込み(ルートモーション)の倍率。1 = クリップどおり。
+    /// クリップの移動量そのままでは足りない技だけ上げる。地面を蹴らずに滑って見えるので、
+    /// 跳んでいる間の移動が主な技(ダッシュ攻撃)以外では1のままにすること。
+    float rootMotionScale = 1.0f;
 
     float WindupSeconds() const { return (hitStart - clipStart) / playbackRate; }
     float ActiveSeconds() const { return (hitEnd - hitStart) / playbackRate; }
@@ -218,8 +290,11 @@ inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
  */
 inline const PlayerComboStep& PlayerDashAttackStep()
 {
+    // 踏み込みはクリップのままだと約22(身長の1.2倍)で、走りから出す技としては物足りない
+    // (ユーザー指摘「ダッシュattackはちょっと前に進んでほしい」)。跳んでいる間の移動なので、
+    // 1.6倍(約36、身長の2倍)まで伸ばしても地面を滑って見えない。
     static const PlayerComboStep step =
-        { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f };
+        { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f };
     return step;
 }
 
@@ -331,6 +406,35 @@ inline const AttackData& EnemyAttackOf(EnemyAttackKind kind)
     case EnemyAttackKind::Sweep: return EnemySweepAttack();
     case EnemyAttackKind::Slam:
     default:                     return EnemyBasicAttack();
+    }
+}
+
+/**
+ * @brief 敵の攻撃クリップの使う区間と再生速度を種類から引く。
+ *
+ * 戦闘判定(予兆・判定・隙の長さ)も、アニメーションの再生位置も、この1つの表から決める。
+ * 別々に持つと「見えている振り下ろし」と「実際に当たる瞬間」がずれる。
+ */
+inline const Tuning::EnemyAttackClip& EnemyAttackClipOf(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_CLIP;
+    case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_CLIP;
+    case EnemyAttackKind::Slam:
+    default:                     return Tuning::ENEMY_SLAM_CLIP;
+    }
+}
+
+/** 攻撃判定が出ている間の踏み込みの速さ(単位/秒)を種類から引く。 */
+inline float EnemyLungeSpeedOf(EnemyAttackKind kind)
+{
+    switch (kind)
+    {
+    case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_LUNGE_SPEED;
+    case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_LUNGE_SPEED;
+    case EnemyAttackKind::Slam:
+    default:                     return Tuning::ENEMY_LUNGE_SPEED;
     }
 }
 

@@ -16,6 +16,7 @@
 #include "../system/BoneCombMatrix.h"
 #include "../system/collision.h"
 #include "../system/OneVsOneCombat.h"
+#include "../system/FootLock.h"
 #include "../gameobject/player.h"
 #include "../gameobject/field.h"
 #include "../gameobject/wall.h"
@@ -61,6 +62,10 @@ public:
 	// 敵の体がカメラとプレイヤーの間に入る場合の、許容できるカメラ距離を返す。
 	// 遮蔽が無ければ desiredDistance をそのまま返す。
 	float CalcEnemyOccludedCameraDistance(float desiredDistance) const;
+	// 描画されている敵の、足元の高さと見た目の高さ(ワールド単位)。
+	// ドラゴンのモデルは寝た向きで作られ、描画時にX軸へ90度起こしているので、
+	// ローカルの境界ボックスのY寸法は高さではなく体の長さになる。境界ボックスの角を描画と同じ変換で動かして測る。
+	void GetEnemyVisualVerticalExtent(float& bottomY, float& height) const;
 	void UpdateGameplayCamera(float deltaSeconds = 0.0f);
 	void UpdateCombatCameraDistance(float deltaSeconds);
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
@@ -92,6 +97,13 @@ private:
 	float m_enemyIntroBlendFromFraction = 0.0f;
 	int m_enemyLastSampledFrame = 0;
 	float m_enemyLastSampledFraction = 0.0f;
+	// 攻撃の入り。噛みつきはクリップの途中(0.45秒)から再生するので、直前の姿勢から短くつなぐ。
+	static constexpr float ENEMY_ATTACK_BLEND_SECONDS = 0.14f;
+	aiAnimation* m_enemyAttackBlendFromAnimation = nullptr;
+	int m_enemyAttackBlendFromFrame = 0;
+	float m_enemyAttackBlendFromFraction = 0.0f;
+	float m_enemyAttackBlendTime = 0.0f;
+	bool m_enemyAttackBlendActive = false;
 	enemy::MotionState m_previousEnemyMotionState = enemy::MotionState::Approach;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
@@ -125,6 +137,22 @@ private:
 	float m_cameraBaseDistance = 70.0f;
 	float m_cameraDistanceCurrent = 70.0f;
 	float m_cameraBaseTargetHeight = 25.0f;
+	// マウスで視点を回すか(カーソルをゲーム画面に閉じ込める)。左Altで切り替える。
+	bool m_mouseLookCaptured = true;
+	// 足の接地(フットロック)。移動中、接地している足のつま先をワールドへ固定して脚をIKで合わせる。
+	void UpdateFootLock(float deltaSeconds);
+	bool m_footLockEnabled = true;
+	FootLock::Settings m_footLockSettings{};
+	FootLock::FootState m_footLockLeft{};
+	FootLock::FootState m_footLockRight{};
+	CAnimationMesh::LegIKChain m_leftLegChain{};
+	CAnimationMesh::LegIKChain m_rightLegChain{};
+	bool m_legChainsResolved = false;
+	// プレイヤーの描画用の接地。立ち姿勢の持ち上げ量と地面の高さ(前転中だけ体の最下点で合わせ直す)。
+	float m_playerStandingGroundOffsetY = 0.0f;
+	float m_playerGroundY = 0.0f;
+	// プレイヤーの実際の移動速度(ワールド単位/秒)。カメラの自動追従に使う。
+	Vector3 m_playerWorldVelocity{ 0.0f, 0.0f, 0.0f };
 	OneVsOneCombat m_combat;
 	int m_lastPlayerComboStep = 0;
 	bool m_lastPlayerHeavyAttack = false;
