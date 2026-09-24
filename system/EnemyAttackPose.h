@@ -75,9 +75,29 @@ inline constexpr float BITE_LUNGE_PITCH = 0.30f;  ///< 噛みつき: 突っ込�
 inline constexpr float SWEEP_WIND_YAW = 0.62f;   ///< 薙ぎ払い: 溜めでひねる角度
 inline constexpr float SWEEP_SWING_YAW = -0.86f; ///< 薙ぎ払い: 振り抜く角度
 
+// 尾回転: 体の回転そのものは敵AIが物理の向き(rot.y)を回して作るので、
+// ここで足すのは「回る前に反対側へ捻って溜める」分と「腰を落とす」分だけにする。
+// 見た目だけを回すと、当たり判定の基準の向き(物理の向き)と食い違って予兆が嘘になる。
+inline constexpr float SPIN_BRACE_PITCH = 0.14f; ///< 尾回転: 腰を落として踏ん張る量
+inline constexpr float SPIN_WIND_YAW = 0.40f;    ///< 尾回転: 回る向きと逆へ捻って溜める量
+inline constexpr float SPIN_OVERRUN_YAW = 0.18f; ///< 尾回転: 回り切って体が流れる量(隙の表現)
+
 /// 隙(Recovery)で姿勢が戻りきるまでの時間。長いほど「まだ動けない」ことが伝わる。
 inline constexpr float RECOVERY_SETTLE_SECONDS = 0.45f;
 } // namespace PoseTuning
+
+/**
+ * @brief 尾回転の状態。構えを求めるときに外から渡す。ほかの攻撃では使わない。
+ *
+ * 回る向きで構えが左右反転し、半回転の回数で判定の長さと「一拍」の位置が変わるため、
+ * 敵AIが持っている値をそのまま渡してもらう。
+ */
+struct EnemySpinState
+{
+    float sign = 1.0f;          ///< 回る向き(+1 / -1)
+    int halfTurns = 1;          ///< 半回転の回数
+    float activeSeconds = 0.0f; ///< 判定の長さ(0なら攻撃データの値を使う)
+};
 
 namespace Detail
 {
@@ -109,9 +129,11 @@ inline float FastOut(float t)
  * @param kind      いま敵が選んでいる攻撃。
  * @param phase     攻撃のどの段階か。
  * @param phaseTime その段階に入ってからの経過秒。
+ * @param spin      尾回転の状態(回る向き・半回転の回数・判定の長さ)。ほかの攻撃では使わない。
  */
 inline EnemyPoseOffset EnemyAttackPose(
-    EnemyAttackKind kind, EnemyAttackPhase phase, float phaseTime)
+    EnemyAttackKind kind, EnemyAttackPhase phase, float phaseTime,
+    const EnemySpinState& spin = {})
 {
     EnemyPoseOffset offset{};
     if (phase == EnemyAttackPhase::None)
@@ -119,7 +141,9 @@ inline EnemyPoseOffset EnemyAttackPose(
 
     const AttackData& attack = EnemyAttackOf(kind);
     const float windupSeconds = std::max(0.01f, attack.frames.anticipationSeconds);
-    const float activeSeconds = std::max(0.01f, attack.frames.activeSeconds);
+    const float activeSeconds = std::max(
+        0.01f,
+        spin.activeSeconds > 0.0f ? spin.activeSeconds : attack.frames.activeSeconds);
 
     // 予兆の進み具合(0→1)。1に近いほど「もう来る」。
     const float windupT = Detail::SmoothStep01(phaseTime / windupSeconds);
@@ -171,6 +195,47 @@ inline EnemyPoseOffset EnemyAttackPose(
             const float settle =
                 1.0f - Detail::SmoothStep01(phaseTime / (PoseTuning::RECOVERY_SETTLE_SECONDS * 0.6f));
             offset.pitch = PoseTuning::BITE_CROUCH_PITCH * settle;
+        }
+        break;
+
+    case EnemyAttackKind::TailSpin:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 腰を落として踏ん張り、回る向きと逆へ体を捻る。
+            // 「その場で回る準備をしている」と分かる形にする。捻る向きが回る向きの手がかりになる。
+            offset.pitch = PoseTuning::SPIN_BRACE_PITCH * windupT;
+            offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * windupT;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            const EnemySpinPhase spinPhase = EnemySpinPhaseAt(phaseTime, spin.halfTurns);
+            offset.pitch = PoseTuning::SPIN_BRACE_PITCH * 0.7f;
+            if (spinPhase.pausing)
+            {
+                // 一拍。止まって腰を落とし、次の半回転へ向けてもう一度捻り直す。
+                // ここが2回目の呼び動作になる。尾の溜め直しと同じ進み方にして、
+                // 「体を捻って構え直している」と一目で分かる形にする。
+                // ここで「まだ終わっていない」と見せることが、この攻撃の読み合いそのものになる。
+                const float wind = Detail::SmoothStep01(
+                    std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
+                offset.pitch = PoseTuning::SPIN_BRACE_PITCH * (0.7f + 0.5f * wind);
+                offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * wind;
+            }
+            else
+            {
+                // 溜めた捻りを一気に戻す。回転そのものは物理の向きが担うので、
+                // ここは出だしの勢いを足すだけにする(足しすぎると判定の向きとずれる)。
+                const float release = Detail::FastOut(std::min(1.0f, spinPhase.segmentT * 2.5f));
+                offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * (1.0f - release);
+            }
+        }
+        else // Recovery
+        {
+            // 回り切って体が流れたまま止まる。隙が長いので、ここが反撃の本命。
+            const float settle =
+                1.0f - Detail::SmoothStep01(phaseTime / PoseTuning::RECOVERY_SETTLE_SECONDS);
+            offset.pitch = PoseTuning::SPIN_BRACE_PITCH * 0.7f * settle;
+            offset.yaw = spin.sign * PoseTuning::SPIN_OVERRUN_YAW * settle;
         }
         break;
 
@@ -303,6 +368,214 @@ inline EnemyPoseOffset EnemyConditionPose(EnemyCondition condition, bool moving,
         break;
     }
     return offset;
+}
+
+/**
+ * @brief 攻撃ごとに体の部位を動かす量(ラジアン)。全身の傾き(EnemyAttackPose)へ重ねる。
+ *
+ * 全身を傾けるだけでは、3種類の攻撃のシルエットが「前のめり/後ろ反り」の差にしかならない。
+ * 首・あご・尾・前脚を攻撃ごとに動かして、遠目にも「何が来るか」が分かる形を作る。
+ *
+ *   叩き付け : 首を高く持ち上げ、前脚を浮かせて溜める → 首を一気に振り下ろす
+ *   噛みつき : 首を引いて低く狙い、あごを開く → 首を前へ突き出す
+ *   薙ぎ払い : 首と尾を逆向きに寄せて捻る → 反対側へ振り抜く
+ *
+ * 動かすのは描画の姿勢だけで、当たり判定は攻撃ごとの距離と左右の広さ(EnemyAttackOf / EnemyHitHalfAngleOf)で決まる。
+ * 見た目と判定が食い違うと予兆が嘘になるので、振り抜く向きは判定の広さと揃えること。
+ */
+struct EnemyTellPose
+{
+    float neckPitch = 0.0f;    ///< 首を上下へ(正で持ち上げる)
+    float neckYaw = 0.0f;      ///< 首を左右へ
+    float jawOpen = 0.0f;      ///< あごを開く(正で開く)
+    float tailYaw = 0.0f;      ///< 尾を左右へ(根元から先まで同じ割合で曲げる)
+    /// 尾の**先だけ**を余分に振る量。根元は少し、先は大きく曲がる。
+    /// これが無いと尾が1本の棒のまま体と一緒に回り、振り回している感じが出ない
+    /// (実機で「尻尾と体がいっしょ。もっと尻尾を動かしてほしい」と指摘された)。
+    float tailWhip = 0.0f;
+    float frontLegLift = 0.0f; ///< 前脚を持ち上げる
+};
+
+namespace TellTuning
+{
+// 叩き付け: 首を高く上げて溜め、振り下ろす。前脚も浮かせて「大きく来る」ことを見せる。
+inline constexpr float SLAM_NECK_REAR = 0.95f;
+inline constexpr float SLAM_NECK_STRIKE = -1.10f;
+inline constexpr float SLAM_LEG_LIFT = 0.55f;
+inline constexpr float SLAM_JAW = 0.30f;
+// 噛みつき: 首を引いて狙い、あごを開く。予兆が短いので形の変化は小さめ。
+inline constexpr float BITE_NECK_PULL = 0.40f;
+inline constexpr float BITE_NECK_THRUST = -0.50f;
+inline constexpr float BITE_JAW = 0.75f;
+// 薙ぎ払い: 首と尾を逆向きに寄せて捻り、反対側へ振り抜く。
+inline constexpr float SWEEP_NECK_COIL = 1.15f;
+inline constexpr float SWEEP_NECK_SWING = -1.50f;
+inline constexpr float SWEEP_TAIL_COIL = 0.75f;
+// 尾回転: 尾は体と一緒に回るのではなく、遅れて引きずられ、振り終わりに追い越す(むちの動き)。
+//   溜め     : 回る向きの逆へ大きく引き寄せる(根元COIL + 先だけWHIP_COIL)
+//   回転の前半: 体に遅れて引きずられる(LAG)
+//   回転の後半: 一気に追い越して振り抜く(OVERSHOOT)
+//   一拍     : 振り抜いた形から戻し、もう一度引き寄せて溜め直す(=2回目の呼び動作)
+// 先ほど大きく振るため、WHIPの値は根元(COIL/LAG/OVERSHOOT)と同じくらい大きくしている。
+inline constexpr float SPIN_TAIL_COIL = 1.25f;
+inline constexpr float SPIN_TAIL_WHIP_COIL = 0.85f;
+inline constexpr float SPIN_TAIL_LAG = 0.80f;
+inline constexpr float SPIN_TAIL_WHIP_LAG = 0.70f;
+inline constexpr float SPIN_TAIL_OVERSHOOT = 0.55f;
+inline constexpr float SPIN_TAIL_WHIP_OVERSHOOT = 0.75f;
+/// 振り抜き(追い越し)が始まる位置。半回転の何割を過ぎてから尾が追い越すか。
+inline constexpr float SPIN_TAIL_WHIP_START = 0.55f;
+inline constexpr float SPIN_NECK_TUCK = -0.35f;
+} // namespace TellTuning
+
+/** 攻撃の種類と段階から、部位ごとの動かし方を求める。 */
+inline EnemyTellPose EnemyAttackTellPose(
+    EnemyAttackKind kind, EnemyAttackPhase phase, float phaseTime,
+    const EnemySpinState& spin = {})
+{
+    EnemyTellPose tell{};
+    if (phase == EnemyAttackPhase::None)
+        return tell;
+
+    const AttackData& attack = EnemyAttackOf(kind);
+    const float windupSeconds = std::max(0.01f, attack.frames.anticipationSeconds);
+    const float activeSeconds = std::max(
+        0.01f,
+        spin.activeSeconds > 0.0f ? spin.activeSeconds : attack.frames.activeSeconds);
+    const float windupT = Detail::SmoothStep01(phaseTime / windupSeconds);
+    const float activeT = std::clamp(phaseTime / activeSeconds, 0.0f, 1.0f);
+    // 隙では、振り抜いた形からゆっくり戻る。戻りきる前が反撃の機会になる。
+    const float settle =
+        1.0f - Detail::SmoothStep01(phaseTime / PoseTuning::RECOVERY_SETTLE_SECONDS);
+
+    switch (kind)
+    {
+    case EnemyAttackKind::Slam:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            tell.neckPitch = TellTuning::SLAM_NECK_REAR * windupT;
+            tell.frontLegLift = TellTuning::SLAM_LEG_LIFT * windupT;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            // 出だしを速くして、振り下ろしの打点を分かりやすくする。
+            const float strike = Detail::FastOut(activeT / 0.35f);
+            tell.neckPitch =
+                TellTuning::SLAM_NECK_REAR * (1.0f - strike) +
+                TellTuning::SLAM_NECK_STRIKE * strike;
+            tell.frontLegLift = TellTuning::SLAM_LEG_LIFT * (1.0f - strike);
+            tell.jawOpen = TellTuning::SLAM_JAW * strike;
+        }
+        else
+        {
+            tell.neckPitch = TellTuning::SLAM_NECK_STRIKE * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Bite:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            const float aim = Detail::FastOut(windupT);
+            tell.neckPitch = TellTuning::BITE_NECK_PULL * aim;
+            tell.jawOpen = TellTuning::BITE_JAW * aim;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            const float thrust = Detail::Pulse01(activeT);
+            tell.neckPitch =
+                TellTuning::BITE_NECK_PULL + TellTuning::BITE_NECK_THRUST * thrust;
+            tell.jawOpen = TellTuning::BITE_JAW * (1.0f - thrust * 0.6f);
+        }
+        else
+        {
+            tell.neckPitch = TellTuning::BITE_NECK_PULL * settle;
+            tell.jawOpen = TellTuning::BITE_JAW * settle * 0.5f;
+        }
+        break;
+
+    case EnemyAttackKind::TailSpin:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 尾を回る向きの逆へ大きく寄せて溜める。ここが「尾で来る」手がかりになるので、
+            // 4種類の中で最も大きく動かす。首は低くたたんで巻き込む。
+            tell.tailYaw = -spin.sign * TellTuning::SPIN_TAIL_COIL * windupT;
+            tell.tailWhip = -spin.sign * TellTuning::SPIN_TAIL_WHIP_COIL * windupT;
+            tell.neckPitch = TellTuning::SPIN_NECK_TUCK * windupT;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            const EnemySpinPhase spinPhase = EnemySpinPhaseAt(phaseTime, spin.halfTurns);
+            tell.neckPitch = TellTuning::SPIN_NECK_TUCK;
+            if (spinPhase.pausing)
+            {
+                // 一拍。ここが2回目の呼び動作になる。
+                //   前半: 振り抜いて追い越した形から戻す
+                //   後半: もう一度大きく引き寄せて溜め直し、溜めたまま待つ
+                // 「止まった=終わった」ではないことを尾の形で見せる。
+                // ここを省くと、止まった次の瞬間に尾が来て避けられない(実機で指摘された)。
+                const float settleOut =
+                    1.0f - Detail::SmoothStep01(std::min(1.0f, spinPhase.segmentT / 0.25f));
+                const float wind = Detail::SmoothStep01(
+                    std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
+                tell.tailYaw =
+                    spin.sign * TellTuning::SPIN_TAIL_OVERSHOOT * settleOut -
+                    spin.sign * TellTuning::SPIN_TAIL_COIL * wind;
+                tell.tailWhip =
+                    spin.sign * TellTuning::SPIN_TAIL_WHIP_OVERSHOOT * settleOut -
+                    spin.sign * TellTuning::SPIN_TAIL_WHIP_COIL * wind;
+            }
+            else
+            {
+                // 回っている間、尾は体と一緒には回らない。
+                // 前半は体に引きずられて遅れ、後半で一気に追い越して振り抜く(むちの動き)。
+                // 先(tailWhip)ほど大きく遅れ、大きく追い越す。
+                const float whip = Detail::SmoothStep01(std::clamp(
+                    (spinPhase.segmentT - TellTuning::SPIN_TAIL_WHIP_START) /
+                        (1.0f - TellTuning::SPIN_TAIL_WHIP_START),
+                    0.0f, 1.0f));
+                tell.tailYaw =
+                    -spin.sign * TellTuning::SPIN_TAIL_LAG * (1.0f - whip) +
+                    spin.sign * TellTuning::SPIN_TAIL_OVERSHOOT * whip;
+                tell.tailWhip =
+                    -spin.sign * TellTuning::SPIN_TAIL_WHIP_LAG * (1.0f - whip) +
+                    spin.sign * TellTuning::SPIN_TAIL_WHIP_OVERSHOOT * whip;
+            }
+        }
+        else
+        {
+            // 隙。振り抜いた形からゆっくり戻る。
+            tell.tailYaw = spin.sign * TellTuning::SPIN_TAIL_OVERSHOOT * settle;
+            tell.tailWhip = spin.sign * TellTuning::SPIN_TAIL_WHIP_OVERSHOOT * settle;
+            tell.neckPitch = TellTuning::SPIN_NECK_TUCK * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Sweep:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            tell.neckYaw = TellTuning::SWEEP_NECK_COIL * windupT;
+            tell.tailYaw = -TellTuning::SWEEP_TAIL_COIL * windupT;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            // 溜めた側から反対側へ一気に振り抜く。尾は首と逆向きに振れて体の回転を見せる。
+            const float swing = Detail::FastOut(activeT);
+            tell.neckYaw =
+                TellTuning::SWEEP_NECK_COIL * (1.0f - swing) +
+                TellTuning::SWEEP_NECK_SWING * swing;
+            tell.tailYaw =
+                -TellTuning::SWEEP_TAIL_COIL * (1.0f - swing) +
+                TellTuning::SWEEP_TAIL_COIL * swing;
+            tell.jawOpen = TellTuning::SLAM_JAW * swing;
+        }
+        else
+        {
+            tell.neckYaw = TellTuning::SWEEP_NECK_SWING * settle;
+            tell.tailYaw = TellTuning::SWEEP_TAIL_COIL * settle;
+        }
+        break;
+    }
+    return tell;
 }
 
 } // namespace Combat

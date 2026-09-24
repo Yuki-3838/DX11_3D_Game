@@ -62,17 +62,44 @@ public:
 	// 演出で加えている体の傾き・ひねり・高さ。
 	// 傾けると足元の最下点が変わるため、接地オフセットを計算する側が必要とする。
 	Combat::EnemyPoseOffset getAttackPoseOffset() const;
+	// 攻撃ごとに首・あご・尾・前脚を動かす量。攻撃のシルエットを種類ごとに変えるために使う。
+	Combat::EnemyTellPose getAttackTellPose() const;
+
+	// --- 尾回転(体ごと半回転して尾で薙ぐ攻撃) ---
+	// 回る向きと回転数は、当たり判定・アニメーション・構えが同じものを見る必要があるため公開する。
+	// 回転そのものは物理の向き(m_srt.rot.y)を回して作るので、
+	// 当たり判定(敵の向きの反対=尾の向き)と見た目は自動で一致する。
+	int getSpinHalfTurns() const { return m_spinHalfTurns; }
+	float getSpinSign() const { return m_spinSign; }
+	// 回っている間(Active)か。回転中は脚を動かすため、アニメーション側が見る。
+	bool isTailSpinning() const;
+	// 半回転と半回転の間で止まっている(一拍おいている)最中か。
+	// 止まっている間は脚も止める。動かすと、回っていないのに足踏みして見える。
+	bool isTailSpinPausing() const;
+	// 構えを求めるために渡す、尾回転の状態(回る向き・半回転の回数・判定の長さ)。
+	Combat::EnemySpinState getSpinState() const;
+	// 回転の進み具合(0→1)。回転中以外は0。
+	float getSpinProgress() const;
 
 	// 調整用。敵を攻撃させず、その場でプレイヤーの方を向かせるだけにする(練習用の的)。
 	// プレイヤーの攻撃モーションを、敵の攻撃に邪魔されずに見比べるため。
 	void setPassive(bool passive) { m_passive = passive; }
+	bool isPassive() const { return m_passive; }
 
 	// 調整用。攻撃の種類を固定する(デバッグ表示からのみ使う)。
 	// 3種類の構えを見比べるには同じ攻撃を繰り返し出させる必要があるが、
 	// 通常の選択は距離と直前の攻撃で変わるため、狙った攻撃が出るまで待つことになる。
 	void setForcedAttackKind(const Combat::EnemyAttackKind* kind);
 
+	// 撮影・比較用。構え(EnemyAttackPose)の加算を切る。
+	// 構えを入れる前と後を、同じカメラ・同じ攻撃で撮り比べるために使う。
+	// 全個体で共通の設定なので静的に持つ。
+	static void setAttackPoseEnabled(bool enabled) { s_attackPoseEnabled = enabled; }
+	static bool isAttackPoseEnabled() { return s_attackPoseEnabled; }
+
 private:
+	static inline bool s_attackPoseEnabled = true;
+
 	void changeState(MotionState nextState);
 	// 描画用の構え(EnemyAttackPose.h)へ渡すため、AIの状態を攻撃の段階へ変換する。
 	Combat::EnemyAttackPhase currentAttackPhase() const;
@@ -81,6 +108,8 @@ private:
 	float angleToTarget(const Vector3& targetPosition) const;
 	void faceTarget(const Vector3& targetPosition, float deltaSec, float turnRate);
 	void moveInFacingDirection(float distance);
+	// 尾回転に入る瞬間に、回る向きと基準の向きを決める。
+	void beginTailSpin(const Vector3& targetPosition);
 
 	static constexpr float PREFERRED_DISTANCE = 26.0f;
 	static constexpr float ATTACK_DISTANCE = 32.0f;
@@ -128,4 +157,8 @@ private:
 	bool m_passive = false;
 	bool m_forceAttackKind = false;
 	Combat::EnemyAttackKind m_forcedAttackKind = Combat::EnemyAttackKind::Slam;
+	// 尾回転。半回転の回数(1か2)、回る向き(+1/-1)、回り始めたときの向き。
+	int m_spinHalfTurns = 1;
+	float m_spinSign = 1.0f;
+	float m_spinStartYaw = 0.0f;
 };

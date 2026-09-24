@@ -84,7 +84,63 @@ float enemy::windupSeconds() const
 
 float enemy::activeSeconds() const
 {
+	// 尾回転は「半回転 → 一拍 → 半回転」で、回数によって長さが変わる
+	// (1回なら0.42秒、2回なら0.42+0.30+0.42=1.14秒)。
+	// 戦闘判定(OneVsOneCombat)も同じ計算をするので、判定とアニメーションの時間はそろう。
+	if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
+		return Combat::EnemySpinActiveSeconds(m_spinHalfTurns);
 	return getAttackData().frames.activeSeconds;
+}
+
+bool enemy::isTailSpinning() const
+{
+	return m_motionState == MotionState::Active &&
+		m_attackKind == Combat::EnemyAttackKind::TailSpin;
+}
+
+bool enemy::isTailSpinPausing() const
+{
+	if (!isTailSpinning())
+		return false;
+	return Combat::EnemySpinPhaseAt(m_stateTime, m_spinHalfTurns).pausing;
+}
+
+Combat::EnemySpinState enemy::getSpinState() const
+{
+	Combat::EnemySpinState state;
+	state.sign = m_spinSign;
+	state.halfTurns = m_spinHalfTurns;
+	state.activeSeconds = activeSeconds();
+	return state;
+}
+
+float enemy::getSpinProgress() const
+{
+	if (m_attackKind != Combat::EnemyAttackKind::TailSpin)
+		return 0.0f;
+	if (m_motionState == MotionState::Recovery)
+		return 1.0f;
+	if (m_motionState != MotionState::Active)
+		return 0.0f;
+	const int turns = std::max(1, m_spinHalfTurns);
+	return Combat::EnemySpinPhaseAt(m_stateTime, turns).turnedHalfTurns /
+		static_cast<float>(turns);
+}
+
+void enemy::beginTailSpin(const Vector3& targetPosition)
+{
+	// 尾は正面の反対を向いている。回す向きは「尾がプレイヤーへ早く届く側」を選ぶ。
+	const float tailYawNow = WrapAngle(m_srt.rot.y + PI);
+	const float delta = WrapAngle(angleToTarget(targetPosition) - tailYawNow);
+	// 予兆の間は正面をプレイヤーへ向けているので、尾はほぼ真後ろ(差が±180度付近)になる。
+	// その場合はどちらへ回しても尾が通るため、前回と逆向きにして
+	// 「いつも同じ側から尾が来る」と覚えられないようにする。
+	constexpr float AMBIGUOUS_ANGLE = 2.6f; // 約150度以上離れていたら「ほぼ真後ろ」とみなす
+	if (std::abs(delta) >= AMBIGUOUS_ANGLE)
+		m_spinSign = -m_spinSign;
+	else
+		m_spinSign = delta >= 0.0f ? 1.0f : -1.0f;
+	m_spinStartYaw = m_srt.rot.y;
 }
 
 float enemy::recoverySeconds() const
@@ -115,37 +171,55 @@ void enemy::setForcedAttackKind(const Combat::EnemyAttackKind* kind)
 
 void enemy::selectNextAttack(float distance)
 {
+	// 単純な巡回に位置ずらしを加えることで、外部の乱数生成器に依存せず
+	// 「毎回同じ順番」にもならないようにする。
+	m_attackSelectCounter = (m_attackSelectCounter + 1) % 7;
+
 	// 調整中は指定された攻撃だけを出す。射程の条件も無視する。
 	if (m_forceAttackKind)
 	{
 		m_previousAttackKind = m_attackKind;
 		m_attackKind = m_forcedAttackKind;
-		return;
+	}
+	else
+	{
+		// 距離で候補を絞り、そのうえで直前と同じ攻撃が続かないようにする。
+		// 完全なランダムだと同じ攻撃が連続して「読む意味」が薄れ、
+		// 逆に完全な順番固定だと暗記ゲームになるため、その中間を取る。
+		const bool inBiteRange = distance <= Combat::Tuning::ENEMY_BITE_HIT_RANGE;
+
+		Combat::EnemyAttackKind candidates[4];
+		int candidateCount = 0;
+		candidates[candidateCount++] = Combat::EnemyAttackKind::Slam;
+		candidates[candidateCount++] = Combat::EnemyAttackKind::Sweep;
+		// 尾回転は距離を問わず候補に入れる。危ないのは正面ではなく側面と背後なので、
+		// 「正面の攻撃を避けたあと、横へ回り込んで待つ」立ち回りへの答えになる。
+		// 懐(16以内)のプレイヤーには当たらないが、それは避け方として残す
+		// (敵が「近いから出さない」と判断すると、踏み込みの安全が確定してしまう)。
+		candidates[candidateCount++] = Combat::EnemyAttackKind::TailSpin;
+		// 噛みつきは射程が短いので、近いときだけ選択肢に入れる。
+		// 遠くから出しても当たらず、プレイヤーが予兆を読む意味が無くなるためである。
+		if (inBiteRange)
+			candidates[candidateCount++] = Combat::EnemyAttackKind::Bite;
+
+		int index = (m_attackSelectCounter + (m_attackSelectCounter / 3)) % candidateCount;
+		if (candidates[index] == m_previousAttackKind && candidateCount > 1)
+			index = (index + 1) % candidateCount;
+
+		m_previousAttackKind = m_attackKind;
+		m_attackKind = candidates[index];
 	}
 
-	// 距離で候補を絞り、そのうえで直前と同じ攻撃が続かないようにする。
-	// 完全なランダムだと同じ攻撃が連続して「読む意味」が薄れ、
-	// 逆に完全な順番固定だと暗記ゲームになるため、その中間を取る。
-	const bool inBiteRange = distance <= Combat::Tuning::ENEMY_BITE_HIT_RANGE;
-
-	Combat::EnemyAttackKind candidates[3];
-	int candidateCount = 0;
-	candidates[candidateCount++] = Combat::EnemyAttackKind::Slam;
-	candidates[candidateCount++] = Combat::EnemyAttackKind::Sweep;
-	// 噛みつきは射程が短いので、近いときだけ選択肢に入れる。
-	// 遠くから出しても当たらず、プレイヤーが予兆を読む意味が無くなるためである。
-	if (inBiteRange)
-		candidates[candidateCount++] = Combat::EnemyAttackKind::Bite;
-
-	// 単純な巡回に位置ずらしを加えることで、外部の乱数生成器に依存せず
-	// 「毎回同じ順番」にもならないようにする。
-	m_attackSelectCounter = (m_attackSelectCounter + 1) % 7;
-	int index = (m_attackSelectCounter + (m_attackSelectCounter / 3)) % candidateCount;
-	if (candidates[index] == m_previousAttackKind && candidateCount > 1)
-		index = (index + 1) % candidateCount;
-
-	m_previousAttackKind = m_attackKind;
-	m_attackKind = candidates[index];
+	// 尾回転の回転数。半々で「半回転1回」と「半回転 → 一拍 → 半回転」を出し分ける。
+	// 予兆は1回でも2回でも同じなので、「回り切って止まるのを見てから踏み込む」のが正解になる
+	// (モンスターハンターの回転尾攻撃と同じ読み合い)。
+	// 一拍の後にもう半回転来るかどうかは、止まった体勢を見ないと分からない。
+	if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
+	{
+		m_spinHalfTurns = (m_attackSelectCounter % 2 != 0)
+			? Combat::Tuning::ENEMY_SPIN_MAX_HALF_TURNS
+			: 1;
+	}
 }
 
 SRT enemy::getRenderSRT() const
@@ -254,18 +328,55 @@ void enemy::update(uint64_t dt)
 		break;
 	}
 	case MotionState::Windup:
-		faceTarget(targetPosition, deltaSec, 3.5f);
-		if (m_stateTime >= windupSeconds()) changeState(MotionState::Active);
+		// 尾回転は「その場で踏ん張って回る準備をする」攻撃なので、向き直りを遅くする。
+		faceTarget(
+			targetPosition,
+			deltaSec,
+			m_attackKind == Combat::EnemyAttackKind::TailSpin ? 2.2f : 3.5f);
+		if (m_stateTime >= windupSeconds())
+		{
+			if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
+				beginTailSpin(targetPosition);
+			changeState(MotionState::Active);
+		}
 		break;
 	case MotionState::Active:
-		// 攻撃判定中は踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
-		// 速さは攻撃ごとの表から引く。判定の時間を短くしたので、以前の固定値(48/68)のままだと
-		// 踏み込む距離が1/4になり、「距離を取るだけでは避けられない」読み合いが消える。
-		moveInFacingDirection(Combat::EnemyLungeSpeedOf(m_attackKind) * deltaSec);
+		if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
+		{
+			// 体ごと回す。当たり判定も描画もこの物理の向きを見ているので、
+			// 「尾が通ったところに当たる」が見た目と一致する
+			// (見た目だけ回すと判定の向きとずれて、予兆が嘘になる)。
+			// 「半回転 → 一拍おいて構え直す → もう半回転」のリズムで回す
+			// (リオレウス・リオレイアの回転尾攻撃。一続きに回すと、どこで止まるか読めない)。
+			// 半回転ごとに出だしと止まり際をなめらかにして、止まった瞬間を見て取れるようにする。
+			const Combat::EnemySpinPhase spin =
+				Combat::EnemySpinPhaseAt(m_stateTime, m_spinHalfTurns);
+			m_srt.rot.y = WrapAngle(m_spinStartYaw + m_spinSign * PI * spin.turnedHalfTurns);
+			// 回りながら少し流れる。踏み込みではないので小さくする。
+			// 止まっている間は動かさない(止まって見せることがこの攻撃の読み合いなので)。
+			if (!spin.pausing)
+				moveInFacingDirection(Combat::Tuning::ENEMY_SPIN_LUNGE_SPEED * deltaSec);
+		}
+		else
+		{
+			// 攻撃判定中は踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
+			// 速さは攻撃ごとの表から引く。判定の時間を短くしたので、以前の固定値(48/68)のままだと
+			// 踏み込む距離が1/4になり、「距離を取るだけでは避けられない」読み合いが消える。
+			moveInFacingDirection(Combat::EnemyLungeSpeedOf(m_attackKind) * deltaSec);
+		}
 		if (m_stateTime >= activeSeconds()) changeState(MotionState::Recovery);
 		break;
 	case MotionState::Recovery:
-		if (m_stateTime >= recoverySeconds()) changeState(MotionState::Retreat);
+		if (m_stateTime >= recoverySeconds())
+		{
+			// 尾回転のあとは後退させない。半回転1回なら背中を向けたまま止まっているので、
+			// そこから下がると「プレイヤーの方へ突っ込む」動きになってしまう
+			// (後退は自分の正面の反対へ動く処理なので、向きが逆のときは前へ出る)。
+			changeState(
+				m_attackKind == Combat::EnemyAttackKind::TailSpin
+					? MotionState::Circle
+					: MotionState::Retreat);
+		}
 		break;
 	case MotionState::Flinch:
 		// 怯んでいる間は何もしない。向き直りもしないので、背後へ回り込む機会になる。
@@ -292,14 +403,21 @@ void enemy::update(uint64_t dt)
 
 Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 {
+	// 撮影・比較用。構えを入れる前の見た目を再現する(dev_settings.ini の enemy_attack_pose=0)。
+	// 怯み・弱り具合の姿勢もまとめて切る。どれも同じ「描画用SRTへ足す演出」で、
+	// 一部だけ残すと比較にならないため。
+	if (!s_attackPoseEnabled)
+		return Combat::EnemyPoseOffset{};
+
 	// 怯みは攻撃の構えより優先する。構えの途中で怯んだら、構えを捨ててのけぞる。
 	if (m_motionState == MotionState::Flinch)
 	{
 		return Combat::EnemyFlinchPose(
 			m_stateTime, Combat::Tuning::ENEMY_FLINCH_SECONDS, m_flinchYawSign);
 	}
-	Combat::EnemyPoseOffset pose =
-		Combat::EnemyAttackPose(m_attackKind, currentAttackPhase(), m_stateTime);
+	// 尾回転は回る向きで構えが左右反転し、一拍の位置も回転数で変わるので、状態ごと渡す。
+	Combat::EnemyPoseOffset pose = Combat::EnemyAttackPose(
+		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
 
 	// 弱り具合の姿勢は、攻撃の予兆と攻撃判定の間には足さない。
 	// 息で頭が上下すると構えの形が崩れ、「何が来るか」が読みにくくなるため。
@@ -317,6 +435,18 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 		pose.yaw += condition.yaw;
 	}
 	return pose;
+}
+
+Combat::EnemyTellPose enemy::getAttackTellPose() const
+{
+	// 全身の傾きと同じ切り替え(dev_settings.ini の enemy_attack_pose=0)で、比較用にまとめて切れる。
+	if (!s_attackPoseEnabled)
+		return Combat::EnemyTellPose{};
+	// 怯んでいる間は攻撃の構えを捨てる(全身の傾きと同じ扱い)。
+	if (m_motionState == MotionState::Flinch)
+		return Combat::EnemyTellPose{};
+	return Combat::EnemyAttackTellPose(
+		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
 }
 
 bool enemy::setHealthRatio(float ratio)

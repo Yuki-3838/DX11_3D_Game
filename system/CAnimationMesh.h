@@ -27,6 +27,17 @@ protected:
 	std::unordered_map<std::string, Matrix4x4> m_RestLocalMatrices{};
 	std::unordered_map<std::string, Matrix4x4> m_RestGlobalMatrices{};
 	std::unordered_map<std::string, Matrix4x4> m_DebugBoneMatrices{};
+	// AddBoneLocalRotations()で足した回転の控え。
+	// Update()は「再生中のクリップにキーがある骨」しかAnimationMatrixを書き換えない。
+	// キーが無い骨(例: dragon_idle.daeにはneck2のキーが無い)へ回転を足し続けると、
+	// 毎フレーム積み重なって骨が折れ曲がる。足す前の行列を覚えておき、
+	// クリップが書き換えていなければ、次に足すときへ元へ戻してからやり直す。
+	struct LayeredBoneRotation
+	{
+		Matrix4x4 beforeLayer{}; ///< 足す前のAnimationMatrix
+		Matrix4x4 afterLayer{};  ///< 足した直後のAnimationMatrix(書き換えられたかの判定に使う)
+	};
+	std::unordered_map<std::string, LayeredBoneRotation> m_LayeredBoneRotations{};
 
 	// レンダラ
 	CStaticMeshRenderer m_StaticMeshRenderer{};
@@ -34,7 +45,6 @@ protected:
 	CStaticMeshRenderer m_swordRenderer{};
 	std::string m_swordAssetPath{};
 	std::string m_swordPresetPath{};
-	std::string m_swordPresetStatus{"Preset not loaded"};
 	bool m_swordUsesPlayerAsset = false;
 	bool m_swordEmbeddedInPlayerAsset = false;
 	std::unique_ptr<CMesh> m_swordProxyMesh{};
@@ -51,9 +61,9 @@ protected:
 	// Fallen Paladinの剣の握り位置を表すローカル座標。
 	// 全体の境界中心ではなく、抽出した柄の領域から測定した値を使う。
 	Vector3 m_swordGripLocalPoint{};
-	Vector3 m_swordTestPosition{ 30.0f, 55.0f, 0.0f };
-	// GameSceneの調整画面で合わせた値。
-	// プリセットがない場合の安全な初期値として使用する。
+	// 剣を右手へ合わせる値(調整済み)。
+	// 同じ名前のプリセットファイルがあればそこから読み直す(LoadSwordAttachmentPreset)。
+	// 以前は画面上の調整ウィンドウから動かして保存できたが、合わせ終わったので外した。
 	Vector3 m_swordRotationDegrees{ 81.50f, -46.50f, 76.75f };
 	Vector3 m_swordHandOffset{ 0.650f, -0.070f, 0.646f };
 	Vector3 m_swordWorldBase{};
@@ -61,15 +71,12 @@ protected:
 	Vector3 m_swordPreviousWorldTip{};
 	Matrix4x4 m_swordWorldMatrix = Matrix4x4::Identity;
 	bool m_swordWorldSegmentValid = false;
-	bool m_swordDebugRegistered = false;
 	bool m_swordTransformLogged = false;
 	bool m_swordEnabled = true;
 	bool m_swordUseGuaranteedProxy = true;
-	bool m_swordForceTestPlacement = false;
 	std::vector<uint32_t> m_embeddedSwordVertexIndices{};
 
 	void LoadSwordAttachmentPreset();
-	void SaveSwordAttachmentPreset();
 
 	// 1本のクリップを、指定したボーンだけへ適用する。
 	// ボーン辞書を休止姿勢へ戻す処理は呼び出し側で行う(複数回重ねられるようにするため)。
@@ -255,6 +262,29 @@ public:
 
 	/** IKで書き換えたローカル行列を、親子関係とGPUへ渡す行列へ反映する。 */
 	void RefreshBoneMatrices(BoneCombMatrix& bonecombarray);
+
+	/**
+	 * @brief 再生中のクリップの姿勢へ、骨ごとの回転を「足す」。
+	 *
+	 * @param localRotations 骨の名前 → その骨自身のローカル空間で足す回転。
+	 *
+	 * @details
+	 * UpdateAnimationWithManualPose()は、クリップで動かす骨には手続きの姿勢を足せない(上書きになる)。
+	 * 敵の攻撃は1本のクリップを全身へ当てているので、その上から首や尾だけを動かして
+	 * 攻撃ごとに違うシルエットを作るために使う。
+	 * 行ベクトル規約なので「足す回転 × クリップのローカル行列」の順で、骨の根元を中心に回る。
+	 * 呼んだ後は RefreshBoneMatrices() で階層と定数バッファへ反映すること。
+	 *
+	 * **毎フレーム呼ぶこと。足すのをやめるときは空の表で呼ぶ**(前回足した分を取り消すため)。
+	 * Update()はクリップにキーがある骨しか書き換えないので、キーが無い骨は
+	 * 前のフレームの姿勢が残ったままになる。そこへ足し続けると回転が積み重なって骨が壊れる。
+	 * 実際、待機クリップ(dragon_idle.dae)には首の2番目のキーが無く、
+	 * 尾回転の溜め(約1.1秒=約69フレーム)の間に首が1周以上ねじれた。
+	 *
+	 * @return 骨の姿勢を変えた(足した、または前回の分を取り消した)ならtrue。
+	 *         trueのときだけ RefreshBoneMatrices() を呼べばよい。
+	 */
+	bool AddBoneLocalRotations(const std::unordered_map<std::string, Matrix4x4>& localRotations);
 	const std::unordered_map<std::string, Matrix4x4>& GetDebugBoneMatrices() const
 	{
 		return m_DebugBoneMatrices;
@@ -279,7 +309,6 @@ public:
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
 	void Draw();
-	void RenderSwordDebug();
 	bool IsSwordLoaded() const { return m_swordMesh != nullptr || m_swordEmbeddedInPlayerAsset; }
 	bool GetSwordWorldSweep(Vector3& base, Vector3& tip, Vector3& previousTip) const
 	{

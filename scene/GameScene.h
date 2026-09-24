@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <string>
+#include <unordered_map>
 #include "../system/SceneClassFactory.h"
 #include "../system/IScene.h"
 #include "../system/C3DShape.h"
@@ -141,6 +143,15 @@ private:
 	bool m_mouseLookCaptured = true;
 	// 足の接地(フットロック)。移動中、接地している足のつま先をワールドへ固定して脚をIKで合わせる。
 	void UpdateFootLock(float deltaSeconds);
+	// 撮影・調整用: 動かない・攻撃しない・倒れない敵(練習台)をプレイヤーの正面へ置く。
+	void PlaceTrainingDummy();
+	// 攻撃ごとのシルエット。クリップの姿勢へ、首・あご・尾・前脚の回転を重ねる。
+	// 構えが無いとき(攻撃していないとき)も毎フレーム呼ぶこと。
+	// 前のフレームで重ねた回転を取り消すのもこの中で行っている。
+	void ApplyEnemyTellPose(const Combat::EnemyTellPose& tell);
+	// 構えから「骨の名前 → 重ねる回転」を作る。見た目の計算だけで、メッシュには触らない。
+	std::unordered_map<std::string, Matrix4x4> BuildEnemyTellRotations(
+		const Combat::EnemyTellPose& tell) const;
 	bool m_footLockEnabled = true;
 	FootLock::Settings m_footLockSettings{};
 	FootLock::FootState m_footLockLeft{};
@@ -165,7 +176,9 @@ private:
 	float m_playerStamina = 100.0f;
 	static constexpr float PLAYER_MAX_STAMINA = 100.0f;
 	int m_dodgeInvincibleStartFrame = 0;
-	int m_dodgeInvincibleEndFrame = 12;
+	// 無敵は前転0.5秒のうち0〜0.27秒。0.2秒では、予兆を見て転がっても着地際に当たることが多く
+	// 「ほぼ避けられない」と指摘された(ダークソウルのローリングも転がりの前半が無敵)。
+	int m_dodgeInvincibleEndFrame = 16;
 	int m_attackCancelEndFrame = 18;
 	bool m_drawAttackCollisionDebug = false;
 	bool m_drawAttackCollisionLabels = false;

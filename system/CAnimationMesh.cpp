@@ -5,6 +5,7 @@
 #include <cctype>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
@@ -183,7 +184,6 @@ void CAnimationMesh::LoadSwordAttachmentPreset()
 	std::ifstream input(m_swordPresetPath);
 	if (!input)
 	{
-		m_swordPresetStatus = "No saved preset (using defaults)";
 		return;
 	}
 
@@ -199,33 +199,6 @@ void CAnimationMesh::LoadSwordAttachmentPreset()
 		else if (key == "rotation_z") m_swordRotationDegrees.z = value;
 		else if (key == "scale") m_swordScale = value;
 	}
-	m_swordPresetStatus = "Loaded: " + m_swordPresetPath;
-}
-
-void CAnimationMesh::SaveSwordAttachmentPreset()
-{
-	if (m_swordPresetPath.empty())
-	{
-		m_swordPresetStatus = "Cannot save: no sword asset path";
-		return;
-	}
-
-	std::ofstream output(m_swordPresetPath, std::ios::trunc);
-	if (!output)
-	{
-		m_swordPresetStatus = "Cannot save: file is not writable";
-		return;
-	}
-
-	output << "# Fallen Paladin sword attachment preset\n"
-		<< "offset_x " << m_swordHandOffset.x << "\n"
-		<< "offset_y " << m_swordHandOffset.y << "\n"
-		<< "offset_z " << m_swordHandOffset.z << "\n"
-		<< "rotation_x " << m_swordRotationDegrees.x << "\n"
-		<< "rotation_y " << m_swordRotationDegrees.y << "\n"
-		<< "rotation_z " << m_swordRotationDegrees.z << "\n"
-		<< "scale " << m_swordScale << "\n";
-	m_swordPresetStatus = "Saved: " + m_swordPresetPath;
 }
 
 bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
@@ -446,8 +419,7 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 	}
 
 	const auto boneIt = m_DebugBoneMatrices.find(m_swordBoneName);
-	const bool useBoneAttachment = !m_swordForceTestPlacement &&
-		boneIt != m_DebugBoneMatrices.end();
+	const bool useBoneAttachment = boneIt != m_DebugBoneMatrices.end();
 	const Matrix4x4 boneMatrix = useBoneAttachment
 		? boneIt->second
 		: Matrix4x4::Identity;
@@ -461,9 +433,8 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 	const Matrix4x4 sizeMatrix = drawProxy
 		? Matrix4x4::CreateScale(m_swordProxyLength)
 		: Matrix4x4::CreateScale(m_swordScale);
-	const Vector3 placement = useBoneAttachment
-		? m_swordHandOffset
-		: m_swordTestPosition;
+	// 手の骨が見つからなかったときは原点へ置く(剣が行方不明にならないようにするため)。
+	const Vector3 placement = useBoneAttachment ? m_swordHandOffset : Vector3();
 	const Matrix4x4 swordLocal = centerCorrection * sizeMatrix *
 		Matrix4x4::CreateFromYawPitchRoll(
 			rotationRadians.y, rotationRadians.x, rotationRadians.z) *
@@ -683,11 +654,6 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 				<< " vertices=" << subset.VertexNum << std::endl;
 		}
 		m_swordWorldSegmentValid = false;
-		if (!m_swordDebugRegistered)
-		{
-			DebugUI::RedistDebugFunction([this]() { RenderSwordDebug(); });
-			m_swordDebugRegistered = true;
-		}
 		return;
 	}
 	std::filesystem::path swordPath = m_swordUsesPlayerAsset
@@ -768,97 +734,8 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 			<< " attachBone=" << m_swordBoneName
 			<< " scale=" << m_swordScale << std::endl;
 	}
-	if (!m_swordDebugRegistered)
-	{
-		DebugUI::RedistDebugFunction([this]() { RenderSwordDebug(); });
-		m_swordDebugRegistered = true;
-	}
 	LoadSwordAttachmentPreset();
 
-}
-
-void CAnimationMesh::RenderSwordDebug()
-{
-	ImGui::SetNextWindowPos(ImVec2(900.0f, 80.0f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(430.0f, 470.0f), ImGuiCond_FirstUseEver);
-	ImGui::Begin("Sword Attachment Debug");
-	ImGui::Checkbox("Draw sword", &m_swordEnabled);
-	ImGui::Checkbox("Use guaranteed sword", &m_swordUseGuaranteedProxy);
-	ImGui::Checkbox("Force test placement", &m_swordForceTestPlacement);
-	ImGui::TextColored(
-		m_swordUsesPlayerAsset && m_swordMesh
-			? ImVec4(0.25f, 1.0f, 0.35f, 1.0f)
-			: (m_swordProxyMesh ? ImVec4(0.25f, 1.0f, 0.35f, 1.0f) : ImVec4(1.0f, 0.25f, 0.25f, 1.0f)),
-		m_swordUsesPlayerAsset && m_swordMesh
-			? "MODEL SWORD: EQUIPPED"
-			: (m_swordProxyMesh ? "GUARANTEED SWORD: READY" : "GUARANTEED SWORD: FAILED"));
-	ImGui::Text("Asset: %s", m_swordAssetPath.empty() ? "NOT FOUND" : m_swordAssetPath.c_str());
-	ImGui::SeparatorText("LIVE FIT - changes apply immediately");
-	ImGui::TextWrapped("Drag the values while watching the character. Save attachment keeps the fit for the next launch.");
-	ImGui::DragFloat3("Rotation XYZ (deg)", &m_swordRotationDegrees.x, 0.25f, -180.0f, 180.0f, "%.2f");
-	if (m_swordForceTestPlacement)
-		ImGui::DragFloat3("Test position", &m_swordTestPosition.x, 0.05f, -1000.0f, 1000.0f, "%.3f");
-	else
-		ImGui::DragFloat3("Hand offset (local)", &m_swordHandOffset.x, 0.01f, -10.0f, 10.0f, "%.3f");
-	ImGui::DragFloat("Model scale", &m_swordScale, 0.005f, 0.001f, 1000.0f, "%.3f");
-	if (ImGui::Button("Save attachment"))
-		SaveSwordAttachmentPreset();
-	ImGui::SameLine();
-	if (ImGui::Button("Load saved"))
-		LoadSwordAttachmentPreset();
-	ImGui::SameLine();
-	if (ImGui::Button("Reset default"))
-	{
-		m_swordRotationDegrees = Vector3(81.50f, -46.50f, 76.75f);
-		m_swordHandOffset = Vector3(0.650f, -0.070f, 0.646f);
-		m_swordScale = 1.0f;
-		m_swordPresetStatus = "Reset in memory (press Save attachment to keep it)";
-	}
-	ImGui::TextWrapped("Preset: %s", m_swordPresetStatus.c_str());
-	ImGui::Text("Attach bone: %s", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str());
-	if (ImGui::BeginCombo("Right hand bone", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str()))
-	{
-		std::vector<std::string> candidates;
-		for (const auto& [name, bone] : m_BoneDictionary)
-			if (SwordBonePriority(name) > 0) candidates.push_back(name);
-		std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
-			return SwordBonePriority(a) > SwordBonePriority(b);
-		});
-		for (const std::string& name : candidates)
-		{
-			const bool selected = name == m_swordBoneName;
-			if (ImGui::Selectable(name.c_str(), selected)) m_swordBoneName = name;
-			if (selected) ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-	if (ImGui::Button("Show beside player"))
-	{
-		m_swordUseGuaranteedProxy = true;
-		m_swordForceTestPlacement = true;
-		m_swordTestPosition = Vector3(30.0f, 55.0f, 0.0f);
-		m_swordRotationDegrees = Vector3(0.0f, 0.0f, -90.0f);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Attach to right hand"))
-	{
-		m_swordUseGuaranteedProxy = true;
-		m_swordForceTestPlacement = false;
-	}
-	if (!m_swordMesh)
-	{
-		ImGui::TextColored(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "NOT LOADED");
-		ImGui::Text("Asset: %s", m_swordAssetPath.empty() ? "NOT FOUND" : m_swordAssetPath.c_str());
-	}
-	else
-	{
-		ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "LOADED");
-		ImGui::Text("Vertices: %zu", m_swordMesh->GetVertices().size());
-		ImGui::Text("Subsets: %zu", m_swordMesh->GetSubsets().size());
-		ImGui::Text("Model center: %.1f, %.1f, %.1f",
-			m_swordModelCenter.x, m_swordModelCenter.y, m_swordModelCenter.z);
-	}
-	ImGui::End();
 }
 
 // 階層構造を考慮したボーンコンビネーション行列を更新
@@ -1479,6 +1356,50 @@ bool CAnimationMesh::GetBoneModelPosition(const std::string& boneName, Vector3& 
 		return false;
 	outPosition = MatrixPosition(found->second);
 	return true;
+}
+
+bool CAnimationMesh::AddBoneLocalRotations(
+	const std::unordered_map<std::string, Matrix4x4>& localRotations)
+{
+	// 行列が1ビットも変わっていないか。Update()がこの骨を書き換えたかの判定に使う。
+	const auto sameMatrix = [](const Matrix4x4& a, const Matrix4x4& b)
+	{
+		return std::memcmp(&a, &b, sizeof(Matrix4x4)) == 0;
+	};
+
+	bool changed = false;
+	// 1) 前回ここで足した分を取り消す。
+	//    Update()はクリップにキーがある骨しかAnimationMatrixを書き換えない。
+	//    キーが無い骨は前フレームの姿勢(=前回足した結果)が残っているので、
+	//    そこへさらに足すと回転が積み重なって骨が折れ曲がる。
+	//    クリップが書き換えていれば(行列が変わっていれば)、その姿勢が正しいので取り消さない。
+	for (const auto& [boneName, layer] : m_LayeredBoneRotations)
+	{
+		auto bone = m_BoneDictionary.find(boneName);
+		if (bone == m_BoneDictionary.end())
+			continue;
+		if (!sameMatrix(bone->second.AnimationMatrix, layer.afterLayer))
+			continue;
+		bone->second.AnimationMatrix = layer.beforeLayer;
+		changed = true;
+	}
+	m_LayeredBoneRotations.clear();
+
+	// 2) 今回の分を足す。
+	for (const auto& [boneName, rotation] : localRotations)
+	{
+		auto bone = m_BoneDictionary.find(boneName);
+		if (bone == m_BoneDictionary.end())
+			continue;
+		LayeredBoneRotation layer;
+		layer.beforeLayer = bone->second.AnimationMatrix;
+		// 行ベクトル規約: 先に回してからクリップのローカル変換を掛けると、骨の根元を中心に回る。
+		bone->second.AnimationMatrix = rotation * layer.beforeLayer;
+		layer.afterLayer = bone->second.AnimationMatrix;
+		m_LayeredBoneRotations.emplace(boneName, layer);
+		changed = true;
+	}
+	return changed;
 }
 
 void CAnimationMesh::RefreshBoneMatrices(BoneCombMatrix& bonecombarray)

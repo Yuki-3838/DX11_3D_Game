@@ -68,9 +68,9 @@ void gameupdate(uint64_t deltatime)
     SoundManager::Update();
 
     // F1：ゲームシーン、F2：車モデルシーン、F4：デバッグ表示切り替え
-    // F3のゲーム内モーションエディター(MotionEditorScene)は、ユーザー判断でいったん外した。
-    // 外部ツール(tools/MotionEditor.Wpf)と役割が重複しており、デバッグツールは1つでよいため。
-    // シーンのコードは残してあるので、戻す場合はここへ分岐を足し直すだけでよい。
+    // F3のゲーム内モーションエディター(MotionEditorScene)は2026-09-15にユーザー判断で外し、
+    // 2026-09-24にシーンごと削除した。外部ツール(tools/MotionEditor.Wpf)と役割が重複しているため。
+    // 戻したい場合はgitの履歴から取り出すこと。
     if (input.IsKeyTriggered(DIK_F1))
     {
         SceneManager::SetCurrentScene("GameScene");

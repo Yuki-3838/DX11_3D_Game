@@ -204,6 +204,11 @@ bool OneVsOneCombat::CanCancelPlayerAttack(int cancelEndFrame) const
 {
 	if (!IsPlayerAttacking() || IsPlayerDefeated() || IsEnemyDefeated())
 		return false;
+	// 振り終わった後の硬直は、回避で切り上げられる(モンスターハンターの片手剣と同じ)。
+	// 硬直を最後まで縛られると、攻撃を振った直後の敵の攻撃を避ける手段が無くなり、
+	// 「攻めたら必ず被弾する」戦いになってしまう。
+	if (m_playerAttack.phase == Phase::Recovery)
+		return true;
 	return GetPlayerAttackFrame() <= cancelEndFrame;
 }
 
@@ -243,6 +248,8 @@ void OneVsOneCombat::Update(
         static_cast<float>(deltaMicroseconds) / 1000000.0f,
         0.1f);
     const float distance = DistanceXZ(playerPosition, enemyPosition);
+	m_playerHitLanded = false;
+	m_enemyHitLanded = false;
 
     m_collisionDebug = EvaluateSwordCollision(
         swordBase,
@@ -281,7 +288,12 @@ void OneVsOneCombat::Update(
 		// プレイヤーは予兆を見て回避するか踏み込むかを選べる。
 		const Combat::AttackData& enemyAttack = Combat::EnemyAttackOf(m_enemyAttackKind);
 		const float enemyWindup = enemyAttack.frames.anticipationSeconds;
-		const float enemyActive = enemyAttack.frames.activeSeconds;
+		// 尾回転は「半回転 → 一拍 → 半回転」で、回数によって判定の長さが変わる。
+		// 敵AI(enemy::activeSeconds)と同じ計算をして、時刻をそろえる。
+		const float enemyActive =
+			m_enemyAttackKind == Combat::EnemyAttackKind::TailSpin
+				? Combat::EnemySpinActiveSeconds(m_enemySpinHalfTurns)
+				: enemyAttack.frames.activeSeconds;
 		const float enemyRecovery = enemyAttack.frames.recoverySeconds;
 
 		if (enemyAttackTriggered && m_enemyAttack.phase == Phase::Ready)
@@ -302,17 +314,35 @@ void OneVsOneCombat::Update(
 			// ダメージを与えるのは最初の一撃だけにする。
 			// その後の踏み込みは移動・アニメーション専用で、二重にヒットさせない。
 			const float firstHitTime = Combat::EnemyFirstHitTimeOf(m_enemyAttackKind);
-			if (m_enemyAttack.hitCount < ENEMY_MAX_HITS &&
+			// 尾回転だけは、当たり判定の基準が敵の正面ではなく**尾の向き(正面の反対)**で、
+			// 体の回転につれて危険な向きが動いていく。
+			// そのため「当たる瞬間を1回だけ見る」方式では判定できず、
+			// 判定時間の間ずっと「いま尾がプレイヤーの方を通ったか」を見る。
+			const bool tailArc = Combat::EnemyAttackUsesTailArc(m_enemyAttackKind);
+			// 尾回転は半回転ごとに1回まで当たる。半回転の間の一拍では判定を出さない
+			// (尾が止まっているので、そこへ歩いて当たるのは見た目と合わない)。
+			const int maxHits = Combat::EnemyMaxHitsOf(m_enemyAttackKind, m_enemySpinHalfTurns);
+			const bool spinPausing = tailArc &&
+				Combat::EnemySpinPhaseAt(m_enemyAttack.elapsed, m_enemySpinHalfTurns).pausing;
+			if (m_enemyAttack.hitCount < maxHits &&
+				!spinPausing &&
 				m_enemyAttack.elapsed >= firstHitTime)
 			{
 				// 射程は攻撃の種類ごとに違う。噛みつきは近距離だけ、薙ぎ払いは広い。
 				const float hitRange = enemyAttack.broadPhaseFilter.maxDistance;
+				// 尾回転には近すぎて当たらない距離がある(尾が頭上を通る懐)。
+				// 「離れて避ける」以外に「踏み込んで避ける」答えを残すためである。
+				const float minHitRange = Combat::EnemyMinHitRangeOf(m_enemyAttackKind);
 				// 左右の広さも攻撃ごとに変える。以前は距離だけで判定していたため、
 				// 真後ろにいても噛みつきが当たっていた。それでは
 				// 「予兆の形を見て回り込む」という選択が成立しない。
-				// 敵の正面(enemy.cppと同じ -sin/-cos の向き)との角度差で絞る。
-				const Vector3 enemyForward(
-					-std::sin(m_enemyFacingYaw), 0.0f, -std::cos(m_enemyFacingYaw));
+				// 基準の向きは、尾回転なら尾の向き、ほかは敵の正面
+				// (どちらも enemy.cpp と同じ -sin/-cos の向きの取り方)。
+				constexpr float HALF_TURN = 3.14159265f;
+				const float referenceYaw =
+					tailArc ? m_enemyFacingYaw + HALF_TURN : m_enemyFacingYaw;
+				const Vector3 hitDirection(
+					-std::sin(referenceYaw), 0.0f, -std::cos(referenceYaw));
 				const float toPlayerX = playerPosition.x - enemyPosition.x;
 				const float toPlayerZ = playerPosition.z - enemyPosition.z;
 				const float toPlayerLength =
@@ -322,20 +352,35 @@ void OneVsOneCombat::Update(
 				if (toPlayerLength > 0.0001f)
 				{
 					const float cosAngle = std::clamp(
-						(enemyForward.x * toPlayerX + enemyForward.z * toPlayerZ) /
+						(hitDirection.x * toPlayerX + hitDirection.z * toPlayerZ) /
 							toPlayerLength,
 						-1.0f, 1.0f);
 					angleToPlayer = std::acos(cosAngle);
 				}
-				const bool inFrontArc =
+				const bool inHitArc =
 					angleToPlayer <= Combat::EnemyHitHalfAngleOf(m_enemyAttackKind);
-				if (distance <= hitRange && inFrontArc && !playerInvincible)
+				const bool inHitRange = distance <= hitRange && distance >= minHitRange;
+				const bool wouldHit = inHitRange && inHitArc;
+				if (wouldHit && !playerInvincible)
 				{
-					m_playerHp = std::max(
-						0.0f,
-						m_playerHp - static_cast<float>(enemyAttack.damage));
+					// 当たったことは無敵の設定に関係なく記録する(吹き飛ばしや画面の揺れはこれで出す)。
+					// 撮影・調整用の「プレイヤーを無敵」では、体力だけ減らさない。
+					m_enemyHitLanded = true;
+					if (!m_playerDebugInvincible)
+					{
+						m_playerHp = std::max(
+							0.0f,
+							m_playerHp - static_cast<float>(enemyAttack.damage));
+					}
 				}
-				++m_enemyAttack.hitCount;
+				// 判定の権利を使い切るタイミング。
+				// ほかの攻撃は「当たる瞬間」に1回だけ見るので、外れてもそこで使い切る。
+				// 尾回転は尾がまだ来ていないうちに使い切ってしまうと当たらない攻撃になるため、
+				// 尾がプレイヤーの方を通った(避けられた場合も含む)ときだけ使い切る。
+				// 権利は半回転ごとに1回(Combat::EnemyMaxHitsOf)。2回目も当たるようにしないと
+				// 「1回目を避けたら残りは無視してよい」ことになり、待ちの読み合いが消える。
+				if (!tailArc || wouldHit)
+					++m_enemyAttack.hitCount;
 			}
             if (m_enemyAttack.elapsed >= enemyActive)
             {
@@ -366,6 +411,8 @@ void OneVsOneCombat::UpdateWithoutEnemy(
 		0.1f);
 	// 当たる相手がいないので、境界での接触の保持も持ち越さない。
 	m_playerHitGrace = 0.0f;
+	m_playerHitLanded = false;
+	m_enemyHitLanded = false;
 	if (IsPlayerDefeated())
 		return;
 	AdvancePlayerAttack(deltaSeconds, playerAttackTriggered, playerHeavyAttackTriggered, false);
@@ -422,8 +469,14 @@ void OneVsOneCombat::AdvancePlayerAttack(
 			if (canHitEnemy && !m_playerAttack.hit &&
 				(m_collisionDebug.narrowPhaseHit || m_playerHitGrace > 0.0f))
 			{
-				const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
-				m_enemyHp = std::max(0.0f, m_enemyHp - damage);
+				// 当たったことは無敵の設定に関係なく記録する(火花・ヒットストップ・怯みはこれで出す)。
+				// 撮影・調整用の「敵を無敵」では、体力だけ減らさない(倒れず、弱り具合も変わらない)。
+				m_playerHitLanded = true;
+				if (!m_enemyDebugInvincible)
+				{
+					const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
+					m_enemyHp = std::max(0.0f, m_enemyHp - damage);
+				}
 				m_playerAttack.hit = true;
 				m_playerHitGrace = 0.0f;
             }

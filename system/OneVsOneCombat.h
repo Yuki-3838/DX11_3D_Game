@@ -45,6 +45,10 @@ public:
 	// 敵の向き(ヨー)。攻撃判定を正面からの角度で絞るために使う。
 	// Update()の引数がすでに多いため、攻撃の種類と同じくセッターで渡す。
 	void SetEnemyFacingYaw(float yawRadians) { m_enemyFacingYaw = yawRadians; }
+	// 尾回転の半回転の回数(1か2)。敵AIが決めたものをそのまま渡す。
+	// 判定の長さ(半回転と一拍の合計)も、いつ止まっているかも、ここから同じ計算で求める。
+	// 別々に持つと「見た目は止まっているのに当たる」といったずれが生まれる。
+	void SetEnemySpinHalfTurns(int halfTurns) { m_enemySpinHalfTurns = halfTurns; }
 	// プレイヤーが走っているか。走りながら弱攻撃を押すとダッシュ攻撃になる(Update前に設定する)。
 	void SetPlayerSprinting(bool sprinting) { m_playerSprinting = sprinting; }
 	bool IsPlayerDashAttack() const { return m_playerAttack.dash && m_playerAttack.comboStep == 1; }
@@ -88,6 +92,16 @@ public:
     float GetEnemyMaxHp() const { return ENEMY_MAX_HP; }
     // 調整用。敵の体力を直接設定する(弱り具合の見た目を確かめるため。デバッグ表示から使う)。
     void SetEnemyHpForDebug(float hp) { m_enemyHp = std::clamp(hp, 1.0f, ENEMY_MAX_HP); }
+    // 撮影・調整用の無敵。攻撃は当たって演出(火花・怯み・吹き飛ばし)も出るが、体力だけ減らない。
+    // 仕切り直し(Reset)をしても設定は残す。
+    void SetEnemyDebugInvincible(bool invincible) { m_enemyDebugInvincible = invincible; }
+    bool IsEnemyDebugInvincible() const { return m_enemyDebugInvincible; }
+    void SetPlayerDebugInvincible(bool invincible) { m_playerDebugInvincible = invincible; }
+    bool IsPlayerDebugInvincible() const { return m_playerDebugInvincible; }
+    // この更新でプレイヤーの攻撃が敵に当たったか / 敵の攻撃がプレイヤーに当たったか。
+    // 命中の演出は体力の増減ではなくこれで出す(無敵でも演出は出したいため)。
+    bool DidPlayerHitLand() const { return m_playerHitLanded; }
+    bool DidEnemyHitLand() const { return m_enemyHitLanded; }
     bool IsPlayerDefeated() const { return m_playerHp <= 0.0f; }
     bool IsEnemyDefeated() const { return m_enemyHp <= 0.0f; }
 	bool CanStartPlayerAttack() const { return m_playerAttack.phase == Phase::Ready && !IsPlayerDefeated() && !IsEnemyDefeated(); }
@@ -150,7 +164,8 @@ private:
     static constexpr float ENEMY_ACTIVE = Combat::Tuning::ENEMY_ACTIVE;
     static constexpr float ENEMY_RECOVERY = Combat::Tuning::ENEMY_RECOVERY;
     static constexpr float ENEMY_COOLDOWN = Combat::Tuning::ENEMY_COOLDOWN;
-	static constexpr int ENEMY_MAX_HITS = 1;
+	// 1回の攻撃で当てられる回数は Combat::EnemyMaxHitsOf() が決める
+	// (通常は1回。尾回転だけ半回転ごとに1回)。
 
     float m_playerHp = PLAYER_MAX_HP;
     float m_enemyHp = ENEMY_MAX_HP;
@@ -158,9 +173,14 @@ private:
     // 敵が現在出している攻撃の種類。時間・威力・射程はここから引く。
     Combat::EnemyAttackKind m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
     float m_enemyFacingYaw = 0.0f;
+    int m_enemySpinHalfTurns = 1;
     bool m_playerSprinting = false;
     AttackState m_playerAttack{};
     AttackState m_enemyAttack{};
 	CollisionDebugState m_collisionDebug{};
 	float m_playerHitGrace = 0.0f;
+	bool m_enemyDebugInvincible = false;
+	bool m_playerDebugInvincible = false;
+	bool m_playerHitLanded = false;
+	bool m_enemyHitLanded = false;
 };

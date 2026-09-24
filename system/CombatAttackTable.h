@@ -83,7 +83,8 @@ inline constexpr EnemyAttackClip ENEMY_SLAM_CLIP{ 0.00f, 0.98f, 1.06f, 1.18f, 1.
 // 噛みつき: 1.5倍速。構えを飛ばして0.45秒から再生し、判定も短い。
 inline constexpr EnemyAttackClip ENEMY_BITE_CLIP{ 0.45f, 0.98f, 1.04f, 1.16f, 1.60f, 1.50f, 0.10f };
 // 薙ぎ払い: 0.8倍速。予兆が最も長く、横へ振り抜く分だけ判定も少し長い。隙も最大。
-inline constexpr EnemyAttackClip ENEMY_SWEEP_CLIP{ 0.00f, 0.95f, 1.08f, 1.22f, 1.71f, 0.80f, 0.90f };
+// 薙ぎ払いは判定が0.34秒と長く、「判定が長すぎる」と指摘されたので0.25秒へ詰めた。
+inline constexpr EnemyAttackClip ENEMY_SWEEP_CLIP{ 0.00f, 0.95f, 1.08f, 1.15f, 1.71f, 0.80f, 0.90f };
 
 // --- 敵の攻撃(叩き付け): 標準。予兆が長く、隙も大きい ---
 // 予兆(ANTICIPATION)は敵AIのWindup状態の長さと必ず一致させること。
@@ -98,7 +99,11 @@ inline constexpr float ENEMY_RECOVERY = ENEMY_SLAM_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_COOLDOWN = 1.15f;
 inline constexpr int ENEMY_DAMAGE = 15;
 // 攻撃判定が届く距離。敵AIが攻撃を決断する距離(enemy.hのATTACK_DISTANCE)とは別物。
-inline constexpr float ENEMY_HIT_RANGE = 64.0f;
+// 敵が攻撃を決める距離は32(enemy.hのATTACK_DISTANCE)、好む距離は26。
+// 当たる距離が64もあると、回避で下がれる34を使っても間合いの外へ出られず、
+// 「予兆を見て距離を取る」選択が成立しない(実際に遊んで「ほぼ避けられない」と指摘された)。
+// 回避1回で外へ出られる距離にする。
+inline constexpr float ENEMY_HIT_RANGE = 42.0f;
 // Active開始から実際にダメージが発生するまでの時間(叩き付けが当たる瞬間)。
 inline constexpr float ENEMY_FIRST_HIT_TIME = ENEMY_SLAM_CLIP.FirstHitSeconds();
 
@@ -111,7 +116,7 @@ inline constexpr float ENEMY_BITE_ACTIVE = ENEMY_BITE_CLIP.ActiveSeconds();
 inline constexpr float ENEMY_BITE_RECOVERY = ENEMY_BITE_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_BITE_COOLDOWN = 0.95f;
 inline constexpr int ENEMY_BITE_DAMAGE = 10;
-inline constexpr float ENEMY_BITE_HIT_RANGE = 48.0f;
+inline constexpr float ENEMY_BITE_HIT_RANGE = 34.0f;
 inline constexpr float ENEMY_BITE_FIRST_HIT_TIME = ENEMY_BITE_CLIP.FirstHitSeconds();
 
 // --- 敵の攻撃(薙ぎ払い): 遅い。予兆が非常に長く、隙が最大 ---
@@ -123,17 +128,67 @@ inline constexpr float ENEMY_SWEEP_ACTIVE = ENEMY_SWEEP_CLIP.ActiveSeconds();
 inline constexpr float ENEMY_SWEEP_RECOVERY = ENEMY_SWEEP_CLIP.RecoverySeconds();
 inline constexpr float ENEMY_SWEEP_COOLDOWN = 1.30f;
 inline constexpr int ENEMY_SWEEP_DAMAGE = 22;
-inline constexpr float ENEMY_SWEEP_HIT_RANGE = 78.0f;
+inline constexpr float ENEMY_SWEEP_HIT_RANGE = 55.0f;
 inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = ENEMY_SWEEP_CLIP.FirstHitSeconds();
+
+// --- 敵の攻撃(尾回転): 体を回して尾で薙ぐ ---
+// モンスターハンターのリオレウス・リオレイアの回転尾攻撃を参考にした。
+// ほかの3種類は「正面の相手を殴る」攻撃なので、正面を外して立ち回っていれば当たらない。
+// それだけだと「横か後ろに居れば安全」という一本道の答えになってしまうため、
+// 体ごと半回転して**背後から側面をまとめて薙ぐ**攻撃を足す。これで
+//   正面に居る     → 叩き付け・噛みつき・薙ぎ払いが危ない
+//   横や後ろに居る → 尾回転が危ない
+// となり、「どこに立つか」も読み合いになる。
+//
+// この攻撃だけは当たり判定の基準が敵の正面ではなく**尾の向き(正面の反対)**で、
+// 回転に合わせて危険な方向が動く(判定はOneVsOneCombat側で毎フレーム見る)。
+// 予兆は4種類の中で最も長い。見えたら「離れる」か「懐へ入る」かを選べるようにする。
+inline constexpr float ENEMY_SPIN_ANTICIPATION = 1.15f;
+// 半回転1回分の時間。回転数(1回か2回)は攻撃ごとに敵AIが決める。
+// 2回のときは判定の時間もその分だけ長くなる(enemy::activeSeconds と OneVsOneCombat の両方で倍率を掛ける)。
+inline constexpr float ENEMY_SPIN_HALF_TURN_SECONDS = 0.42f;
+// 半回転と半回転の間で止まっている時間(一拍)。
+// リオレウス・リオレイアの回転尾攻撃は、ぐるりと一周回すのではなく
+// 「半回転 → 一拍おいて構え直す → もう半回転」というリズムで来る。
+// 一続きに回してしまうと、どこで止まるかが読めず、避けても踏み込めない。
+// 一拍あることで「ここで終わりか、もう一度来るか」を見る間が生まれる。
+//
+// ここは**2回目の呼び動作(溜め直し)の長さ**でもある。0.30秒では
+// 止まった次の瞬間にもう尾が来ていて、実機で「2回目が避けられない」と指摘された。
+// 止まる → 尾を引き寄せて溜め直す → 振る、が見て取れる長さにする。
+// 内訳の目安: 前半0.15秒で振り抜いた形から戻り、0.15〜0.50秒で溜め直し、残りは溜めたまま待つ。
+inline constexpr float ENEMY_SPIN_PAUSE_SECONDS = 0.60f;
+inline constexpr float ENEMY_SPIN_ACTIVE = ENEMY_SPIN_HALF_TURN_SECONDS;
+inline constexpr int ENEMY_SPIN_MAX_HALF_TURNS = 2;
+// 回り切った後は体の向きが変わっている(半回転1回なら背中を向けている)。
+// 隙を長く取り、その間に側面や背後を殴れるようにする。反撃の本命。
+inline constexpr float ENEMY_SPIN_RECOVERY = 1.05f;
+inline constexpr float ENEMY_SPIN_COOLDOWN = 1.40f;
+inline constexpr int ENEMY_SPIN_DAMAGE = 18;
+// 尾の届く距離。薙ぎ払い(55)とほぼ同じ長さを持つ。
+// ただし懐(16以内)は尾が頭上を通るので当たらない。「離れる」以外に「踏み込む」答えを残すため。
+inline constexpr float ENEMY_SPIN_HIT_RANGE = 52.0f;
+inline constexpr float ENEMY_SPIN_MIN_HIT_RANGE = 16.0f;
+// 尾が通り過ぎる瞬間だけ当たる。判定は回転の始まりから見はじめる。
+inline constexpr float ENEMY_SPIN_FIRST_HIT_TIME = 0.0f;
+// 尾の通り道の幅(基準の向きからの片側角度)。約40度。細い尾なので、ほかの攻撃より狭い。
+inline constexpr float ENEMY_SPIN_HIT_HALF_ANGLE = 0.70f;
+// 回転中の移動。回りながら少し流れる程度にする(大きいと体ごと突っ込む攻撃に見える)。
+inline constexpr float ENEMY_SPIN_LUNGE_SPEED = 18.0f;
+// 尾で薙がれた側は横へ大きく飛ばされる。
+inline constexpr float ENEMY_SPIN_KNOCKBACK_SPEED = 360.0f;
+inline constexpr float ENEMY_SPIN_KNOCKBACK_SECONDS = 0.48f;
 
 // --- 攻撃中の踏み込みの速さ(単位/秒) ---
 // 判定が出ている間だけ前へ出る。判定を短くした分だけ速くして、踏み込む距離を保つ
 // (叩き付けで約26、噛みつきで約11、薙ぎ払いで約34)。
 // モンスターハンターの大型モンスターも、攻撃の瞬間に体ごと前へ出る。距離を取るだけでは避けられない、
 // という読み合いをここで作っている。
-inline constexpr float ENEMY_LUNGE_SPEED = 130.0f;
-inline constexpr float ENEMY_BITE_LUNGE_SPEED = 90.0f;
-inline constexpr float ENEMY_SWEEP_LUNGE_SPEED = 100.0f;
+// 踏み込みが大きいと、回避で下がっても結局間合いへ引き戻される。
+// 叩き付け約16・噛みつき約7・薙ぎ払い約18進む程度にして、回避で外れる余地を残す。
+inline constexpr float ENEMY_LUNGE_SPEED = 80.0f;
+inline constexpr float ENEMY_BITE_LUNGE_SPEED = 60.0f;
+inline constexpr float ENEMY_SWEEP_LUNGE_SPEED = 70.0f;
 
 // --- 当たり判定の左右の広さ(正面からの片側角度・ラジアン) ---
 // 敵の攻撃判定は元々「距離だけ」で、どの攻撃も全方位に当たっていた。
@@ -335,9 +390,12 @@ inline const AttackData& PlayerHeavyAttack()
  */
 enum class EnemyAttackKind
 {
-    Slam,  ///< 標準。予兆が長く、隙も大きい。
-    Bite,  ///< 速い。予兆が短く隙も小さいが、射程が短い。
-    Sweep, ///< 遅い。予兆が非常に長いが、射程が広く隙が最大。
+    Slam,     ///< 標準。予兆が長く、隙も大きい。
+    Bite,     ///< 速い。予兆が短く隙も小さいが、射程が短い。
+    Sweep,    ///< 遅い。予兆が非常に長いが、射程が広く隙が最大。
+    // 体ごと半回転して尾で薙ぐ。危ないのは正面ではなく側面と背後。
+    // ほかの3種類とは危険な方向が逆なので、「どこに立つか」の読み合いを作る。
+    TailSpin,
 };
 
 /** 敵の攻撃(叩き付け)。 */
@@ -397,11 +455,134 @@ inline const AttackData& EnemySweepAttack()
     return data;
 }
 
+/**
+ * @brief 敵の攻撃(尾回転)。体ごと半回転して尾で薙ぐ。
+ *
+ * 危ないのは正面ではなく側面と背後。ほかの3種類を正面から避けて
+ * 「横へ回り込む」のが答えになりすぎないよう、その逃げ場を刈る役割を持つ。
+ * 当たり判定の基準の向きだけが特別(正面ではなく尾の向き)で、
+ * それは OneVsOneCombat が EnemyAttackUsesTailArc() を見て切り替える。
+ */
+inline const AttackData& EnemyTailSpinAttack()
+{
+    static const AttackData data = [] {
+        AttackData attack;
+        attack.attackId = "enemy_tail_spin";
+        attack.animationName = "walk"; // 回転中は歩きのクリップで脚を動かす(専用モーションが無い)
+        attack.frames.anticipationSeconds = Tuning::ENEMY_SPIN_ANTICIPATION;
+        attack.frames.activeSeconds = Tuning::ENEMY_SPIN_ACTIVE;
+        attack.frames.recoverySeconds = Tuning::ENEMY_SPIN_RECOVERY;
+        attack.frames.cooldownSeconds = Tuning::ENEMY_SPIN_COOLDOWN;
+        attack.broadPhaseFilter.maxDistance = Tuning::ENEMY_SPIN_HIT_RANGE;
+        attack.damage = Tuning::ENEMY_SPIN_DAMAGE;
+        attack.sfx = "dragon_attack";
+        return attack;
+    }();
+    return data;
+}
+
+/**
+ * @brief 当たり判定の基準を「尾の向き(正面の反対)」にする攻撃か。
+ *
+ * これがtrueの攻撃は、当たる方向が回転につれて動くので、
+ * 判定を「当たる瞬間の1回」ではなく判定時間中は毎フレーム見る必要がある。
+ */
+inline bool EnemyAttackUsesTailArc(EnemyAttackKind kind)
+{
+    return kind == EnemyAttackKind::TailSpin;
+}
+
+/** 尾回転の判定(=回っている)時間。半回転の回数と、その間の一拍を足した長さ。 */
+inline float EnemySpinActiveSeconds(int halfTurns)
+{
+    const int turns = std::clamp(halfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
+    return static_cast<float>(turns) * Tuning::ENEMY_SPIN_HALF_TURN_SECONDS +
+        static_cast<float>(turns - 1) * Tuning::ENEMY_SPIN_PAUSE_SECONDS;
+}
+
+/**
+ * @brief 尾回転の進み具合。いま回っているのか、半回転の合間で止まっているのか。
+ *
+ * 回転・一拍・回転…という区切りのどこにいるかを、判定側(OneVsOneCombat)・
+ * 敵AI(enemy)・構え(EnemyAttackPose.h)がすべてこの1つの計算から取る。
+ * 別々に持つと「見た目は止まっているのに当たる」といったずれが生まれる。
+ */
+struct EnemySpinPhase
+{
+    float turnedHalfTurns = 0.0f; ///< これまでに回った半回転の数(小数。0→halfTurns)
+    bool pausing = false;         ///< 半回転と半回転の間で止まっているか
+    int segmentIndex = 0;         ///< 何回目の半回転か(0から)
+    float segmentT = 0.0f;        ///< いまの区切りの進み具合(0→1)
+};
+
+/** 判定開始からの経過秒と半回転の回数から、いまどこにいるかを求める。 */
+inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
+{
+    // 出だしと止まり際をなめらかにする(半回転ごとに加速して減速する)。
+    // 等速で回すと、止まった瞬間が分からず「一拍おいた」ように見えない。
+    const auto smoothStep = [](float t)
+    {
+        t = std::clamp(t, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    EnemySpinPhase out{};
+    const int turns = std::clamp(halfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
+    float time = std::max(0.0f, activeTime);
+    for (int index = 0; index < turns; ++index)
+    {
+        // 回っている最中(最後の半回転は、時間を過ぎても回り切った状態で留める)
+        if (time < Tuning::ENEMY_SPIN_HALF_TURN_SECONDS || index == turns - 1)
+        {
+            out.segmentIndex = index;
+            out.segmentT = std::clamp(time / Tuning::ENEMY_SPIN_HALF_TURN_SECONDS, 0.0f, 1.0f);
+            out.turnedHalfTurns = static_cast<float>(index) + smoothStep(out.segmentT);
+            return out;
+        }
+        time -= Tuning::ENEMY_SPIN_HALF_TURN_SECONDS;
+        // 一拍(止まっている)
+        if (time < Tuning::ENEMY_SPIN_PAUSE_SECONDS)
+        {
+            out.segmentIndex = index;
+            out.segmentT = std::clamp(time / Tuning::ENEMY_SPIN_PAUSE_SECONDS, 0.0f, 1.0f);
+            out.pausing = true;
+            out.turnedHalfTurns = static_cast<float>(index + 1);
+            return out;
+        }
+        time -= Tuning::ENEMY_SPIN_PAUSE_SECONDS;
+    }
+    out.segmentIndex = turns - 1;
+    out.segmentT = 1.0f;
+    out.turnedHalfTurns = static_cast<float>(turns);
+    return out;
+}
+
+/**
+ * @brief 1回の攻撃で当てられる回数。
+ *
+ * 尾回転は半回転ごとに1回まで当たる。半回転の間に一拍あるので、
+ * 1回目を食らっても2回目は避けられる(吹き飛ばしの無敵が切れてから尾が来る)。
+ * 2回目が当たらない作りにすると「1回避けたら残りは無視してよい」ことになり、
+ * 「回り切るまで踏み込まない」という読み合いが消える。
+ */
+inline int EnemyMaxHitsOf(EnemyAttackKind kind, int spinHalfTurns)
+{
+    if (kind != EnemyAttackKind::TailSpin)
+        return 1;
+    return std::clamp(spinHalfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
+}
+
+/** 尾の判定が当たらない懐の距離。これより近いと尾は頭上を通る。 */
+inline float EnemyMinHitRangeOf(EnemyAttackKind kind)
+{
+    return kind == EnemyAttackKind::TailSpin ? Tuning::ENEMY_SPIN_MIN_HIT_RANGE : 0.0f;
+}
+
 /** 種類から攻撃データを引く。 */
 inline const AttackData& EnemyAttackOf(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return EnemyTailSpinAttack();
     case EnemyAttackKind::Bite:  return EnemyBiteAttack();
     case EnemyAttackKind::Sweep: return EnemySweepAttack();
     case EnemyAttackKind::Slam:
@@ -421,6 +602,9 @@ inline const Tuning::EnemyAttackClip& EnemyAttackClipOf(EnemyAttackKind kind)
     {
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_CLIP;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_CLIP;
+    // 尾回転は攻撃クリップを使わない(回転は体の向きで作り、脚は歩きのクリップで動かす)。
+    // 呼ばれても困らないように叩き付けの区間を返すだけにしておく。
+    case EnemyAttackKind::TailSpin:
     case EnemyAttackKind::Slam:
     default:                     return Tuning::ENEMY_SLAM_CLIP;
     }
@@ -431,6 +615,7 @@ inline float EnemyLungeSpeedOf(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_LUNGE_SPEED;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_LUNGE_SPEED;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_LUNGE_SPEED;
     case EnemyAttackKind::Slam:
@@ -443,6 +628,7 @@ inline float EnemyFirstHitTimeOf(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_FIRST_HIT_TIME;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_FIRST_HIT_TIME;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_FIRST_HIT_TIME;
     case EnemyAttackKind::Slam:
@@ -461,6 +647,7 @@ inline float EnemyHitHalfAngleOf(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_HIT_HALF_ANGLE;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_HIT_HALF_ANGLE;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_HIT_HALF_ANGLE;
     case EnemyAttackKind::Slam:
@@ -480,6 +667,8 @@ inline KnockbackData EnemyKnockbackOf(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin:
+        return { Tuning::ENEMY_SPIN_KNOCKBACK_SPEED, Tuning::ENEMY_SPIN_KNOCKBACK_SECONDS };
     case EnemyAttackKind::Bite:
         return { Tuning::ENEMY_BITE_KNOCKBACK_SPEED, Tuning::ENEMY_BITE_KNOCKBACK_SECONDS };
     case EnemyAttackKind::Sweep:
@@ -500,6 +689,7 @@ inline const char* EnemyAttackDebugName(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return "尾回転";
     case EnemyAttackKind::Bite:  return "噛みつき";
     case EnemyAttackKind::Sweep: return "薙ぎ払い";
     case EnemyAttackKind::Slam:
@@ -512,6 +702,7 @@ inline const char* EnemyAttackDisplayName(EnemyAttackKind kind)
 {
     switch (kind)
     {
+    case EnemyAttackKind::TailSpin: return "TAIL SPIN";
     case EnemyAttackKind::Bite:  return "QUICK BITE";
     case EnemyAttackKind::Sweep: return "WIDE SWEEP";
     case EnemyAttackKind::Slam:

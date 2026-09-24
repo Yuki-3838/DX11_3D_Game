@@ -60,13 +60,11 @@ public:
 	void SetAttackAnimations(
 		const std::array<aiAnimation*, 3>& weakAnimations,
 		const std::array<aiAnimation*, 3>& heavyAnimations);
-	void EnableMotionEditor();
 	bool LoadMotionFile(const std::string& filename);
 	void PlayAttackMotion();
 	void PlayAttackMotion(int comboStep);
 	void PlayHeavyAttackMotion();
 	void PlayHeavyAttackMotion(int comboStep);
-	void StartComboPreview(bool heavy);
 	void TriggerHitStop(float seconds = 0.05f);
 	void PlayDodgeMotion();
 	// 被弾したときの上体ののけぞり。既存の「sword and shield impact」クリップを使う。
@@ -85,27 +83,6 @@ public:
 	void SetAttackHipsRotationMode(int mode) { m_attackHipsRotationMode = mode; }
 	bool IsMotionPlaying() const { return m_motionPlaying; }
 	const std::vector<std::string>& GetBoneNames() const { return m_boneNames; }
-	const std::string& GetSelectedBone() const { return m_selectedBone; }
-	const MotionKeyframe& GetEditorKey() const { return m_editorKey; }
-	const std::vector<std::string>& GetMotionChoices() const { return m_motionChoices; }
-	void SelectBone(const std::string& boneName);
-	void AdjustSelectedRotation(const Vector3& delta);
-	void AdjustSelectedPosition(const Vector3& delta);
-	void AdjustSelectedScale(const Vector3& delta);
-	void AddOrUpdateCurrentKey();
-	void PreviewEditorKey(const MotionKeyframe& key);
-	void ApplyEditorKey(const MotionKeyframe& key);
-	void BeginEditTransaction();
-	void EndEditTransaction();
-	void UndoEditorChange();
-	void RedoEditorChange();
-	bool CanUndoEditorChange() const { return !m_undoHistory.empty(); }
-	bool CanRedoEditorChange() const { return !m_redoHistory.empty(); }
-	bool SelectKeyAtTime(float time);
-	bool MoveSelectedKey(float fromTime, float toTime);
-	bool DeleteKeyAtTime(float time);
-	bool DuplicateKeyAtTime(float time);
-	void SetMotionFilename(const std::string& filename);
 	void Update(
 		CAnimationMesh& mesh,
 		BoneCombMatrix& boneComb,
@@ -144,7 +121,6 @@ public:
 private:
 	using BoneKeys = std::vector<MotionKeyframe>;
 
-	void RenderMotionEditor();
 	void EvaluateCustomMotion(
 		float time,
 		std::unordered_map<std::string, Matrix4x4>& rotations) const;
@@ -154,16 +130,6 @@ private:
 	bool LoadSeatedPoseFile(const std::string& filename);
 	void SortKeys(BoneKeys& keys);
 	void NormalizeMotionTiming(float targetDuration);
-	struct EditorSnapshot
-	{
-		std::unordered_map<std::string, BoneKeys> motionKeys;
-		MotionKeyframe editorKey{};
-		float motionTime = 0.0f;
-		float motionDuration = 1.0f;
-	};
-	EditorSnapshot CaptureEditorSnapshot() const;
-	void RestoreEditorSnapshot(const EditorSnapshot& snapshot);
-	void CaptureUndoIfNeeded();
 	void BuildFallbackAttackMotion();
 	void BuildFallbackAttackComboMotion(int comboStep);
 	void BuildFallbackHeavyAttackMotion();
@@ -228,8 +194,6 @@ private:
 	std::string m_attackMotionName = "Ready";
 	std::vector<std::string> m_motionChoices;
 	int m_selectedMotionIndex = 0;
-	std::string m_selectedBone;
-	MotionKeyframe m_editorKey{};
 	float m_motionDuration = 1.0f;
 	float m_motionTime = 0.0f;
 	float m_attackWindupEnd = 0.18f;
@@ -256,19 +220,11 @@ private:
 	bool m_dodgeBasePosePending = false;
 	std::unordered_map<std::string, Matrix4x4> m_dodgeBasePose;
 	bool m_motionLoop = true;
-	bool m_editorInitialized = false;
-	bool m_editorEnabled = false;
 	bool m_motionFileLoaded = false;
 	// 読み込んだSword and Shieldクリップは完全なローカル姿勢を含むため、
 	// 絶対キーの上へ手作業のアイドル腕姿勢を重ねない。
 	bool m_importedAttackPose = false;
 	int m_motionMappedBoneCount = 0;
-	std::deque<EditorSnapshot> m_undoHistory;
-	std::deque<EditorSnapshot> m_redoHistory;
-	bool m_editTransactionActive = false;
-	bool m_editTransactionCaptured = false;
-	bool m_timelineDragging = false;
-	float m_timelineDragFrom = 0.0f;
 	aiAnimation* m_walkAnimation = nullptr;
 	aiAnimation* m_runAnimation = nullptr;
 	aiAnimation* m_idleAnimation = nullptr;
@@ -282,9 +238,6 @@ private:
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
 	aiAnimation* m_impactAnimation = nullptr;
 	aiAnimation* m_dashAttackAnimation = nullptr;
-	bool m_comboPreviewActive = false;
-	int m_comboPreviewStep = 0;
-	bool m_comboPreviewHeavy = false;
 	aiAnimation* m_importedAttackAnimation = nullptr;
 	int m_importedAnimationFrame = 0;
 	float m_importedAnimationFrameAccumulator = 0.0f;
