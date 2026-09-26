@@ -794,6 +794,25 @@ void GameScene::DebugAudio()
 	ImGui::EndTabItem();
 }
 
+namespace
+{
+/**
+ * @brief キーボードの入力がゲームへ届くか。
+ *
+ * 視点をマウスで操作している間(カーソルをゲーム画面へ固定している間)は、必ずゲームへ渡す。
+ * カーソルを出してデバッグ表示を触っているとき(左Alt)だけ、ImGuiへ譲る。
+ *
+ * 以前はImGuiの`WantCaptureKeyboard`だけで判断していたが、これはデバッグ表示のウィンドウへ
+ * **キーボードの焦点が移っただけでも真になる**。ロックオンのTabがImGuiの焦点移動と重なるため、
+ * 一度Tabを押すと移動・ダッシュ・回避がすべて効かなくなっていた(実機のログで判明)。
+ * デバッグ表示へ文字を打ち込んでいるとき(WantTextInput)だけは、これまでどおりゲームを止める。
+ */
+bool KeyboardGoesToGame()
+{
+	return DebugUI::IsCursorLocked() || !ImGui::GetIO().WantTextInput;
+}
+} // namespace
+
 void GameScene::update(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
@@ -814,7 +833,7 @@ void GameScene::update(uint64_t deltatime)
 	const bool lockCursor = m_mouseLookCaptured && !m_resultRequested;
 	DebugUI::SetCursorLocked(lockCursor);
 	DebugUI::SetCursorVisible(!lockCursor);
-	if (!m_enemyIntroActive && !ImGui::GetIO().WantCaptureKeyboard &&
+	if (!m_enemyIntroActive && KeyboardGoesToGame() &&
 		input.IsKeyTriggered(DIK_TAB))
 	{
 		if (m_lockOnTarget)
@@ -888,8 +907,8 @@ void GameScene::update(uint64_t deltatime)
 		m_lastPlayerComboStep = 1;
 		m_lastPlayerHeavyAttack = heavyAttackInput;
 	}
-	const bool dodgeTriggered = !ImGui::GetIO().WantCaptureKeyboard && input.IsKeyTriggered(DIK_SPACE);
-	const bool sprinting = !ImGui::GetIO().WantCaptureKeyboard &&
+	const bool dodgeTriggered = KeyboardGoesToGame() && input.IsKeyTriggered(DIK_SPACE);
+	const bool sprinting = KeyboardGoesToGame() &&
 		// 移動キー(WASD)と同じく、DirectInputで取れない場合はWin32のキー状態でも読む(ゲームが前面のときだけ)。
 		(input.IsKeyPressed(DIK_LSHIFT) ||
 		 (GetForegroundWindow() == Application::GetWindow() &&
@@ -1947,25 +1966,13 @@ void GameScene::DrawGameplayHud()
 	if (!m_lockOnTarget || m_enemyIntroActive || m_enemies.empty())
 		return;
 
-	// ロックオンの表示は「今ロックしている」ことだけを伝える。
+	// ロックオンの表示は、敵に出る照準だけにする。
 	// 以前は枠と照準の色が敵の状態(予兆=赤・隙=緑)で変わり、攻撃名や「CHANCE」も文字で出していた。
 	// それでは敵の体ではなくUIを見て戦うことになり、「予兆を体で読む」というこの作品の核が崩れる
 	// (ユーザー判断 2026-09-20)。色は一定にし、状態を伝える文字も出さない。
-	const float panelWidth = 236.0f;
-	const float panelHeight = 62.0f;
-	const ImVec2 panelMin(
-		viewport->Pos.x + viewport->WorkSize.x - panelWidth - 28.0f,
-		viewport->Pos.y + 28.0f);
-	const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
+	// さらに画面右上の「TARGET LOCK / ANCIENT DRAGON / TAB」の枠も外した
+	// (ユーザー判断 2026-09-25「見えにくい」)。ロックしていることは敵に出る照準で分かる。
 	const ImU32 lockColor = IM_COL32(244, 194, 72, 255);
-	drawList->AddRectFilled(panelMin, panelMax, IM_COL32(9, 12, 18, 225), 4.0f);
-	drawList->AddRect(panelMin, panelMax, lockColor, 4.0f, 0, 2.0f);
-	drawList->AddText(ImVec2(panelMin.x + 12.0f, panelMin.y + 8.0f),
-		lockColor, "TARGET LOCK");
-	drawList->AddText(ImVec2(panelMin.x + 12.0f, panelMin.y + 31.0f),
-		IM_COL32(245, 245, 245, 255), "ANCIENT DRAGON");
-	drawList->AddText(ImVec2(panelMax.x - 62.0f, panelMin.y + 9.0f),
-		IM_COL32(190, 198, 210, 255), "TAB");
 
 	// 照準は敵の胸の高さに出す。以前は境界ボックスのY寸法(ドラゴンでは体の長さ)を高さとして使っていて、
 	// 照準がドラゴンの頭上の空中に出ていた。
