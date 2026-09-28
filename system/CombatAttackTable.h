@@ -223,6 +223,31 @@ inline constexpr float ENEMY_POSTURE_RECOVERY_PER_SECOND = 6.0f;
 // 怯んでいる時間。短すぎると気付けず、長すぎると反撃が一方的になる。
 inline constexpr float ENEMY_FLINCH_SECONDS = 0.90f;
 
+// --- 敵の怒り(モンスターハンターの怒り状態) ---
+// 弱り具合(体力で決まる)が「だんだん弱る」変化なのに対し、怒りは
+// 「殴り続けると、ある瞬間に切り替わる」変化にする。
+// 戦いの途中で相手の圧が一段上がり、こちらの立ち回りを変えさせるのが狙い。
+//
+// 怒っている間に変えるのは**攻撃の間隔と動きの速さ**だけにして、
+// 予兆・判定・隙の長さ(攻撃の表)には手を付けない。
+// それらを敵AI側だけで縮めると、戦闘判定(OneVsOneCombat)の時間とずれて
+// 「振り下ろしより先に当たる」ような食い違いが起きるためである。
+//
+// 怒りに入る瞬間は咆哮で知らせる。ここは攻撃が来ない安全な時間で、
+// プレイヤーが距離を取り直す間になる(モンスターハンターの咆哮と同じ役割)。
+inline constexpr float ENEMY_RAGE_DAMAGE_THRESHOLD = 260.0f;
+// 怒るたびに必要なダメージを増やす。1戦(体力2000)で3〜4回ほど怒る計算。
+//   260 → 351 → 474 → 640 ...
+inline constexpr float ENEMY_RAGE_THRESHOLD_GROWTH = 1.35f;
+inline constexpr float ENEMY_RAGE_SECONDS = 24.0f;
+inline constexpr float ENEMY_RAGE_ROAR_SECONDS = 1.30f;
+// 怒っている間の動きの速さ。近づくのも周回も速くなる。
+inline constexpr float ENEMY_RAGE_MOVE_SCALE = 1.25f;
+// 怒っている間の様子見の長さの倍率。短いほど攻撃が続けて来る。
+inline constexpr float ENEMY_RAGE_CIRCLE_SCALE = 0.55f;
+// 怒っている間は怯みにくい。殴り返して止める、が通りにくくなる。
+inline constexpr float ENEMY_RAGE_FLINCH_RESIST = 1.5f;
+
 // --- 敵の弱り具合(体力ゲージの代わり) ---
 // 敵の体力は画面に数値やゲージで出さない。モンスターハンターのように、
 // 「足を引きずる」「息が荒い」「隙が長くなる」といった体の変化で弱ってきたことを伝える。

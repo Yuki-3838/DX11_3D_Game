@@ -384,7 +384,8 @@ Debug|x64ビルド成功、起動・プロセス応答確認済み。デバッ�
   `force_enemy_attack`(`slam`|`bite`|`sweep`|`spin`。敵の攻撃を1種類に固定する) /
   `no_enemy`(1で敵なし・素振り) / `enemy_passive` / `auto_lockon` / `enemy_hp` / `dash_attack` / `impact` /
   `auto_walk`(1前・2右・3左へ自動で歩く) / `foot_lock`(0で足の接地を切る) /
-  `enemy_invincible` / `player_invincible`(1で無敵。当たって演出は出るが体力は減らない)
+  `enemy_invincible` / `player_invincible`(1で無敵。当たって演出は出るが体力は減らない) /
+  `rage_at_start`(1で戦闘開始と同時に敵を怒らせる。咆哮と怒り中の動きの確認用)
 - 撮影・調整用(デバッグ表示「戦闘」タブの「撮影・調整用」): 練習台の敵を置く(プレイヤーの正面へ置き、動かない・攻撃しない・倒れない)、
   敵を動かさない、敵を無敵、プレイヤーを無敵。命中の演出は体力の増減ではなく`OneVsOneCombat::DidPlayerHitLand()/DidEnemyHitLand()`で出す。
 

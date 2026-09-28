@@ -47,6 +47,9 @@ void enemy::resetEncounter()
 	m_move = Vector3(0.0f, 0.0f, 0.0f);
 	m_circleDirection = 1.0f;
 	m_posture = 0.0f;
+	m_rageDamage = 0.0f;
+	m_rageSeconds = 0.0f;
+	m_rageCount = 0;
 	m_flinchCount = 0;
 	m_condition = Combat::EnemyCondition::Healthy;
 	m_conditionTime = 0.0f;
@@ -156,10 +159,42 @@ float enemy::recoverySeconds() const
 
 float enemy::moveSpeedScale() const
 {
-	return
+	const float condition =
 		m_condition == Combat::EnemyCondition::Dying ? Combat::Tuning::ENEMY_DYING_MOVE_SCALE :
 		m_condition == Combat::EnemyCondition::Tired ? Combat::Tuning::ENEMY_TIRED_MOVE_SCALE :
 		1.0f;
+	// 怒っている間は速い。弱っていても、怒れば一時的に持ち直して見える。
+	return condition * (isEnraged() ? Combat::Tuning::ENEMY_RAGE_MOVE_SCALE : 1.0f);
+}
+
+float enemy::getRageThreshold() const
+{
+	// 怒るたびに必要なダメージが増える(怯み耐性と同じ考え方)。
+	return Combat::Tuning::ENEMY_RAGE_DAMAGE_THRESHOLD *
+		std::pow(Combat::Tuning::ENEMY_RAGE_THRESHOLD_GROWTH, static_cast<float>(m_rageCount));
+}
+
+void enemy::forceRage()
+{
+	m_rageDamage = 0.0f;
+	m_rageSeconds = Combat::Tuning::ENEMY_RAGE_SECONDS;
+	++m_rageCount;
+	changeState(MotionState::Roar);
+}
+
+bool enemy::addRageDamage(float damage)
+{
+	m_rageDamage += std::max(0.0f, damage);
+	// 怒っている最中は溜め直さない(怒りが途切れず続くのを防ぐ)。
+	if (isEnraged() || m_rageDamage < getRageThreshold())
+		return false;
+
+	m_rageDamage = 0.0f;
+	m_rageSeconds = Combat::Tuning::ENEMY_RAGE_SECONDS;
+	++m_rageCount;
+	// 咆哮で知らせる。ここは攻撃が来ない時間なので、プレイヤーが距離を取り直せる。
+	changeState(MotionState::Roar);
+	return true;
 }
 
 void enemy::setForcedAttackKind(const Combat::EnemyAttackKind* kind)
@@ -216,7 +251,8 @@ void enemy::selectNextAttack(float distance)
 	// 一拍の後にもう半回転来るかどうかは、止まった体勢を見ないと分からない。
 	if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
 	{
-		m_spinHalfTurns = (m_attackSelectCounter % 2 != 0)
+		// 怒っている間は必ず2回続ける。回転が長くなり、踏み込む間が減る。
+		m_spinHalfTurns = (isEnraged() || m_attackSelectCounter % 2 != 0)
 			? Combat::Tuning::ENEMY_SPIN_MAX_HALF_TURNS
 			: 1;
 	}
@@ -275,16 +311,26 @@ void enemy::update(uint64_t dt)
 	}
 	m_move = Vector3(0, 0, 0);
 	m_conditionTime += deltaSec;
+	// 怒っている時間を減らす。切れたら普通の動きへ戻る。
+	m_rageSeconds = std::max(0.0f, m_rageSeconds - deltaSec);
 	// 攻撃を当てない時間が続くと怯み値は抜けていく。
 	m_posture = std::max(
 		0.0f, m_posture - Combat::Tuning::ENEMY_POSTURE_RECOVERY_PER_SECOND * deltaSec);
 
 	// 練習用の的: 怯み以外は、その場でプレイヤーの方を向くだけにする。
-	if (m_passive && m_motionState != MotionState::Flinch)
+	// 咆哮(怒り)と怯みは練習台でも出す。どちらも攻撃ではなく、見た目の確認に使うため。
+	if (m_passive && m_motionState != MotionState::Flinch && m_motionState != MotionState::Roar)
 	{
 		if (m_motionState != MotionState::Circle)
 			changeState(MotionState::Circle);
 		faceTarget(targetPosition, deltaSec, 4.0f);
+		return;
+	}
+
+	// 咆哮の間は何もしない(攻撃の判断もしない)。
+	if (m_motionState == MotionState::Roar)
+	{
+		m_srt.pos += m_move;
 		return;
 	}
 
@@ -295,10 +341,14 @@ void enemy::update(uint64_t dt)
 		selectNextAttack(distance);
 		changeState(MotionState::Windup);
 	}
-	else if (m_motionState == MotionState::Circle &&
-		m_stateTime >= MIN_CIRCLE_SECONDS &&
+	// 怒っている間は様子見が短く、次の攻撃がすぐ来る。
+	const float circleScale =
+		isEnraged() ? Combat::Tuning::ENEMY_RAGE_CIRCLE_SCALE : 1.0f;
+	if (m_motionState == MotionState::Circle &&
+		m_stateTime >= MIN_CIRCLE_SECONDS * circleScale &&
 		(distance <= ATTACK_DISTANCE ||
-		 (m_stateTime >= MAX_CIRCLE_SECONDS && distance <= ATTACK_DISTANCE + 32.0f)))
+		 (m_stateTime >= MAX_CIRCLE_SECONDS * circleScale &&
+		  distance <= ATTACK_DISTANCE + 32.0f)))
 	{
 		selectNextAttack(distance);
 		changeState(MotionState::Windup);
@@ -372,11 +422,17 @@ void enemy::update(uint64_t dt)
 			// 尾回転のあとは後退させない。半回転1回なら背中を向けたまま止まっているので、
 			// そこから下がると「プレイヤーの方へ突っ込む」動きになってしまう
 			// (後退は自分の正面の反対へ動く処理なので、向きが逆のときは前へ出る)。
+			// 怒っている間は下がらずに次の攻撃へ移る(押し続ける)。
 			changeState(
-				m_attackKind == Combat::EnemyAttackKind::TailSpin
+				(isEnraged() || m_attackKind == Combat::EnemyAttackKind::TailSpin)
 					? MotionState::Circle
 					: MotionState::Retreat);
 		}
+		break;
+	case MotionState::Roar:
+		// 吠えている間は動かず、攻撃もしない。プレイヤーが立て直す時間になる。
+		if (m_stateTime >= Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS)
+			changeState(MotionState::Circle);
 		break;
 	case MotionState::Flinch:
 		// 怯んでいる間は何もしない。向き直りもしないので、背後へ回り込む機会になる。
@@ -409,6 +465,9 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	if (!s_attackPoseEnabled)
 		return Combat::EnemyPoseOffset{};
 
+	// 咆哮は最優先。吠えている間は攻撃の構えも弱り具合の姿勢も出さない。
+	if (m_motionState == MotionState::Roar)
+		return Combat::EnemyRoarPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
 	// 怯みは攻撃の構えより優先する。構えの途中で怯んだら、構えを捨ててのけぞる。
 	if (m_motionState == MotionState::Flinch)
 	{
@@ -442,6 +501,9 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 	// 全身の傾きと同じ切り替え(dev_settings.ini の enemy_attack_pose=0)で、比較用にまとめて切れる。
 	if (!s_attackPoseEnabled)
 		return Combat::EnemyTellPose{};
+	// 咆哮は首を持ち上げてあごを開く。
+	if (m_motionState == MotionState::Roar)
+		return Combat::EnemyRoarTellPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
 	// 怯んでいる間は攻撃の構えを捨てる(全身の傾きと同じ扱い)。
 	if (m_motionState == MotionState::Flinch)
 		return Combat::EnemyTellPose{};
@@ -527,7 +589,9 @@ float enemy::getFlinchThreshold() const
 	// 怯んだ回数だけしきい値を上げ、上限で止める。
 	const float grown = Combat::Tuning::ENEMY_FLINCH_BASE_THRESHOLD *
 		std::pow(Combat::Tuning::ENEMY_FLINCH_THRESHOLD_GROWTH, static_cast<float>(m_flinchCount));
-	return std::min(grown, Combat::Tuning::ENEMY_FLINCH_THRESHOLD_MAX);
+	// 怒っている間は怯みにくい。殴って止める立ち回りが通りにくくなる。
+	const float resist = isEnraged() ? Combat::Tuning::ENEMY_RAGE_FLINCH_RESIST : 1.0f;
+	return std::min(grown, Combat::Tuning::ENEMY_FLINCH_THRESHOLD_MAX) * resist;
 }
 
 int enemy::getFlinchCount() const
@@ -590,6 +654,7 @@ const char* enemy::getMotionStateName() const
 	case MotionState::Recovery: return "隙";
 	case MotionState::Retreat: return "後退";
 	case MotionState::Flinch: return "怯み";
+	case MotionState::Roar: return "咆哮(怒り)";
 	default: return "不明";
 	}
 }

@@ -12,7 +12,8 @@ class enemy : public gameobject
 public:
 	// 攻撃前に止まり、攻撃後に長く止まることで、プレイヤーが差し込める隙を作る。
 	// Flinchは攻撃を受けて怯んでいる状態。行動が止まり、攻撃の予兆も中断される。
-	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch };
+	// Roarは怒りに入る合図の咆哮。攻撃はせず、当たり判定も出ない。
+	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar };
 
 	explicit enemy(IScene* scene);
 
@@ -45,6 +46,21 @@ public:
 	// hitFromPositionは攻撃してきた相手の位置で、顔を背ける向きを決めるのに使う。
 	bool addPostureDamage(float amount, const Vector3& hitFromPosition);
 	bool isFlinching() const;
+
+	// --- 怒り ---
+	// 与えたダメージが一定を超えると怒る。怒っている間は動きが速く、攻撃が続けて来る。
+	// 怒りに入った瞬間だけtrueを返す(呼び出し側で咆哮の音と画面の揺れを出し、攻撃を取り消す)。
+	bool addRageDamage(float damage);
+	// 調整・撮影用。ダメージを与えずに怒らせる(dev_settings.ini の rage_at_start と
+	// デバッグ表示のボタンから呼ぶ)。実際に殴って怒らせるには時間がかかるため。
+	void forceRage();
+	bool isEnraged() const { return m_rageSeconds > 0.0f; }
+	bool isRoaring() const { return m_motionState == MotionState::Roar; }
+	// デバッグ表示用。次に怒るまでの溜まり具合と、怒りの残り時間。
+	float getRageDamage() const { return m_rageDamage; }
+	float getRageThreshold() const;
+	float getRageSecondsLeft() const { return m_rageSeconds; }
+	int getRageCount() const { return m_rageCount; }
 	float getPosture() const;
 	// 残り体力の割合(0〜1)を受け取り、弱り具合を更新する。
 	// 体力ゲージを出さない代わりに、弱り具合で動き・隙・姿勢を変える。
@@ -148,6 +164,10 @@ private:
 	Combat::EnemyAttackKind m_previousAttackKind = Combat::EnemyAttackKind::Slam;
 	int m_attackSelectCounter = 0;
 	// 溜まっている怯み値と、怯んだときに顔を背ける向き。
+	// 怒り。与えられたダメージを溜め、しきい値を超えると一定時間だけ怒る。
+	float m_rageDamage = 0.0f;
+	float m_rageSeconds = 0.0f;
+	int m_rageCount = 0;
 	float m_posture = 0.0f;
 	float m_flinchYawSign = 1.0f;
 	int m_flinchCount = 0;

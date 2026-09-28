@@ -769,6 +769,10 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 			m_lockOnTarget = true;
 		// 調整用: enemy_passive=1 で敵を攻撃させない(プレイヤーの攻撃モーションを落ち着いて見るため)。
 		m_enemies.front()->setPassive(GetDevSetting("enemy_passive", "0") == "1");
+		// 調整・撮影用: rage_at_start=1 で戦闘開始と同時に怒らせる。
+		// 実際に怒らせるには260ダメージ分殴る必要があり、咆哮や怒り中の動きを見るのに時間がかかるため。
+		if (GetDevSetting("rage_at_start", "0") == "1")
+			m_enemies.front()->forceRage();
 		// 撮影・比較用: enemy_attack_pose=0 で構えの演出を切り、構えを入れる前の見た目を再現する。
 		enemy::setAttackPoseEnabled(GetDevSetting("enemy_attack_pose", "1") != "0");
 	}
@@ -1235,7 +1239,18 @@ void GameScene::update(uint64_t deltatime)
 				: Combat::PlayerWeakAttack();
 			const float postureDamage = static_cast<float>(playerAttack.postureDamage) *
 				(punishHit ? Combat::Tuning::PUNISH_POSTURE_MULTIPLIER : 1.0f);
-			if (m_enemies.front()->addPostureDamage(postureDamage, m_player->getSRT().pos))
+			// 与えたダメージは怒りにも溜まる。しきい値を超えると敵が咆哮して怒り状態へ入る。
+			// 怯みより優先する(吠えている最中にのけぞらせると、どちらの動きか分からなくなる)。
+			if (m_enemies.front()->addRageDamage(static_cast<float>(playerAttack.damage)))
+			{
+				// 咆哮の間は攻撃が来ない。戦闘側の攻撃も取り消して、構えかけを捨てさせる。
+				m_combat.CancelEnemyAttack();
+				SoundManager::PlayEnemyRoar();
+				// 怯みより強く長く揺らす。「相手の圧が一段上がった」ことを体で伝える。
+				m_camera.TriggerShake(3.0f, 0.55f);
+				m_playerAnimator.TriggerHitStop(0.10f);
+			}
+			else if (m_enemies.front()->addPostureDamage(postureDamage, m_player->getSRT().pos))
 			{
 				// 敵AIだけ怯ませて戦闘側の攻撃を残すと、のけぞっている敵から
 				// ダメージが飛んでくるので、戦闘側の攻撃も取り消す。
@@ -3219,6 +3234,20 @@ void GameScene::DebugCombat()
 			m_enemies.front()->getConditionName(),
 			100.0f * m_combat.GetEnemyHp() / m_combat.GetEnemyMaxHp());
 		// 怯み値の溜まり具合。バーが満ちると怯む。怯むたびにしきい値が上がる。
+		// 怒り。溜まり具合と、怒っている残り時間。
+		if (m_enemies.front()->isEnraged())
+		{
+			ImGui::Text("敵の怒り: 怒り中 (残り %.1f秒、%d回目)",
+				m_enemies.front()->getRageSecondsLeft(),
+				m_enemies.front()->getRageCount());
+		}
+		else
+		{
+			ImGui::Text("敵の怒り: 通常 (%.0f / %.0f、怒った回数 %d)",
+				m_enemies.front()->getRageDamage(),
+				m_enemies.front()->getRageThreshold(),
+				m_enemies.front()->getRageCount());
+		}
 		ImGui::Text("敵の怯み値 (%.0f / %.0f、怯んだ回数 %d)",
 			m_enemies.front()->getPosture(),
 			m_enemies.front()->getFlinchThreshold(),
@@ -3250,6 +3279,9 @@ void GameScene::DebugCombat()
 	ImGui::SeparatorText("撮影・調整用");
 	if (ImGui::Button("練習台の敵を置く(動かない・攻撃しない・倒れない)"))
 		PlaceTrainingDummy();
+	// 怒り状態の見た目と動きを、殴らずに確かめるためのボタン。
+	if (!m_enemies.empty() && ImGui::Button("敵を怒らせる(咆哮して怒り状態へ)"))
+		m_enemies.front()->forceRage();
 	if (!m_enemies.empty())
 	{
 		bool passive = m_enemies.front()->isPassive();

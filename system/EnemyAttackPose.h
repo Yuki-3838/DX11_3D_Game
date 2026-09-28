@@ -305,6 +305,36 @@ inline EnemyPoseOffset EnemyFlinchPose(float flinchTime, float flinchSeconds, fl
     return offset;
 }
 
+namespace PoseTuning
+{
+// 咆哮: 上体を大きく反らして吠える。攻撃の構えより大きく、一目で別物と分かる量にする。
+inline constexpr float ROAR_REAR_PITCH = -0.46f;
+inline constexpr float ROAR_NECK_REAR = 1.10f;
+inline constexpr float ROAR_JAW_OPEN = 0.95f;
+} // namespace PoseTuning
+
+/**
+ * @brief 咆哮(怒りに入る合図)の姿勢。
+ *
+ * 立ち上がりを速く、後半をゆっくり戻す。前半で一気に反り返ると「吠えた」瞬間が分かる。
+ * 攻撃ではないので当たり判定は出ない。プレイヤーが距離を取り直す時間になる。
+ *
+ * @param roarTime 咆哮を始めてからの経過秒。
+ * @param duration 咆哮の長さ。
+ */
+inline EnemyPoseOffset EnemyRoarPose(float roarTime, float duration)
+{
+    EnemyPoseOffset offset{};
+    const float total = std::max(0.01f, duration);
+    const float t = std::clamp(roarTime / total, 0.0f, 1.0f);
+    // 0→1→0。前半0.25でほぼ立ち上げ、残りでゆっくり戻す。
+    const float envelope = t < 0.25f
+        ? Detail::FastOut(t / 0.25f)
+        : 1.0f - Detail::SmoothStep01((t - 0.25f) / 0.75f);
+    offset.pitch = PoseTuning::ROAR_REAR_PITCH * envelope;
+    return offset;
+}
+
 /** 敵の弱り具合。体力ゲージを出さない代わりに、体の動きで伝える。 */
 enum class EnemyCondition
 {
@@ -427,6 +457,20 @@ inline constexpr float SPIN_TAIL_WHIP_OVERSHOOT = 0.75f;
 inline constexpr float SPIN_TAIL_WHIP_START = 0.55f;
 inline constexpr float SPIN_NECK_TUCK = -0.35f;
 } // namespace TellTuning
+
+/** 咆哮の部位の動き。首を持ち上げ、あごを大きく開く。 */
+inline EnemyTellPose EnemyRoarTellPose(float roarTime, float duration)
+{
+    EnemyTellPose tell{};
+    const float total = std::max(0.01f, duration);
+    const float t = std::clamp(roarTime / total, 0.0f, 1.0f);
+    const float envelope = t < 0.25f
+        ? Detail::FastOut(t / 0.25f)
+        : 1.0f - Detail::SmoothStep01((t - 0.25f) / 0.75f);
+    tell.neckPitch = PoseTuning::ROAR_NECK_REAR * envelope;
+    tell.jawOpen = PoseTuning::ROAR_JAW_OPEN * envelope;
+    return tell;
+}
 
 /** 攻撃の種類と段階から、部位ごとの動かし方を求める。 */
 inline EnemyTellPose EnemyAttackTellPose(
