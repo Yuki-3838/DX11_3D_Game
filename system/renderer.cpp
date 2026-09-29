@@ -28,6 +28,12 @@ ComPtr<ID3D11Buffer> Renderer::m_ViewBuffer;
 ComPtr<ID3D11Buffer> Renderer::m_ProjectionBuffer;
 ComPtr<ID3D11Buffer> Renderer::m_MaterialBuffer;
 ComPtr<ID3D11Buffer> Renderer::m_LightBuffer;
+ComPtr<ID3D11Buffer> Renderer::m_ViewParamsBuffer;
+Vector3 Renderer::m_CameraPosition = Vector3(0.0f, 0.0f, 0.0f);
+float Renderer::m_Exposure = 1.0f;
+Vector4 Renderer::m_CharacterVisualParams = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+Vector4 Renderer::m_CharacterAlbedoParams = Vector4(1.0f, 1.0f, 1.0f, 0.0f);
+Color Renderer::m_ClearColor = Color(0.10f, 0.18f, 0.55f, 1.0f);
 
 ComPtr<ID3D11DepthStencilState> Renderer::m_DepthStateEnable;
 ComPtr<ID3D11DepthStencilState> Renderer::m_DepthStateDisable;
@@ -47,6 +53,18 @@ ComPtr<ID3D11Buffer> Renderer::m_TintBuffer;
 
 namespace
 {
+    // シェーダー側のViewParamsBuffer(b9)と対応させる。
+    struct VIEWPARAMS
+    {
+        Vector4 CameraPosition;
+        // x: 露出。y/z/w: 予備
+        Vector4 ExposureParams;
+        // x: 明るさの持ち上げ量、y: 鏡面反射倍率、z: 粗さ上書き、w: 対象固有ディテール強度/暗部可読性補正
+        Vector4 CharacterVisualParams;
+        // rgb: ベースカラー倍率、a: 補正の適用量
+        Vector4 CharacterAlbedoParams;
+    };
+
     // シェーダー側のcbuffer ShadowBuffer(b7)と対応させる。
     struct SHADOWPARAM
     {
@@ -230,13 +248,22 @@ void Renderer::Init()
     bufferDesc.ByteWidth = sizeof(LIGHT);
     m_Device->CreateBuffer(&bufferDesc, nullptr, m_LightBuffer.GetAddressOf());
 
+    bufferDesc.ByteWidth = sizeof(VIEWPARAMS);
+    m_Device->CreateBuffer(&bufferDesc, nullptr, m_ViewParamsBuffer.GetAddressOf());
+    m_DeviceContext->VSSetConstantBuffers(9, 1, m_ViewParamsBuffer.GetAddressOf());
+    m_DeviceContext->PSSetConstantBuffers(9, 1, m_ViewParamsBuffer.GetAddressOf());
+
     // --- ライト初期化 ---
     LIGHT light{};
     light.Enable = true;
-    light.Direction = Vector4(0.5f, -1.0f, 0.8f, 0.0f);
+    // 夜の横方向ライトに見えないよう、真上寄りの太陽光へ設定する。
+    // Directionは光線の進行方向なので、シェーダー側では反転して面から太陽へ向ける。
+    light.Direction = Vector4(0.25f, -1.0f, 0.35f, 0.0f);
     light.Direction.Normalize();
-    light.Ambient = Color(0.2f, 0.2f, 0.2f, 1.0f);
-    light.Diffuse = Color(1.5f, 1.5f, 1.5f, 1.0f);
+    // 太陽の直射光と空からのフィルライトを分け、夜のような黒潰れを避ける。
+    // 露出を過剰に上げず、方向性のある陰影と影は残す。
+    light.Ambient = Color(0.30f, 0.31f, 0.33f, 1.0f);
+    light.Diffuse = Color(1.80f, 1.80f, 1.80f, 1.0f);
     SetLight(light);
 
     // --- マテリアル初期化 ---
@@ -250,6 +277,7 @@ void Renderer::Init()
     
     m_DeviceContext->VSSetConstantBuffers(4, 1, m_LightBuffer.GetAddressOf());
     m_DeviceContext->PSSetConstantBuffers(4, 1, m_LightBuffer.GetAddressOf());
+    SetExposure(1.10f);
 
     // --- シャドウマップの生成 ---
     // 深度を書き込み、かつシェーダーから読みたいので、テクスチャはTYPELESSで作り
@@ -349,6 +377,7 @@ void Renderer::Dispose()
     m_ViewBuffer.Reset();
     m_ProjectionBuffer.Reset();
     m_LightBuffer.Reset();
+    m_ViewParamsBuffer.Reset();
     m_MaterialBuffer.Reset();
     m_RenderTargetView.Reset();
     m_SwapChain.Reset();
@@ -367,10 +396,20 @@ void Renderer::Dispose()
  */
 void Renderer::Begin()
 {
-    float clearColor[4] = { 0.10f, 0.18f, 0.55f, 1.0f };
+    float clearColor[4] = {
+        m_ClearColor.x, m_ClearColor.y, m_ClearColor.z, m_ClearColor.w };
 
     m_DeviceContext->ClearRenderTargetView(m_RenderTargetView.Get(), clearColor);
     m_DeviceContext->ClearDepthStencilView(m_DepthStencilView.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+}
+
+/**
+ * @brief レンダーターゲットのクリア色を設定します。
+ * @details 空や背景の演出をシーン単位で切り替えるために使用します。
+ */
+void Renderer::SetClearColor(const Color& color)
+{
+    m_ClearColor = color;
 }
 
 /**
@@ -526,6 +565,20 @@ void Renderer::SetViewMatrix(Matrix4x4* ViewMatrix)
 {
     Matrix4x4 mat = ViewMatrix->Transpose();
     m_DeviceContext->UpdateSubresource(m_ViewBuffer.Get(), 0, nullptr, &mat, 0, 0);
+
+    // 行ベクトル規約では、ビュー行列の逆行列の平行移動行がカメラ位置になる。
+    Matrix4x4 cameraWorld = ViewMatrix->Invert();
+    m_CameraPosition = Vector3(cameraWorld._41, cameraWorld._42, cameraWorld._43);
+    if (m_ViewParamsBuffer)
+    {
+        VIEWPARAMS params{};
+        params.CameraPosition = Vector4(m_CameraPosition.x, m_CameraPosition.y,
+            m_CameraPosition.z, 1.0f);
+        params.ExposureParams = Vector4(m_Exposure, 0.0f, 0.0f, 0.0f);
+        params.CharacterVisualParams = m_CharacterVisualParams;
+        params.CharacterAlbedoParams = m_CharacterAlbedoParams;
+        m_DeviceContext->UpdateSubresource(m_ViewParamsBuffer.Get(), 0, nullptr, &params, 0, 0);
+    }
 }
 
 /**
@@ -539,12 +592,74 @@ void Renderer::SetProjectionMatrix(Matrix4x4* ProjectionMatrix)
 }
 
 /**
+ * @brief PBRの最終出力に掛ける露出を設定します。
+ */
+void Renderer::SetExposure(float exposure)
+{
+    if (!m_ViewParamsBuffer)
+        return;
+
+    m_Exposure = exposure < 0.01f ? 0.01f : exposure;
+    VIEWPARAMS params{};
+    params.CameraPosition = Vector4(m_CameraPosition.x, m_CameraPosition.y,
+        m_CameraPosition.z, 1.0f);
+    params.ExposureParams = Vector4(m_Exposure, 0.0f, 0.0f, 0.0f);
+    params.CharacterVisualParams = m_CharacterVisualParams;
+    params.CharacterAlbedoParams = m_CharacterAlbedoParams;
+    m_DeviceContext->UpdateSubresource(m_ViewParamsBuffer.Get(), 0, nullptr, &params, 0, 0);
+}
+
+/**
+ * @brief キャラクター単位の見た目補正を設定します。
+ */
+void Renderer::SetCharacterVisualParams(const Vector4& params)
+{
+    m_CharacterVisualParams = params;
+    if (!m_ViewParamsBuffer)
+        return;
+
+    VIEWPARAMS viewParams{};
+    viewParams.CameraPosition = Vector4(m_CameraPosition.x, m_CameraPosition.y,
+        m_CameraPosition.z, 1.0f);
+    viewParams.ExposureParams = Vector4(m_Exposure, 0.0f, 0.0f, 0.0f);
+    viewParams.CharacterVisualParams = m_CharacterVisualParams;
+    viewParams.CharacterAlbedoParams = m_CharacterAlbedoParams;
+    m_DeviceContext->UpdateSubresource(m_ViewParamsBuffer.Get(), 0, nullptr,
+        &viewParams, 0, 0);
+}
+
+/**
+ * @brief キャラクター単位のベースカラー補正を設定します。
+ */
+void Renderer::SetCharacterAlbedoParams(const Vector4& params)
+{
+    m_CharacterAlbedoParams = params;
+    if (!m_ViewParamsBuffer)
+        return;
+
+    VIEWPARAMS viewParams{};
+    viewParams.CameraPosition = Vector4(m_CameraPosition.x, m_CameraPosition.y,
+        m_CameraPosition.z, 1.0f);
+    viewParams.ExposureParams = Vector4(m_Exposure, 0.0f, 0.0f, 0.0f);
+    viewParams.CharacterVisualParams = m_CharacterVisualParams;
+    viewParams.CharacterAlbedoParams = m_CharacterAlbedoParams;
+    m_DeviceContext->UpdateSubresource(m_ViewParamsBuffer.Get(), 0, nullptr,
+        &viewParams, 0, 0);
+}
+
+/**
  * @brief マテリアル（表面材質）情報をセットします。
  * @param Material マテリアル情報
  */
 void Renderer::SetMaterial(MATERIAL Material)
 {
     m_DeviceContext->UpdateSubresource(m_MaterialBuffer.Get(), 0, nullptr, &Material, 0, 0);
+
+    // CMaterial::SetGPU()は旧形式のマテリアルバッファを同じb3へ設定する。
+    // その直後にPBRParamsを含む共通バッファを再バインドしないと、
+    // CPU側で更新したMetallic/Roughnessがシェーダーへ届かない。
+    m_DeviceContext->VSSetConstantBuffers(3, 1, m_MaterialBuffer.GetAddressOf());
+    m_DeviceContext->PSSetConstantBuffers(3, 1, m_MaterialBuffer.GetAddressOf());
 }
 
 /**

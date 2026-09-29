@@ -16,25 +16,19 @@ PS_IN main(in VS_IN In)
     normalMatrix = transpose(normalMatrix);
 
     // �@���x�N�g���̕��������[���h���W�n�ɕϊ�
-	float3 worldNormal, normal;
-	normal = In.Normal.xyz;
-    
-	worldNormal = mul(normal, normalMatrix);
-	worldNormal = normalize(worldNormal);
+	float3 worldNormal = normalize(mul(In.Normal.xyz, normalMatrix));
+	float4 worldPosition = mul(In.Position, World);
 
-	float d = -dot(Light.Direction.xyz, worldNormal.xyz);
-	d = saturate(d);
-
-	Out.Diffuse.xyz = In.Diffuse.xyz * Material.Diffuse.xyz * d * Light.Diffuse.xyz;
-	Out.Diffuse.xyz += In.Diffuse.xyz * Material.Ambient.xyz * Light.Ambient.xyz;
-	Out.Diffuse.xyz += In.Diffuse.xyz * Material.Diffuse.xyz * 0.15f;
-	Out.Diffuse.xyz += Material.Emission.xyz;
-    Out.Diffuse.a = In.Diffuse.a* Material.Diffuse.a;
+	// PBRはピクセル単位で計算するため、ここでは材質のベース色だけ渡す。
+	Out.Diffuse = In.Diffuse * Material.Diffuse;
+	Out.Diffuse.a = In.Diffuse.a * Material.Diffuse.a;
 	
 	Out.Position = mul( In.Position, wvp );
 	Out.TexCoord = In.TexCoord;
+	Out.WorldNormal = worldNormal;
+	Out.WorldPosition = worldPosition.xyz;
 	// 影の判定用に、ライトから見た位置も渡す。
-	Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+	Out.ShadowCoord = CalcShadowCoord(worldPosition);
 
     return Out;
 }

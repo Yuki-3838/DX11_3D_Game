@@ -72,8 +72,12 @@ struct MATERIAL
     Color Emission;        ///< 自己発光色
     float Shiness=0.0f;    ///< 光沢度
     BOOL TextureEnable=FALSE;    ///< テクスチャ使用フラグ
-    float Dummy[2]{};      ///< 予備領域
+    float Dummy[2]{};      ///< PBRParamsを16バイト境界へ揃える予備領域
+    Vector4 PBRParams{};   ///< x: Metallic, y: Roughness, z/w: 予備
 };
+
+// HLSLのcbufferは16バイト単位で配置されるため、CPU側も96バイトを保証する。
+static_assert(sizeof(MATERIAL) == 96, "MATERIAL must match the HLSL constant-buffer layout");
 
 /**
  * @struct LIGHT
@@ -149,6 +153,12 @@ private:
     static ComPtr<ID3D11Buffer> m_ProjectionBuffer;
     static ComPtr<ID3D11Buffer> m_MaterialBuffer;
     static ComPtr<ID3D11Buffer> m_LightBuffer;
+    static ComPtr<ID3D11Buffer> m_ViewParamsBuffer;
+    static Vector3 m_CameraPosition;
+    static float m_Exposure;
+    static Vector4 m_CharacterVisualParams;
+    static Vector4 m_CharacterAlbedoParams;
+    static Color m_ClearColor;
 
     static ComPtr<ID3D11DepthStencilState> m_DepthStateEnable;
     static ComPtr<ID3D11DepthStencilState> m_DepthStateDisable;
@@ -183,6 +193,19 @@ public:
     static Matrix4x4 GetWorldMatrix() { return m_currentWorldMatrix; }
     static void SetViewMatrix(Matrix4x4* ViewMatrix);
     static void SetProjectionMatrix(Matrix4x4* ProjectionMatrix);
+    static void SetClearColor(const Color& color);
+    static void SetExposure(float exposure);
+    /**
+     * @brief キャラクター単位の見た目補正を設定します。
+     * @param params x: 明るさの持ち上げ量、y: 鏡面反射倍率、z: 粗さ上書き、w: 暗部の可読性補正
+     * @details プレイヤー描画の前に設定し、描画後は0へ戻してください。
+     */
+    static void SetCharacterVisualParams(const Vector4& params);
+    /**
+     * @brief キャラクター単位のベースカラー補正を設定します。
+     * @param params rgb: 色倍率、a: 補正の適用量(0で無効)
+     */
+    static void SetCharacterAlbedoParams(const Vector4& params);
     static void SetMaterial(MATERIAL Material);
     static void SetLight(LIGHT Light);
     static ID3D11Device* GetDevice(void) { return m_Device.Get(); }

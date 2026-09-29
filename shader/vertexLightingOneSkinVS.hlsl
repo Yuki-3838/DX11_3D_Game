@@ -22,22 +22,21 @@ PS_IN main(in VSONESKIN_IN In)
     wvp = mul(World, View);
     wvp = mul(wvp, Projection);
 	
-    float4 worldNormal, normal;
-    normal = float4(In.Normal.xyz, 0.0);
-    worldNormal = mul(normal, World);
-    worldNormal = normalize(worldNormal);
+    float3x3 normalMatrix = Inverse3x3(float3x3(World._11, World._12, World._13,
+                                               World._21, World._22, World._23,
+                                               World._31, World._32, World._33));
+    normalMatrix = transpose(normalMatrix);
+    float3 worldNormal = normalize(mul(In.Normal.xyz, normalMatrix));
+    float4 worldPosition = mul(In.Position, World);
 
-    float light = -(dot(Light.Direction.xyz, worldNormal.xyz))* 0.5 + 0.5;
-    light = saturate(light);  // �����o�[�g���˂̌v�Z
-
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
-    Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
-    Out.Diffuse += Material.Emission;
+    Out.Diffuse = In.Diffuse * Material.Diffuse;
     Out.Diffuse.a = In.Diffuse.a * Material.Diffuse.a;
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+    Out.WorldNormal = worldNormal;
+    Out.WorldPosition = worldPosition.xyz;
+    Out.ShadowCoord = CalcShadowCoord(worldPosition);
 
     return Out;
 }

@@ -619,6 +619,11 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 	// レンダラ初期化
 	m_StaticMeshRenderer.Init(*this);
 	if (filename.find("SwordShieldPack_Player") != std::string::npos)
+		m_StaticMeshRenderer.ApplyCharacterMaterialProfile("player");
+	else if (filename.find("CethielDragon") != std::string::npos ||
+		filename.find("dragon") != std::string::npos)
+		m_StaticMeshRenderer.ApplyCharacterMaterialProfile("dragon");
+	if (filename.find("SwordShieldPack_Player") != std::string::npos)
 	{
 		// 出力された装備名が入れ替わっており、Helmetというサブセットが大きな盾形、
 		// Shieldが兜の外殻になっている。兜用関節のスケールを0にせず、

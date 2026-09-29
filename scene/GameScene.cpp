@@ -123,11 +123,13 @@ namespace {
 	// ドラゴンの大きな当たり判定と回避一回分の空間を確保する。
 	constexpr int ARENA_WALL_SEGMENTS = 16;
 	constexpr float ARENA_RADIUS = 300.0f;
+	// 衝突用の壁は高く残すが、見た目は低い石の外周にして空を見せる。
+	constexpr float ARENA_WALL_VISUAL_HEIGHT = 44.0f;
 	constexpr float ARENA_WALL_HEIGHT = 120.0f;
 	const float ARENA_WALL_WIDTH =
 		2.0f * ARENA_RADIUS * std::sinf(PI / static_cast<float>(ARENA_WALL_SEGMENTS)) + 8.0f;
 	constexpr float ARENA_WALL_DEPTH = 8.0f;
-	const Color ARENA_WALL_COLOR(0.38f, 0.27f, 0.19f, 1.0f);
+	const Color ARENA_WALL_COLOR(0.30f, 0.27f, 0.23f, 1.0f);
 
 	std::array<Vector3, 8> GetAabbCorners(
 		const GM31::GE::Collision::BoundingBoxAABB& box)
@@ -1434,14 +1436,16 @@ void GameScene::draw(uint64_t deltatime)
 	m_arenaFloorVisual.Draw(floorSrt, Color(0.24f, 0.20f, 0.16f, 1.0f));
 
 	Renderer::DisableCulling(false);
-	m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
+	m_arenaWallVisual.SetSize(
+		ARENA_WALL_WIDTH, ARENA_WALL_VISUAL_HEIGHT, ARENA_WALL_DEPTH);
 	m_arenaWallCapVisual.SetSize(ARENA_WALL_WIDTH + 6.0f, 8.0f, ARENA_WALL_DEPTH + 8.0f);
 	for (const auto& arenaWall : m_walls)
 	{
 		SRT wallSrt = arenaWall->getSRT();
-		// 壁は全周を同じ色で見せるため、照明による面ごとの明暗を付けない。
+		// 物理壁の高さとは分離し、低い石の縁だけを見せて空を残す。
+		wallSrt.pos.y = ARENA_WALL_VISUAL_HEIGHT * 0.5f;
 		m_arenaWallVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
-		wallSrt.pos.y = ARENA_WALL_HEIGHT + 4.0f;
+		wallSrt.pos.y = ARENA_WALL_VISUAL_HEIGHT + 4.0f;
 		m_arenaWallCapVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
 	}
 	Renderer::DisableCulling(true);
@@ -1449,6 +1453,12 @@ void GameScene::draw(uint64_t deltatime)
 	// モチEΝを描画
 	{
 	// プレイヤモチEΝの姿勢惁Eｱを取征E
+		// プレイヤーだけ暗部の情報量を補う。環境光や露出は変更しないため、
+		// 敵・床・壁にはこの補正が伝播しない。
+		// 太陽光を明るくしたため、プレイヤー専用補正は控えめに戻す。
+		// 視認性は残しつつ、周囲の明るさから浮きすぎないようにする。
+		Renderer::SetCharacterVisualParams(Vector4(0.16f, 0.55f, 0.0f, 0.26f));
+		Renderer::SetCharacterAlbedoParams(Vector4(1.14f, 1.09f, 1.03f, 0.28f));
 		SRT srt = m_player->getRenderSRT();
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
@@ -1458,10 +1468,14 @@ void GameScene::draw(uint64_t deltatime)
 		m_playerBoneComb.Update();
 		m_playerBoneComb.SetGPU();
 		m_playerAnimationMesh->Draw();
+		Renderer::SetCharacterVisualParams(Vector4(0.0f, 0.0f, 0.0f, 0.0f));
 	}
 
 	// 敵を描画
 	for (auto& e : m_enemies) {
+		// 敵の白飛びを抑え、鱗の色と粗い表面を残す。プレイヤー補正とは別に管理する。
+		Renderer::SetCharacterVisualParams(Vector4(0.0f, 0.55f, 0.0f, 0.85f));
+		Renderer::SetCharacterAlbedoParams(Vector4(1.0f, 1.0f, 1.0f, 0.0f));
 		SRT srt = e->getRenderSRT();
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
@@ -1482,6 +1496,8 @@ void GameScene::draw(uint64_t deltatime)
 		m_enemyAnimationMesh->Draw();
 		// 他の描画へ影響しないよう必ず戻す。
 		Renderer::SetCharacterTint(Vector4(0.0f, 0.0f, 0.0f, 0.0f));
+		Renderer::SetCharacterVisualParams(Vector4(0.0f, 0.0f, 0.0f, 0.0f));
+		Renderer::SetCharacterAlbedoParams(Vector4(1.0f, 1.0f, 1.0f, 0.0f));
 	}
 
 	// 剣の軌跡は半透明なので、キャラクターを描いた後に重ねる。
@@ -1747,6 +1763,9 @@ void GameScene::init()
 	m_hitEffect.Initialize();
 
 	m_camera.Init();
+	// 高い壁の茶色で空が隠れないよう、ゲームシーンだけ黄昏色のクリア色にする。
+	// 明るさを失わないよう、夜空まで暗くせず、暖色寄りの紫青を使う。
+	Renderer::SetClearColor(Color(0.44f, 0.30f, 0.38f, 1.0f));
 	// 攻撃中の寄せは、この基準距離からの相対で決める。
 	// カメラ側の既定値を正としておくことで、片方だけ書き換えたときのズレを防ぐ。
 	m_cameraBaseDistance = m_camera.GetLookDistance();

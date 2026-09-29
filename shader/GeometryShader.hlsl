@@ -8,6 +8,8 @@ void main(line PS_IN input[2], inout TriangleStream<PS_IN> OutputStream)
     // このシェーダーはデバッグ表示の線を太らせる用途で、影を受ける必要がないので
     // ゼロを入れておく(CalcShadowFactorはw<=0を影なしとして扱う)。
     output.ShadowCoord = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    output.WorldNormal = input[0].WorldNormal;
+    output.WorldPosition = input[0].WorldPosition;
     // Old callers use 2-3 as a pixel-like width. New callers pass an NDC width.
     float thickness = LineWidth > 0.1f ? LineWidth * 0.0015f : LineWidth;
 

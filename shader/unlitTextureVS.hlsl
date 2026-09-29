@@ -11,6 +11,8 @@ PS_IN main(in VS_IN In)
 	Out.Position = mul(In.Position, wvp);
 	Out.TexCoord = In.TexCoord;
 	Out.Diffuse = In.Diffuse * Material.Diffuse;
+	Out.WorldNormal = float3(0.0f, 1.0f, 0.0f);
+	Out.WorldPosition = mul(In.Position, World).xyz;
 	// このシェーダーは無照明だが、PS_INの全要素を埋めておかないと
 	// ピクセルシェーダー側で未定義の値を読むことになるため設定する。
 	Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));

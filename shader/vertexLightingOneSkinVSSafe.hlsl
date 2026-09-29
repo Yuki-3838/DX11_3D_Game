@@ -43,22 +43,20 @@ PS_IN main(in VSONESKIN_IN In)
 
     matrix wvp = mul(mul(World, View), Projection);
 
-    float4 worldNormal = mul(float4(In.Normal.xyz, 0.0f), World);
-    worldNormal = normalize(worldNormal);
-    float light = -(dot(Light.Direction.xyz, worldNormal.xyz)) * 0.5f + 0.5f;
-    light = saturate(light);
+    float3x3 normalMatrix = Inverse3x3(float3x3(World._11, World._12, World._13,
+                                               World._21, World._22, World._23,
+                                               World._31, World._32, World._33));
+    normalMatrix = transpose(normalMatrix);
+    float3 worldNormal = normalize(mul(In.Normal.xyz, normalMatrix));
+    float4 worldPosition = mul(In.Position, World);
 
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
-    Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
-    // Armored characters have large nearly-black surfaces.  Keep a small
-    // neutral fill term so the silhouette and plate details remain readable
-    // even when the directional light is behind the player.
-    Out.Diffuse += In.Diffuse * Material.Diffuse * 0.16f;
-    Out.Diffuse += Material.Emission;
+    Out.Diffuse = In.Diffuse * Material.Diffuse;
     Out.Diffuse.a = In.Diffuse.a * Material.Diffuse.a;
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+    Out.WorldNormal = worldNormal;
+    Out.WorldPosition = worldPosition.xyz;
+    Out.ShadowCoord = CalcShadowCoord(worldPosition);
     return Out;
 }

@@ -19,21 +19,20 @@ PS_IN main(in VSONESKIN_IN In)
     float4 skinnedPosition = skinned.position;
     matrix wvp = mul(mul(World, View), Projection);
 
-    float4 worldNormal = mul(float4(skinned.normal, 0.0f), World);
-    worldNormal = normalize(worldNormal);
-    float light = -(dot(Light.Direction.xyz, worldNormal.xyz)) * 0.5f + 0.5f;
-    light = saturate(light);
+    float3x3 normalMatrix = Inverse3x3(float3x3(World._11, World._12, World._13,
+                                               World._21, World._22, World._23,
+                                               World._31, World._32, World._33));
+    normalMatrix = transpose(normalMatrix);
+    float3 worldNormal = normalize(mul(skinned.normal, normalMatrix));
+    float4 worldPosition = mul(skinnedPosition, World);
 
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
-    Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
-    // 鎧のキャラクターは黒に近い面が広いので、逆光でもシルエットと
-    // 装甲のディテールが読めるように弱い環境項を残す。
-    Out.Diffuse += In.Diffuse * Material.Diffuse * 0.16f;
-    Out.Diffuse += Material.Emission;
+    Out.Diffuse = In.Diffuse * Material.Diffuse;
     Out.Diffuse.a = In.Diffuse.a * Material.Diffuse.a;
 
     Out.Position = mul(skinnedPosition, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(skinnedPosition, World));
+    Out.WorldNormal = worldNormal;
+    Out.WorldPosition = worldPosition.xyz;
+    Out.ShadowCoord = CalcShadowCoord(worldPosition);
     return Out;
 }
