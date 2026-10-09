@@ -16,18 +16,44 @@ namespace
 // 起動時にタイトルを飛ばしてGameSceneへ直行し、ImGuiデバッグ表示も最初から出す。
 // ファイルが無い/devmode=0なら、提出用と同じ挙動(タイトルから開始・デバッグ非表示)になる。
 // 提出前にこのファイルを削除・devmode=0にする必要はない(存在しなければ何も変わらない)。
-bool LoadDevModeSetting()
+// dev_settings.iniから1つの設定を読む。無ければ空文字。
+std::string LoadSetting(const std::string& key)
 {
 	std::ifstream input("dev_settings.ini");
 	std::string line;
+	const std::string prefix = key + "=";
 	while (std::getline(input, line))
 	{
-		if (line.rfind("devmode=", 0) == 0)
+		if (line.rfind(prefix, 0) != 0)
+			continue;
+		std::string value = line.substr(prefix.size());
+		while (!value.empty() &&
+			(value.back() == '\r' || value.back() == '\n' ||
+			 value.back() == ' ' || value.back() == '\t'))
 		{
-			return line.substr(8) == "1";
+			value.pop_back();
 		}
+		return value;
 	}
-	return false;
+	return {};
+}
+
+bool LoadDevModeSetting()
+{
+	return LoadSetting("devmode") == "1";
+}
+
+// タイトルとリザルトを使うか(ゲームループ)。
+//   gameloop=1 : タイトル → ゲーム → リザルト → タイトル
+//   gameloop=0 : ゲーム本編だけ。決着がついたら同じ戦いをやり直す。
+// 書いていない場合は、これまでどおり devmode で決める
+// (devmode=1 ならゲーム本編だけ、そうでなければゲームループ)。
+bool LoadGameLoopSetting(bool devMode)
+{
+	const std::string value = LoadSetting("gameloop");
+	if (value.empty())
+		return !devMode;
+	return value != "0";
 }
 }
 
@@ -53,7 +79,9 @@ void gameinit()
 	// 通常の起動はタイトルシーンから開始する。
 	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
 	const bool devMode = LoadDevModeSetting();
-	SceneManager::SetCurrentScene(devMode ? "GameScene" : "TitleScene");
+	GameFlow::useGameLoop = LoadGameLoopSetting(devMode);
+	// ゲームループを使うならタイトルから。本編だけなら直接ゲームへ。
+	SceneManager::SetCurrentScene(GameFlow::useGameLoop ? "TitleScene" : "GameScene");
 	if (devMode)
 	{
 		DebugUI::SetVisible(true);
@@ -67,7 +95,10 @@ void gameupdate(uint64_t deltatime)
     input.Update();
     SoundManager::Update();
 
-    // F1：ゲームシーン、F2：車モデルシーン、F3：モーションエディター、F4：デバッグ表示切り替え
+    // F1：ゲームシーン、F2：車モデルシーン、F4：デバッグ表示切り替え
+    // F3のゲーム内モーションエディター(MotionEditorScene)は2026-09-15にユーザー判断で外し、
+    // 2026-09-24にシーンごと削除した。外部ツール(tools/MotionEditor.Wpf)と役割が重複しているため。
+    // 戻したい場合はgitの履歴から取り出すこと。
     if (input.IsKeyTriggered(DIK_F1))
     {
         SceneManager::SetCurrentScene("GameScene");
@@ -75,10 +106,6 @@ void gameupdate(uint64_t deltatime)
     else if (input.IsKeyTriggered(DIK_F2))
     {
         SceneManager::SetCurrentScene("CarScene");
-    }
-    else if (input.IsKeyTriggered(DIK_F3))
-    {
-        SceneManager::SetCurrentScene("MotionEditorScene");
     }
     else if (input.IsKeyTriggered(DIK_F4))
     {
@@ -91,6 +118,12 @@ void gameupdate(uint64_t deltatime)
     if (!requestedScene.empty())
     {
         SceneManager::SetCurrentScene(requestedScene);
+    }
+    // 本編だけのとき、決着後に同じ戦いをやり直す。
+    // シーンを作り直すので、体力も位置もAIの状態も初期化される。
+    else if (GameFlow::ConsumeRestart())
+    {
+        SceneManager::SetCurrentScene(SceneManager::GetCurrentSceneName(), true);
     }
 }
 

@@ -10,6 +10,21 @@ bool g_cursorHidden = false;
 std::vector<std::function<void(void)>> DebugUI::m_debugfunction;
 namespace { bool g_debugVisible = false; }
 namespace { bool g_cursorVisibleRequested = false; }
+namespace
+{
+bool g_cursorLockRequested = false;
+// 今フレーム実際に閉じ込めているか(前面にない・カーソル表示中は外している)。
+bool g_cursorClipped = false;
+
+void ReleaseCursorClip()
+{
+    if (!g_cursorClipped)
+        return;
+    ClipCursor(nullptr);
+    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+    g_cursorClipped = false;
+}
+}
 
 void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context) 
 {
@@ -80,6 +95,8 @@ void DebugUI::Init(ID3D11Device* device, ID3D11DeviceContext* context)
 
 void DebugUI::DisposeUI() {
     // デバッグUIを終了して使用したリソースを解放する。
+    // 閉じ込めたまま終了すると、ゲームを閉じた後もカーソルが元の範囲から出られない。
+    ReleaseCursorClip();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -110,14 +127,46 @@ void DebugUI::SetCursorVisible(bool visible) {
     g_cursorVisibleRequested = visible;
 }
 
+void DebugUI::SetCursorLocked(bool locked) {
+    g_cursorLockRequested = locked;
+}
+
+bool DebugUI::IsCursorLocked() {
+    return g_cursorClipped;
+}
+
 void DebugUI::BeginFrame() {
+    const HWND window = Application::GetWindow();
+    const bool gameIsForeground = GetForegroundWindow() == window;
+
+    // カーソルの閉じ込め。ImGuiへマウスを渡さない設定はNewFrameの前に決める
+    // (後から変えると、そのフレームはデバッグ表示がマウスを掴んだままになる)。
+    const bool lockCursor = g_cursorLockRequested && !g_cursorVisibleRequested && gameIsForeground;
+    if (lockCursor)
+    {
+        // ウィンドウを動かされても追従するよう、毎フレーム範囲を取り直す。
+        RECT client{};
+        GetClientRect(window, &client);
+        POINT topLeft{ client.left, client.top };
+        POINT bottomRight{ client.right, client.bottom };
+        ClientToScreen(window, &topLeft);
+        ClientToScreen(window, &bottomRight);
+        RECT clip{ topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+        ClipCursor(&clip);
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+        g_cursorClipped = true;
+    }
+    else
+    {
+        ReleaseCursorClip();
+    }
+
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    const bool gameIsForeground = GetForegroundWindow() == Application::GetWindow();
     const bool showCursor = g_cursorVisibleRequested ||
-        !gameIsForeground || ImGui::GetIO().WantCaptureMouse;
+        !gameIsForeground || (!lockCursor && ImGui::GetIO().WantCaptureMouse);
     if (showCursor && g_cursorHidden)
     {
         ShowCursor(TRUE);

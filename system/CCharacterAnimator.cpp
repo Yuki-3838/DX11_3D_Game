@@ -1,4 +1,5 @@
 #include "CCharacterAnimator.h"
+#include "CombatAttackTable.h"
 
 #include <algorithm>
 #include <cmath>
@@ -151,14 +152,35 @@ namespace
 	{
 		return BlendLocalSrt(from, to, amount);
 	}
+
+	/**
+	 * @brief 腰を原点としたときの足首の位置。
+	 *
+	 * 足運びの位相を測るために使う。行ベクトル規約なので「子のローカル行列 × 親の行列」の順。
+	 * 腰から下だけを辿るので、体の向きや位置に関係なく「脚がどれだけ開いているか」が分かる。
+	 * 姿勢に無い骨は骨の初期姿勢で補う。
+	 */
+	Vector3 FootPositionFromPelvis(
+		const CAnimationMesh& mesh,
+		const std::unordered_map<std::string, Matrix4x4>& pose,
+		const std::string& upperLeg,
+		const std::string& knee,
+		const std::string& foot)
+	{
+		const auto pick = [&](const std::string& bone)
+		{
+			const auto found = pose.find(bone);
+			return found != pose.end() ? found->second : mesh.GetRestLocalMatrix(bone);
+		};
+		const Matrix4x4 matrix = pick(foot) * pick(knee) * pick(upperLeg);
+		return Vector3(matrix._41, matrix._42, matrix._43);
+	}
 }
 
 void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 {
 	m_boneNames = mesh.GetBoneNames();
 	const std::vector<std::string>& boneNames = m_boneNames;
-	if (!boneNames.empty())
-		m_selectedBone = boneNames.front();
 	// 攻撃姿勢では腰と背骨も動かし、右腕だけでなく上半身全体で剣を振る。
 	// ボーン名を固定して、.motionファイルを手作業でも読めるようにする。
 	m_pelvis = FindBone(boneNames, { "pelvis", "hips", "mixamorig:Hips" });
@@ -179,6 +201,8 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 	m_rightKnee = FindBone(boneNames, { "右ひざD", "mixamorig:RightLeg", "Bip001 R Calf", "右ひざ", "rightknee", "rightcalf" });
 	m_leftFoot = FindBone(boneNames, { "左足首D", "mixamorig:LeftFoot", "Bip001 L Foot", "左足首", "leftankle", "leftfoot" });
 	m_rightFoot = FindBone(boneNames, { "右足首D", "mixamorig:RightFoot", "Bip001 R Foot", "右足首", "rightankle", "rightfoot" });
+	m_leftToe = FindBone(boneNames, { "左つま先D", "mixamorig:LeftToeBase", "Bip001 L Toe0", "左つま先", "lefttoebase", "lefttoe", "toe.l" });
+	m_rightToe = FindBone(boneNames, { "右つま先D", "mixamorig:RightToeBase", "Bip001 R Toe0", "右つま先", "righttoebase", "righttoe", "toe.r" });
 
 	// GameSceneでも専用エディタで保存した攻撃モーションを使用する。
 	// QuaterniusのglTFはBlender形式の.L/.Rボーン名を使うため、
@@ -321,9 +345,12 @@ const std::vector<std::string>& CCharacterAnimator::LowerBodyBones() const
 		// 腰が大きく下がる前提で作られており、安全な範囲の沈み込みでは全く足りず、
 		// 脚が宙で跳ね上がったような姿勢になった(実機キャプチャで確認)。
 		// 腰を正しく動かすには、脚のIKで接地を保つ仕組みが要る。
+		// つま先も脚に含める。含めないと、攻撃クリップがつま先を動かしたまま
+		// 移動・待機へ戻った瞬間につま先だけ休止姿勢へ跳ぶ
+		// (実測: 足首は連続していたのに、つま先だけ1フレームで0.41モデル単位動いていた)。
 		const std::string* candidates[] = {
 			&m_leftLeg, &m_rightLeg, &m_leftKnee, &m_rightKnee,
-			&m_leftFoot, &m_rightFoot,
+			&m_leftFoot, &m_rightFoot, &m_leftToe, &m_rightToe,
 		};
 		for (const std::string* name : candidates)
 		{
@@ -332,6 +359,23 @@ const std::vector<std::string>& CCharacterAnimator::LowerBodyBones() const
 		}
 	}
 	return m_lowerBodyBonesCache;
+}
+
+const std::vector<std::string>& CCharacterAnimator::WarpBones() const
+{
+	if (m_warpBonesCache.empty())
+	{
+		m_warpBonesCache = LowerBodyBones();
+		if (!m_pelvis.empty())
+			m_warpBonesCache.push_back(m_pelvis);
+	}
+	return m_warpBonesCache;
+}
+
+bool CCharacterAnimator::IsLowerBodyBone(const std::string& boneName) const
+{
+	const std::vector<std::string>& bones = LowerBodyBones();
+	return std::find(bones.begin(), bones.end(), boneName) != bones.end();
 }
 
 void CCharacterAnimator::SetIdleAnimation(aiAnimation* animation)
@@ -347,6 +391,675 @@ void CCharacterAnimator::SetAttackAnimations(
 {
 	m_weakAttackAnimations = weakAnimations;
 	m_heavyAttackAnimations = heavyAnimations;
+}
+
+void CCharacterAnimator::SetLocomotionBlendSpace(
+	CAnimationMesh& mesh,
+	float modelScale,
+	const std::array<aiAnimation*, 8>& clips,
+	float walkSpeed,
+	float runSpeed)
+{
+	m_blendSpaceWalkSpeed = walkSpeed;
+	m_blendSpaceRunSpeed = runSpeed;
+
+	// クリップの腰の位置キーは、腰の親(アーマチュア)の空間で書かれている。
+	// 休止姿勢の腰の「親空間での高さ」と「モデル空間での高さ」の比が親の倍率になるので、
+	// それとモデルの表示倍率を掛けて、クリップの単位をゲーム内の単位へ換算する。
+	// モデルを差し替えても、この換算は自動で合う。
+	//
+	// 注意: 親空間の「上」の軸はモデルによって違う。このプレイヤーモデルは親(アーマチュア)が
+	// Z軸を上にしており、腰の休止姿勢の位置は(0.03, 0.47, 95.6)と高さがZに入っている。
+	// 一方クリップはY軸が上。Y成分を高さだと決め打ちすると換算が約200倍になり、
+	// 攻撃の踏み込みでプレイヤーが闘技場の外まで飛んだ(実機で確認)。
+	// 腰の休止位置で最も大きい成分を「高さ」とみなす(腰の高さは他の成分より十分大きい)。
+	float clipToModel = 1.0f;
+	const float restLocalHeight = CAnimationMesh::DominantAxisComponent(mesh.GetRestLocalMatrix(m_pelvis));
+	const float restModelHeight = mesh.GetRestBoneModelHeight(m_pelvis);
+	if (std::abs(restLocalHeight) > 0.0001f)
+		clipToModel = restModelHeight / restLocalHeight;
+	const float clipToWorld = std::abs(clipToModel * modelScale);
+	m_clipToWorld = clipToWorld;
+
+	for (size_t index = 0; index < clips.size(); ++index)
+	{
+		BlendSpaceClip data{};
+		data.animation = clips[index];
+		if (data.animation != nullptr)
+		{
+			const double ticksPerSecond = data.animation->mTicksPerSecond > 0.0
+				? data.animation->mTicksPerSecond
+				: 30.0;
+			data.cycleSeconds = std::max(
+				0.05f, static_cast<float>(data.animation->mDuration / ticksPerSecond));
+			// 腰のチャンネルの先頭と末尾の位置差が、1周期で進む距離。
+			for (unsigned int c = 0; c < data.animation->mNumChannels; ++c)
+			{
+				const aiNodeAnim* channel = data.animation->mChannels[c];
+				if (channel == nullptr || channel->mNumPositionKeys < 2 ||
+					m_pelvis != channel->mNodeName.C_Str())
+					continue;
+				const aiVector3D& first = channel->mPositionKeys[0].mValue;
+				const aiVector3D& last = channel->mPositionKeys[channel->mNumPositionKeys - 1].mValue;
+				const float dx = last.x - first.x;
+				const float dz = last.z - first.z;
+				data.cycleDistance = std::sqrt(dx * dx + dz * dz) * clipToWorld;
+				break;
+			}
+		}
+		m_blendSpaceClips[index] = data;
+	}
+	// 前向きの歩きが無いと代用先が無くなるので、それだけは必須にする。
+	m_blendSpaceReady = m_blendSpaceClips[0].animation != nullptr;
+
+	// 歩き・走りへ切り替える速さは、ゲーム側の歩き・ダッシュの速さ(引数)にする。
+	// 歩いているときは歩きクリップだけ、ダッシュ中は走りクリップだけが再生される。
+	// 引数が無効なときだけ、クリップを1倍速で再生したときの速さで代用する。
+	//
+	// 経緯: 移動速度が歩き70・ダッシュ約115と体格に対して速すぎた間は、
+	// これを境目にすると歩きクリップを約4.5倍速で回すことになり、足がばたばたした。
+	// そのため一時的にクリップ自身の速さを境目にしていたが、移動速度を体格に合う値
+	// (歩き20・ダッシュ45)へ下げたので、ゲーム側の速さを境目に戻した。
+	const auto naturalSpeedOf = [](const BlendSpaceClip& clip)
+	{
+		return clip.cycleSeconds > 0.0f ? clip.cycleDistance / clip.cycleSeconds : 0.0f;
+	};
+	if (walkSpeed <= 0.0f)
+		m_blendSpaceWalkSpeed = std::max(0.1f, naturalSpeedOf(m_blendSpaceClips[0]));
+	if (runSpeed <= m_blendSpaceWalkSpeed)
+		m_blendSpaceRunSpeed = std::max(m_blendSpaceWalkSpeed + 0.1f, naturalSpeedOf(m_blendSpaceClips[1]));
+
+	MeasureLocomotionFootPhases(mesh);
+}
+
+void CCharacterAnimator::MeasureLocomotionFootPhases(CAnimationMesh& mesh)
+{
+	// クリップは1本ずつ別に作られていて、足を上げる瞬間が揃っていない。
+	// 揃えずに同じ正規化時間で混ぜると、向きを変えるたびに左右の足が入れ替わって見える。
+	// ここで読み込み時に一度だけ測るので、クリップを差し替えても自動で合う。
+	//
+	// 手持ちのクリップの実測(左足の高さの波形の相関。1.0で足並みが完全に一致):
+	//   右歩き  ずれ0.25  相関 -0.41 → 0.93  (逆位相。片方が左足を上げている間、もう片方は着いていた)
+	//   左歩き  ずれ0.75  相関  0.10 → 0.81
+	//   左走り  ずれ0.23  相関  0.17 → 0.89
+	//   後ろ走り ずれ0.16  相関  0.50 → 0.83
+	//   後ろ歩き ずれ0.91  相関  0.62 → 0.79
+	//   右走り  ずれ0.98  相関  0.95 → 0.97 (もともと揃っていた)
+	//   前走り  ずれ0.00  相関  0.87        (もともと揃っていた)
+	// ロックオン中の横移動は歩きクリップと前歩きを混ぜるので、逆位相の影響が最も出ていた。
+	m_footPhaseMeasured = false;
+	m_locomotionStopPhase = 0.0f;
+	for (BlendSpaceClip& clip : m_blendSpaceClips)
+		clip.phaseOffset = 0.0f;
+
+	if (m_leftLeg.empty() || m_leftKnee.empty() || m_leftFoot.empty() ||
+		m_rightLeg.empty() || m_rightKnee.empty() || m_rightFoot.empty())
+		return;
+	aiAnimation* reference = m_blendSpaceClips[0].animation;
+	if (reference == nullptr)
+		return;
+
+	const std::vector<std::string> legBones = {
+		m_leftLeg, m_leftKnee, m_leftFoot, m_rightLeg, m_rightKnee, m_rightFoot };
+	const auto leftFootAt = [&](const std::unordered_map<std::string, Matrix4x4>& pose)
+	{
+		return FootPositionFromPelvis(mesh, pose, m_leftLeg, m_leftKnee, m_leftFoot);
+	};
+	const auto rightFootAt = [&](const std::unordered_map<std::string, Matrix4x4>& pose)
+	{
+		return FootPositionFromPelvis(mesh, pose, m_rightLeg, m_rightKnee, m_rightFoot);
+	};
+
+	// 「下」の向きは骨の初期姿勢の脚から作る。モデルによって上の軸が違うので決め打ちできない。
+	static const std::unordered_map<std::string, Matrix4x4> emptyPose;
+	Vector3 down = leftFootAt(emptyPose) + rightFootAt(emptyPose);
+	if (down.Length() < 0.0001f)
+		return;
+	down.Normalize();
+
+	constexpr int SAMPLES = 64;
+	// 左足がどれだけ持ち上がっているかの波形。これが揃えばもう一方の足も揃う。
+	std::array<std::array<float, SAMPLES>, 8> lift{};
+	for (size_t index = 0; index < m_blendSpaceClips.size(); ++index)
+	{
+		aiAnimation* animation = m_blendSpaceClips[index].animation;
+		if (animation == nullptr)
+			continue;
+		for (int i = 0; i < SAMPLES; ++i)
+		{
+			const auto pose = mesh.SampleLocalPose(
+				animation, static_cast<float>(i) / static_cast<float>(SAMPLES), legBones);
+			lift[index][i] = -leftFootAt(pose).Dot(down);
+		}
+	}
+
+	// 波形の高さ(平均)と振幅はクリップごとに違う。そのままでは「足の高さの違い」に
+	// 引っ張られてずれが求まらないので、平均0・振幅1にそろえてから比べる。
+	// (最初は生の値で二乗誤差を取っていたが、平均の差が支配してしまい、
+	//  ずらしても波形の一致がほとんど改善しなかった。)
+	const auto normalize = [](std::array<float, SAMPLES>& wave)
+	{
+		float mean = 0.0f;
+		for (float value : wave)
+			mean += value;
+		mean /= static_cast<float>(SAMPLES);
+		float variance = 0.0f;
+		for (float& value : wave)
+		{
+			value -= mean;
+			variance += value * value;
+		}
+		const float deviation = std::sqrt(variance / static_cast<float>(SAMPLES));
+		if (deviation < 0.0001f)
+			return 0.0f;
+		for (float& value : wave)
+			value /= deviation;
+		return deviation;
+	};
+	std::array<float, 8> amplitude{};
+	for (size_t index = 0; index < m_blendSpaceClips.size(); ++index)
+	{
+		if (m_blendSpaceClips[index].animation != nullptr)
+			amplitude[index] = normalize(lift[index]);
+	}
+
+	// 前向き歩きの波形と最も重なるずらし量を探す(全位相を試し、相関が最大のもの)。
+	for (size_t index = 1; index < m_blendSpaceClips.size(); ++index)
+	{
+		if (m_blendSpaceClips[index].animation == nullptr || amplitude[index] <= 0.0f)
+			continue;
+		float bestCorrelation = -1.0e9f;
+		int bestOffset = 0;
+		for (int offset = 0; offset < SAMPLES; ++offset)
+		{
+			float correlation = 0.0f;
+			for (int i = 0; i < SAMPLES; ++i)
+				correlation += lift[0][i] * lift[index][(i + offset) % SAMPLES];
+			if (correlation > bestCorrelation)
+			{
+				bestCorrelation = correlation;
+				bestOffset = offset;
+			}
+		}
+		// 波形が似ていない(足の上げ下げがはっきりしない)クリップは、ずらすと逆に崩れる。
+		// 相関が弱いものはずらさない。相関は0〜SAMPLESの範囲に収まる。
+		if (bestCorrelation < 0.35f * static_cast<float>(SAMPLES))
+			continue;
+		m_blendSpaceClips[index].phaseOffset =
+			static_cast<float>(bestOffset) / static_cast<float>(SAMPLES);
+	}
+
+	// 止まるときに足を収める位相は、前向き歩きで「両足が最も揃う瞬間」にする。
+	// 位相を止めた場所で固めると、脚を大きく開いた姿勢のまま立ち姿へ混ざるため、
+	// 足の位置が最大79単位(脚の長さは約84)一気に動いていた。
+	// ここへ寄せると、その差は16単位まで縮む。
+	//
+	// なお、この姿勢を「立ち止まった脚の姿勢」としてそのまま使うことは**できない**。
+	// 実測すると、歩きクリップの足は全位相で骨の初期姿勢より4〜12単位高い位置にある
+	// (クリップは腰が沈む前提で作られているが、腰はここでは動かしていない)。
+	// 立ち姿に使うと、止まるたびにプレイヤーが約1単位浮いて見える。
+	// 接地の基準は骨の初期姿勢の足なので、止まりきった姿勢はそちらに合わせる。
+	float closest = 1.0e9f;
+	for (int i = 0; i < SAMPLES; ++i)
+	{
+		const float phase = static_cast<float>(i) / static_cast<float>(SAMPLES);
+		const auto pose = mesh.SampleLocalPose(reference, phase, legBones);
+		const float gap = (leftFootAt(pose) - rightFootAt(pose)).Length();
+		if (gap < closest)
+		{
+			closest = gap;
+			m_locomotionStopPhase = phase;
+		}
+	}
+	// --- 1周期で進む距離を、足の動く幅から測り直す ---
+	//
+	// もともとは腰の移動キーの先頭と末尾の差を使っていた。しかしその値は実際の歩幅と合っておらず、
+	// 再生速度を合わせても接地している足が地面を滑っていた。
+	// その滑りを足の固定(IK)が毎歩つかみ直して消そうとするため、
+	// **固定が掛かった瞬間に足が跳ぶ**(実測で足首が1フレームで0.15モデル単位動き、
+	// 前後のフレームは0.003〜0.02しか動いていなかった)。これが「足がとびとびに見える」正体。
+	//
+	// 測り方: **接地している足が体に対して後ろへ流れる速さ**を見る。
+	// 地面を踏んでいる間、足は地面に対して止まっているので、体から見ると
+	// ちょうど移動の速さだけ後ろへ流れる。つまりその速さが「このクリップ本来の移動速度」になる。
+	//
+	// 足が前後に動く**幅**で測るのは誤り(一度そうして失敗した)。
+	// 幅は「接地している間に進む距離」でしかなく、1周期の6割ほどしかないため歩幅を小さく見積もる。
+	// その結果クリップを本来の3.2倍の速さで再生してしまい、歩きが異常に速くなった。
+	//
+	// 接地は1周期の半分以上を占めるので、1コマあたりの移動量の**中央値**を取れば
+	// 自然と接地中の値が選ばれる(踏み出し中は大きく動くが、数が少ないので中央値には出てこない)。
+	if (m_clipToWorld > 0.0f)
+	{
+		for (size_t index = 0; index < m_blendSpaceClips.size(); ++index)
+		{
+			aiAnimation* animation = m_blendSpaceClips[index].animation;
+			if (animation == nullptr)
+				continue;
+			std::vector<Vector3> leftTrack;
+			std::vector<Vector3> rightTrack;
+			leftTrack.reserve(SAMPLES);
+			rightTrack.reserve(SAMPLES);
+			for (int i = 0; i < SAMPLES; ++i)
+			{
+				const auto pose = mesh.SampleLocalPose(
+					animation, static_cast<float>(i) / static_cast<float>(SAMPLES), legBones);
+				leftTrack.push_back(leftFootAt(pose));
+				rightTrack.push_back(rightFootAt(pose));
+			}
+			// 1コマあたりの水平の移動量の中央値 = 接地中に足が後ろへ流れる量。
+			const auto medianStep = [&down](const std::vector<Vector3>& track)
+			{
+				std::vector<float> steps;
+				steps.reserve(track.size());
+				for (size_t i = 0; i < track.size(); ++i)
+				{
+					Vector3 difference = track[(i + 1) % track.size()] - track[i];
+					difference -= down * difference.Dot(down);
+					steps.push_back(difference.Length());
+				}
+				std::sort(steps.begin(), steps.end());
+				return steps.empty() ? 0.0f : steps[steps.size() / 2];
+			};
+			// 左右の平均を取る(片足だけだと、そちらの接地の長さに偏る)。
+			const float step =
+				0.5f * (medianStep(leftTrack) + medianStep(rightTrack));
+			// 1周期分に直す。コマ数を掛ければ「1周期で体が進む距離」になる。
+			const float measured = step * static_cast<float>(SAMPLES) * m_clipToWorld;
+			if (measured > 0.01f)
+				m_blendSpaceClips[index].cycleDistance = measured;
+		}
+	}
+
+	m_footPhaseMeasured = true;
+}
+
+void CCharacterAnimator::BuildLegWarp(
+	const std::unordered_map<std::string, Matrix4x4>& fromPose,
+	const std::unordered_map<std::string, Matrix4x4>& clipPose,
+	const std::vector<std::string>& legBones,
+	std::unordered_map<std::string, Matrix4x4>& outWarp)
+{
+	outWarp.clear();
+	for (const std::string& bone : legBones)
+	{
+		const auto from = fromPose.find(bone);
+		const auto clip = clipPose.find(bone);
+		if (from == fromPose.end() || clip == clipPose.end())
+			continue;
+		// C = F * L0⁻¹。休止姿勢の平行移動は打ち消し合うので、残るのは回転だけ。
+		outWarp[bone] = from->second * clip->second.Invert();
+	}
+}
+
+void CCharacterAnimator::ApplyLegWarp(
+	const std::unordered_map<std::string, Matrix4x4>& warp,
+	float amount,
+	std::unordered_map<std::string, Matrix4x4>& pose)
+{
+	if (warp.empty() || amount <= 0.0001f)
+		return;
+	const float weight = std::clamp(amount, 0.0f, 1.0f);
+	for (const auto& [bone, correction] : warp)
+	{
+		auto target = pose.find(bone);
+		if (target == pose.end())
+			continue;
+		// ずらしを弱めていく(回転はslerpで単位行列へ近づく)。
+		const Matrix4x4 partial =
+			CAnimationMesh::BlendLocalMatrix(Matrix4x4::Identity, correction, weight);
+		target->second = partial * target->second;
+	}
+}
+
+float CCharacterAnimator::LegBlendDurationFor(
+	CAnimationMesh& mesh,
+	const std::unordered_map<std::string, Matrix4x4>& fromPose,
+	const std::unordered_map<std::string, Matrix4x4>& toPose) const
+{
+	// 既定は真ん中あたり。骨が揃っていないときはこれを使う。
+	constexpr float SHORTEST = 0.10f;
+	constexpr float LONGEST = 0.40f;
+	if (m_leftLeg.empty() || m_leftKnee.empty() || m_leftFoot.empty() ||
+		m_rightLeg.empty() || m_rightKnee.empty() || m_rightFoot.empty())
+		return 0.24f;
+
+	const auto distanceOf = [&](const std::string& leg,
+		const std::string& knee, const std::string& foot)
+	{
+		return (FootPositionFromPelvis(mesh, toPose, leg, knee, foot) -
+			FootPositionFromPelvis(mesh, fromPose, leg, knee, foot)).Length();
+	};
+	const float moved = std::max(
+		distanceOf(m_leftLeg, m_leftKnee, m_leftFoot),
+		distanceOf(m_rightLeg, m_rightKnee, m_rightFoot));
+	// 脚の長さ(休止姿勢の腰からつま先まで)を基準にする。
+	static const std::unordered_map<std::string, Matrix4x4> emptyPose;
+	const float legLength = std::max(0.001f,
+		FootPositionFromPelvis(mesh, emptyPose, m_leftLeg, m_leftKnee, m_leftFoot).Length());
+	// 脚の長さの6割も動くなら最長。ほとんど動かないなら最短。
+	const float ratio = std::clamp(moved / legLength, 0.0f, 0.6f);
+	return SHORTEST + (ratio / 0.6f) * (LONGEST - SHORTEST);
+}
+
+std::unordered_map<std::string, Matrix4x4> CCharacterAnimator::LocomotionLegTargetPose(
+	CAnimationMesh& mesh,
+	const CharacterAnimationState& state)
+{
+	// 戻り先の脚は「止まっていれば待機クリップ」「動いていれば移動クリップ」。
+	//
+	// 速さは**なめらかにした値**で見る。実際の混ぜ方がこの値で決まるからである。
+	// 技には踏み込み(ルートモーション)があるので、入力が無くても生の速度は0にならない。
+	// そこを見ると「動いている」と誤判定し、戻り先を取り違える。
+	const float speed = std::sqrt(
+		m_smoothedVelocityRight * m_smoothedVelocityRight +
+		m_smoothedVelocityForward * m_smoothedVelocityForward);
+	const bool mostlyIdle = speed < m_blendSpaceWalkSpeed * 0.5f;
+	if (mostlyIdle)
+	{
+		if (m_idleAnimation == nullptr)
+			return {};
+		unsigned int keys = 0;
+		for (unsigned int c = 0; c < m_idleAnimation->mNumChannels; ++c)
+			keys = std::max(keys, m_idleAnimation->mChannels[c]->mNumRotationKeys);
+		const float normalized = keys > 1
+			? m_idleFrameAccumulator / static_cast<float>(keys - 1)
+			: 0.0f;
+		return mesh.SampleLocalPose(m_idleAnimation, normalized, LowerBodyBones());
+	}
+	aiAnimation* reference = m_blendSpaceClips[0].animation;
+	if (!m_footPhaseMeasured || reference == nullptr)
+		return {};
+	return mesh.SampleLocalPose(reference, m_blendSpacePhase, LowerBodyBones());
+}
+
+void CCharacterAnimator::ResyncLocomotionPhase(
+	CAnimationMesh& mesh,
+	const std::unordered_map<std::string, Matrix4x4>& pose)
+{
+	// 攻撃や前転の間、足運びの位相は進まない。戻る瞬間の脚と位相が合っていないと、
+	// 補間の短い時間で足が反対側へ入れ替わってしまう。
+	// いまの脚に最も近い位相へ合わせ直せば、戻りはじめの足の動きが最小になる。
+	if (!m_footPhaseMeasured || pose.empty())
+		return;
+	aiAnimation* reference = m_blendSpaceClips[0].animation;
+	if (reference == nullptr)
+		return;
+
+	const std::vector<std::string> legBones = {
+		m_leftLeg, m_leftKnee, m_leftFoot, m_rightLeg, m_rightKnee, m_rightFoot };
+	const Vector3 left = FootPositionFromPelvis(mesh, pose, m_leftLeg, m_leftKnee, m_leftFoot);
+	const Vector3 right = FootPositionFromPelvis(mesh, pose, m_rightLeg, m_rightKnee, m_rightFoot);
+
+	constexpr int SAMPLES = 48;
+	float best = 1.0e9f;
+	float bestPhase = m_blendSpacePhase;
+	for (int i = 0; i < SAMPLES; ++i)
+	{
+		const float phase = static_cast<float>(i) / static_cast<float>(SAMPLES);
+		const auto clipPose = mesh.SampleLocalPose(reference, phase, legBones);
+		const float distance =
+			(FootPositionFromPelvis(mesh, clipPose, m_leftLeg, m_leftKnee, m_leftFoot) - left).Length() +
+			(FootPositionFromPelvis(mesh, clipPose, m_rightLeg, m_rightKnee, m_rightFoot) - right).Length();
+		if (distance < best)
+		{
+			best = distance;
+			bestPhase = phase;
+		}
+	}
+	m_blendSpacePhase = bestPhase;
+}
+
+const CCharacterAnimator::BlendSpaceClip& CCharacterAnimator::BlendSpaceClipOf(
+	Anim::LocomotionDirection direction, Anim::LocomotionGait gait) const
+{
+	const auto indexOf = [](Anim::LocomotionDirection d, Anim::LocomotionGait g)
+	{
+		return static_cast<size_t>(d) * 2 + static_cast<size_t>(g);
+	};
+	const BlendSpaceClip& wanted = m_blendSpaceClips[indexOf(direction, gait)];
+	if (wanted.animation != nullptr)
+		return wanted;
+	// 無い方向は、同じ歩調の前向きで代用する。それも無ければ前向きの歩き。
+	const BlendSpaceClip& forward =
+		m_blendSpaceClips[indexOf(Anim::LocomotionDirection::Forward, gait)];
+	return forward.animation != nullptr ? forward : m_blendSpaceClips[0];
+}
+
+bool CCharacterAnimator::UpdateLocomotionBlendSpace(
+	CAnimationMesh& mesh,
+	BoneCombMatrix& boneComb,
+	const CharacterAnimationState& state,
+	float deltaSeconds,
+	const std::unordered_map<std::string, Matrix4x4>* blendFromPose,
+	float blendRate,
+	float legBlendRate)
+{
+	if (!m_blendSpaceReady)
+		return false;
+
+	// 入力の速度へなめらかに追従する。キーを押した瞬間に重みが跳ぶと、
+	// ブレンドツリーにしても歩き出しの一歩目で姿勢が飛んで見える。
+	// 指数的に追従させるので、フレームレートが変わっても追従の速さは同じ。
+	//
+	// 歩き出しと止まりで速さを分ける。歩き出しは操作の手応えのため速いほうがよいが、
+	// 止まりも同じ速さだと、前へ踏み出した足が空中で消えるように見える。
+	// 止まりを遅くすると、最後の一歩を踏み切ってから立ち姿へ収まる。
+	const float inputSpeed = std::sqrt(
+		state.velocityRight * state.velocityRight + state.velocityForward * state.velocityForward);
+	const float currentSpeed = std::sqrt(
+		m_smoothedVelocityRight * m_smoothedVelocityRight +
+		m_smoothedVelocityForward * m_smoothedVelocityForward);
+	const float followPerSecond = inputSpeed >= currentSpeed ? 14.0f : 6.0f;
+	const float follow = 1.0f - std::exp(-deltaSeconds * followPerSecond);
+	m_smoothedVelocityRight += (state.velocityRight - m_smoothedVelocityRight) * follow;
+	m_smoothedVelocityForward += (state.velocityForward - m_smoothedVelocityForward) * follow;
+	const Anim::LocomotionWeights weights = Anim::ComputeLocomotionWeights(
+		m_smoothedVelocityRight, m_smoothedVelocityForward,
+		m_blendSpaceWalkSpeed, m_blendSpaceRunSpeed);
+
+	// 待機は上半身だけ。脚は骨の初期姿勢のままにする。
+	//
+	// 一度、待機クリップの脚も使ってみた(技へ入るときの足の移動が脚の長さの0.86倍もあり、
+	// 待機の構えを技に近づければ縮むと考えたため。実測では0.59まで縮んだ)。
+	// しかし**実機で見ると片脚が上がったままの不自然な立ち姿**になり、
+	// ユーザーから「浮いている」と指摘されたので戻した。
+	// この待機クリップの脚は腰が動く前提で作られていて、腰を固定したままでは姿勢が成り立たない。
+	// 待機に脚を入れるなら、腰の上下動も一緒に入れる必要がある。
+	const std::vector<std::string> upperBones = {
+		m_spine, m_spine01, m_spine02,
+		m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
+	};
+	std::vector<std::string> movingBones = upperBones;
+	const std::vector<std::string>& lowerBones = LowerBodyBones();
+	movingBones.insert(movingBones.end(), lowerBones.begin(), lowerBones.end());
+
+	// --- 足運びの位相を進める ---
+	// 全移動クリップで1つの正規化時間を共有する(同期)。クリップごとに別の時間で進めると、
+	// 混ぜたときに右足と左足が同時に前へ出るような破綻が起きる。
+	// 進める速さは「実際の速さ ÷ 1周期で進む距離」。これで足が地面を滑らない。
+	const float movingWeight = 1.0f - weights.idle;
+	if (movingWeight > 0.001f)
+	{
+		float cyclesPerSecond = 0.0f;
+		for (int i = 0; i < weights.movingCount; ++i)
+		{
+			const auto& entry = weights.moving[i];
+			const BlendSpaceClip& clip = BlendSpaceClipOf(entry.direction, entry.gait);
+			const float naturalRate = 1.0f / clip.cycleSeconds;
+			float rate = clip.cycleDistance > 0.01f
+				? weights.speed / clip.cycleDistance
+				: naturalRate;
+			// 足が地面を滑らないよう、基本は実際の速さに合わせた再生速度をそのまま使う。
+			// 歩き出しのごく遅い速度で足がほぼ止まるのと、異常値だけを防ぐため、元の0.5〜4倍に収める。
+			// (以前は2.5倍で打ち切っていたため、ダッシュで足が滑っていた)
+			rate = std::clamp(rate, naturalRate * 0.5f, naturalRate * 4.0f);
+			cyclesPerSecond += (entry.weight / movingWeight) * rate;
+		}
+		m_blendSpacePhase += cyclesPerSecond * deltaSeconds;
+		m_blendSpacePhase -= std::floor(m_blendSpacePhase);
+	}
+
+	// 止まりかけているときは、両足が揃う位相へ寄せていく。
+	// 位相を止めた場所で固めると、脚を開いたままの姿勢が立ち姿へ混ざって足が入れ替わって見える。
+	// 寄せる速さは「止まっている度合い」に比例させるので、歩いている間は影響しない。
+	if (m_footPhaseMeasured && movingWeight < 0.999f)
+	{
+		float difference = m_locomotionStopPhase - m_blendSpacePhase;
+		difference -= std::floor(difference + 0.5f); // 近い側へ回す(-0.5〜0.5)
+		const float settle = 1.0f - std::exp(-deltaSeconds * 6.0f * (1.0f - movingWeight));
+		m_blendSpacePhase += difference * settle;
+		m_blendSpacePhase -= std::floor(m_blendSpacePhase);
+	}
+
+	// --- 姿勢を取り出して重み付きで混ぜる ---
+	// 2つずつ順に補間する。k本目を混ぜるときの比率を
+	// 「k本目の重み ÷ それまでの重みの合計」にすると、全体として重み付き平均になる。
+	std::unordered_map<std::string, Matrix4x4> result;
+	float accumulated = 0.0f;
+	const auto blendIn = [&](const std::unordered_map<std::string, Matrix4x4>& pose, float weight)
+	{
+		if (weight <= 0.0001f)
+			return;
+		if (accumulated <= 0.0f)
+		{
+			result = pose;
+			for (const std::string& bone : movingBones)
+				result.try_emplace(bone, mesh.GetRestLocalMatrix(bone));
+			accumulated = weight;
+			return;
+		}
+		const float amount = weight / (accumulated + weight);
+		for (const std::string& bone : movingBones)
+		{
+			const auto to = pose.find(bone);
+			const Matrix4x4 target = to != pose.end() ? to->second : mesh.GetRestLocalMatrix(bone);
+			result[bone] = CAnimationMesh::BlendLocalMatrix(result[bone], target, amount);
+		}
+		accumulated += weight;
+	};
+
+	// 待機は止まっている間も進め続ける。止めておくと、立ち止まるたびに同じ姿勢から始まる。
+	m_idleFrameAccumulator += m_idlePlaybackRate * deltaSeconds * 60.0f;
+	if (weights.idle > 0.0001f)
+	{
+		std::unordered_map<std::string, Matrix4x4> idlePose;
+		if (m_idleAnimation != nullptr)
+		{
+			unsigned int keys = 0;
+			for (unsigned int c = 0; c < m_idleAnimation->mNumChannels; ++c)
+				keys = std::max(keys, m_idleAnimation->mChannels[c]->mNumRotationKeys);
+			const float normalized = keys > 1
+				? m_idleFrameAccumulator / static_cast<float>(keys - 1)
+				: 0.0f;
+			idlePose = mesh.SampleLocalPose(m_idleAnimation, normalized, upperBones);
+		}
+		blendIn(idlePose, weights.idle);
+	}
+	for (int i = 0; i < weights.movingCount; ++i)
+	{
+		const auto& entry = weights.moving[i];
+		const BlendSpaceClip& clip = BlendSpaceClipOf(entry.direction, entry.gait);
+		// 読み込み時に測ったずれを足す。これで、どのクリップを混ぜても足の上げ下げが揃う。
+		float phase = m_blendSpacePhase + clip.phaseOffset;
+		phase -= std::floor(phase);
+		blendIn(mesh.SampleLocalPose(clip.animation, phase, movingBones), entry.weight);
+	}
+
+	// 腰は移動・待機では休止姿勢のまま使う(クリップの腰は入れない)。
+	// ただし**姿勢の表には入れておく**。技から戻るときに、技の腰の位置から
+	// ここへなめらかに戻す必要があるためである(入れないと腰だけ跳び、
+	// 腰は脚の親なので膝・足首・つま先がまとめて同じ量だけ平行移動する)。
+	if (!m_pelvis.empty())
+		result.try_emplace(m_pelvis, mesh.GetRestLocalMatrix(m_pelvis));
+
+	// 攻撃・前転の終わりから移動・待機へ戻るとき。
+	// 上半身は直前の姿勢から混ぜる。脚は混ぜず、**始めた瞬間のズレを減らしていく**
+	// (混ぜると、戻っている間だけ歩きの脚の動きが鈍って見えるため)。
+	if (blendFromPose != nullptr && !blendFromPose->empty())
+	{
+		if (m_locomotionLegWarpPending)
+		{
+			m_locomotionLegWarpPending = false;
+			BuildLegWarp(*blendFromPose, result, WarpBones(), m_locomotionLegWarp);
+		}
+		if (blendRate < 1.0f)
+		{
+			for (auto& [bone, matrix] : result)
+			{
+				// 脚と腰はワープ側で扱う。
+				if (IsLowerBodyBone(bone) || bone == m_pelvis)
+					continue;
+				const auto from = blendFromPose->find(bone);
+				if (from != blendFromPose->end())
+					matrix = CAnimationMesh::BlendLocalMatrix(from->second, matrix, blendRate);
+			}
+		}
+	}
+	ApplyLegWarp(m_locomotionLegWarp, 1.0f - legBlendRate, result);
+	if (legBlendRate >= 1.0f)
+		m_locomotionLegWarp.clear();
+
+	mesh.ApplyLocalPose(boneComb, result, m_idlePose);
+	return true;
+}
+
+void CCharacterAnimator::PlayImportedComboStep(
+	aiAnimation* animation,
+	const char* name,
+	const Combat::PlayerComboStep& step)
+{
+	// 補間の開始や各種の状態の初期化は既存の関数に任せ、再生位置と速さだけを上書きする。
+	PlayImportedAttackAnimation(
+		animation,
+		name,
+		step.TotalSeconds(),
+		step.WindupSeconds(),
+		step.WindupSeconds() + step.ActiveSeconds());
+
+	unsigned int keys = 0;
+	for (unsigned int c = 0; c < animation->mNumChannels; ++c)
+		keys = std::max(keys, animation->mChannels[c]->mNumRotationKeys);
+	const double ticksPerSecond = animation->mTicksPerSecond > 0.0 ? animation->mTicksPerSecond : 30.0;
+	const float clipSeconds = static_cast<float>(animation->mDuration / ticksPerSecond);
+	if (keys < 2 || clipSeconds <= 0.0f)
+		return;
+
+	// キーはクリップの長さに等間隔で並んでいるとみなす(ApplyAnimationToBonesと同じ前提)。
+	const float keysPerSecond = static_cast<float>(keys - 1) / clipSeconds;
+	m_importedAnimationFrameAccumulator = step.clipStart * keysPerSecond;
+	m_importedAnimationFrame = static_cast<int>(m_importedAnimationFrameAccumulator);
+	// 1更新(60Hz換算)あたりに進むキー数。Update側で経過時間を掛けて進めるので、fpsに依存しない。
+	m_importedAnimationFrameRate = keysPerSecond * step.playbackRate / 60.0f;
+	// 踏み込みは再生を始めた位置から数える(飛ばした溜めの分の移動は足さない)。
+	m_rootMotionPreviousTime = std::clamp(step.clipStart / clipSeconds, 0.0f, 0.9999f);
+	m_attackRootMotionScale = step.rootMotionScale;
+}
+
+void CCharacterAnimator::PlayDashAttackMotion()
+{
+	// クリップが無ければ通常の弱攻撃1段目で代用する。
+	if (m_dashAttackAnimation == nullptr)
+	{
+		PlayAttackMotion(1);
+		return;
+	}
+	PlayImportedComboStep(
+		m_dashAttackAnimation,
+		"External dash attack / advancing leap slash",
+		Combat::PlayerDashAttackStep());
+	// 踏み切って跳ぶ技。接地の計算で足を地面へ引き戻さないようにする
+	// (引き戻すと、脚を抱えた分だけ体が下がって膝が地面についた)。
+	m_attackLeavesGround = true;
+}
+
+bool CCharacterAnimator::ConsumeRootMotion(float& right, float& forward)
+{
+	right = m_pendingRootMotionRight;
+	forward = m_pendingRootMotionForward;
+	m_pendingRootMotionRight = 0.0f;
+	m_pendingRootMotionForward = 0.0f;
+	return right != 0.0f || forward != 0.0f;
 }
 
 void CCharacterAnimator::SetImpactAnimation(aiAnimation* animation)
@@ -379,12 +1092,11 @@ void CCharacterAnimator::PlayAttackMotion(int comboStep)
 			"External weak 2 / simple grounded slash",
 			"External weak 3 / simple grounded slash",
 		};
-		PlayImportedAttackAnimation(
+		// クリップ本来の長さを保ち、段ごとの再生位置・速さで再生する(以前は0.95秒へ詰めていた)。
+		PlayImportedComboStep(
 			m_weakAttackAnimations[profileIndex],
 			names[profileIndex],
-			0.95f,
-			0.16f,
-			0.54f);
+			Combat::PlayerComboStepOf(false, comboStep));
 		return;
 	}
 
@@ -459,12 +1171,11 @@ void CCharacterAnimator::PlayHeavyAttackMotion(int comboStep)
 			"External heavy 2 / simple grounded heavy slash",
 			"External heavy 3 / simple grounded heavy slash",
 		};
-		PlayImportedAttackAnimation(
+		// クリップ本来の長さを保ち、段ごとの再生位置・速さで再生する(以前は1.10秒へ詰めていた)。
+		PlayImportedComboStep(
 			m_heavyAttackAnimations[profileIndex],
 			names[profileIndex],
-			1.10f,
-			0.20f,
-			0.62f);
+			Combat::PlayerComboStepOf(true, comboStep));
 		return;
 	}
 
@@ -500,17 +1211,6 @@ void CCharacterAnimator::PlayHeavyAttackMotion(int comboStep)
 	m_useCustomMotion = m_motionPlaying;
 }
 
-void CCharacterAnimator::StartComboPreview(bool heavy)
-{
-	m_comboPreviewActive = true;
-	m_comboPreviewStep = 1;
-	m_comboPreviewHeavy = heavy;
-	if (m_comboPreviewHeavy)
-		PlayHeavyAttackMotion(m_comboPreviewStep);
-	else
-		PlayAttackMotion(m_comboPreviewStep);
-}
-
 void CCharacterAnimator::TriggerHitStop(float seconds)
 {
 	m_hitStopSeconds = std::max(m_hitStopSeconds, std::clamp(seconds, 0.0f, 0.20f));
@@ -518,6 +1218,12 @@ void CCharacterAnimator::TriggerHitStop(float seconds)
 
 void CCharacterAnimator::BeginAttackBlend()
 {
+	// 脚のつなぎの長さと腰の高さのずらし量は、クリップの最初の姿勢を見てから決める。
+	m_attackLegBlendPending = true;
+	m_attackHipsOffsetPending = true;
+	m_attackLowerBodyPending = true;
+	// 既定は「地面を離れない」。離れる技(ダッシュ攻撃)だけが、この後で立て直す。
+	m_attackLeavesGround = false;
 	m_attackBlendFromPose = m_lastRenderedPose;
 	m_attackBlendTime = 0.0f;
 	m_locomotionBlendActive = false;
@@ -535,6 +1241,10 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 {
 	BeginAttackBlend();
 	m_importedAttackAnimation = animation;
+	// 踏み込みはクリップの先頭から数える。前の攻撃の残りは持ち越さない。
+	m_rootMotionPreviousTime = 0.0f;
+	m_pendingRootMotionRight = 0.0f;
+	m_pendingRootMotionForward = 0.0f;
 	m_importedAnimationFrame = 0;
 	m_importedAnimationFrameAccumulator = 0.0f;
 	unsigned int maxRotationKeys = 0;
@@ -574,22 +1284,18 @@ void CCharacterAnimator::PlayDodgeMotion()
 	m_importedAttackAnimation = nullptr;
 	m_importedAnimationFrame = 0;
 	m_importedAnimationFrameAccumulator = 0.0f;
+	// 取り出されていない踏み込みを回避へ持ち越さない(回避の移動に上乗せされてしまう)。
+	m_pendingRootMotionRight = 0.0f;
+	m_pendingRootMotionForward = 0.0f;
 	m_attackBlendPending = false;
 	m_locomotionBlendActive = false;
 	BuildFallbackDodgeMotion();
+	// 次のUpdateで、回避を始めた瞬間の姿勢(腕の構え)を保存する。
+	m_dodgeBasePosePending = true;
 	m_motionTime = 0.0f;
 	m_motionLoop = false;
 	m_motionPlaying = !m_motionKeys.empty();
 	m_useCustomMotion = m_motionPlaying;
-}
-
-void CCharacterAnimator::EnableMotionEditor()
-{
-	if (m_editorInitialized)
-		return;
-	DebugUI::RedistDebugFunction([this]() { RenderMotionEditor(); });
-	m_editorInitialized = true;
-	m_editorEnabled = true;
 }
 
 bool CCharacterAnimator::LoadMotionFile(const std::string& filename)
@@ -602,243 +1308,6 @@ bool CCharacterAnimator::LoadMotionFile(const std::string& filename)
 		BuildFallbackAttackMotion();
 	}
 	return loaded;
-}
-
-void CCharacterAnimator::SelectBone(const std::string& boneName)
-{
-	if (std::find(m_boneNames.begin(), m_boneNames.end(), boneName) == m_boneNames.end())
-		return;
-	m_selectedBone = boneName;
-	m_editorKey = {};
-	m_editorKey.scale = Vector3(1.0f, 1.0f, 1.0f);
-	const auto it = m_motionKeys.find(m_selectedBone);
-	if (it != m_motionKeys.end())
-	{
-		for (const auto& key : it->second)
-		{
-			if (std::abs(key.time - m_motionTime) < 0.001f)
-			{
-				m_editorKey = key;
-				break;
-			}
-		}
-	}
-}
-
-void CCharacterAnimator::AdjustSelectedRotation(const Vector3& delta)
-{
-	m_editorKey.rotation += delta;
-	AddOrUpdateCurrentKey();
-}
-
-void CCharacterAnimator::AdjustSelectedPosition(const Vector3& delta)
-{
-	m_editorKey.position += delta;
-	AddOrUpdateCurrentKey();
-}
-
-void CCharacterAnimator::AdjustSelectedScale(const Vector3& delta)
-{
-	m_editorKey.scale += delta;
-	m_editorKey.scale.x = std::max(m_editorKey.scale.x, 0.01f);
-	m_editorKey.scale.y = std::max(m_editorKey.scale.y, 0.01f);
-	m_editorKey.scale.z = std::max(m_editorKey.scale.z, 0.01f);
-	AddOrUpdateCurrentKey();
-}
-
-void CCharacterAnimator::AddOrUpdateCurrentKey()
-{
-	CaptureUndoIfNeeded();
-	MotionKeyframe key = m_editorKey;
-	key.time = m_motionTime;
-	BoneKeys& keys = m_motionKeys[m_selectedBone];
-	bool replaced = false;
-	for (auto& existing : keys)
-	{
-		if (std::abs(existing.time - key.time) < 0.001f)
-		{
-			existing = key;
-			replaced = true;
-			break;
-		}
-	}
-	if (!replaced)
-		keys.push_back(key);
-	SortKeys(keys);
-	m_useCustomMotion = true;
-}
-
-void CCharacterAnimator::ApplyEditorKey(const MotionKeyframe& key)
-{
-	m_editorKey = key;
-	AddOrUpdateCurrentKey();
-}
-
-void CCharacterAnimator::PreviewEditorKey(const MotionKeyframe& key)
-{
-	m_editorKey = key;
-	MotionKeyframe current = key;
-	current.time = m_motionTime;
-	BoneKeys& keys = m_motionKeys[m_selectedBone];
-	bool replaced = false;
-	for (auto& existing : keys)
-	{
-		if (std::abs(existing.time - current.time) < 0.001f)
-		{
-			existing = current;
-			replaced = true;
-			break;
-		}
-	}
-	if (!replaced)
-		keys.push_back(current);
-	SortKeys(keys);
-	m_useCustomMotion = true;
-}
-
-void CCharacterAnimator::BeginEditTransaction()
-{
-	if (m_editTransactionActive)
-		return;
-	m_editTransactionActive = true;
-	m_editTransactionCaptured = false;
-	CaptureUndoIfNeeded();
-}
-
-void CCharacterAnimator::EndEditTransaction()
-{
-	m_editTransactionActive = false;
-	m_editTransactionCaptured = false;
-}
-
-CCharacterAnimator::EditorSnapshot CCharacterAnimator::CaptureEditorSnapshot() const
-{
-	EditorSnapshot snapshot;
-	snapshot.motionKeys = m_motionKeys;
-	snapshot.editorKey = m_editorKey;
-	snapshot.motionTime = m_motionTime;
-	snapshot.motionDuration = m_motionDuration;
-	return snapshot;
-}
-
-void CCharacterAnimator::RestoreEditorSnapshot(const EditorSnapshot& snapshot)
-{
-	m_motionKeys = snapshot.motionKeys;
-	m_editorKey = snapshot.editorKey;
-	m_motionTime = snapshot.motionTime;
-	m_motionDuration = snapshot.motionDuration;
-	m_useCustomMotion = !m_motionKeys.empty();
-}
-
-void CCharacterAnimator::CaptureUndoIfNeeded()
-{
-	if (m_editTransactionActive && m_editTransactionCaptured)
-		return;
-	if (m_undoHistory.size() >= 64)
-		m_undoHistory.pop_front();
-	m_undoHistory.push_back(CaptureEditorSnapshot());
-	m_redoHistory.clear();
-	m_editTransactionCaptured = true;
-}
-
-void CCharacterAnimator::UndoEditorChange()
-{
-	if (m_undoHistory.empty())
-		return;
-	m_redoHistory.push_back(CaptureEditorSnapshot());
-	RestoreEditorSnapshot(m_undoHistory.back());
-	m_undoHistory.pop_back();
-}
-
-void CCharacterAnimator::RedoEditorChange()
-{
-	if (m_redoHistory.empty())
-		return;
-	m_undoHistory.push_back(CaptureEditorSnapshot());
-	RestoreEditorSnapshot(m_redoHistory.back());
-	m_redoHistory.pop_back();
-}
-
-bool CCharacterAnimator::SelectKeyAtTime(float time)
-{
-	const auto keyIt = m_motionKeys.find(m_selectedBone);
-	if (keyIt == m_motionKeys.end())
-		return false;
-	for (const auto& key : keyIt->second)
-	{
-		if (std::abs(key.time - time) < 0.035f)
-		{
-			m_motionTime = key.time;
-			m_editorKey = key;
-			return true;
-		}
-	}
-	return false;
-}
-
-bool CCharacterAnimator::MoveSelectedKey(float fromTime, float toTime)
-{
-	auto keyIt = m_motionKeys.find(m_selectedBone);
-	if (keyIt == m_motionKeys.end())
-		return false;
-	for (auto& key : keyIt->second)
-	{
-		if (std::abs(key.time - fromTime) < 0.035f)
-		{
-			CaptureUndoIfNeeded();
-			key.time = std::clamp(toTime, 0.0f, m_motionDuration);
-			m_motionTime = key.time;
-			m_editorKey = key;
-			SortKeys(keyIt->second);
-			return true;
-		}
-	}
-	return false;
-}
-
-bool CCharacterAnimator::DeleteKeyAtTime(float time)
-{
-	auto keyIt = m_motionKeys.find(m_selectedBone);
-	if (keyIt == m_motionKeys.end())
-		return false;
-	const auto oldSize = keyIt->second.size();
-	if (std::none_of(keyIt->second.begin(), keyIt->second.end(), [time](const MotionKeyframe& key) {
-		return std::abs(key.time - time) < 0.035f;
-	}))
-		return false;
-	CaptureUndoIfNeeded();
-	keyIt->second.erase(std::remove_if(keyIt->second.begin(), keyIt->second.end(), [time](const MotionKeyframe& key) {
-		return std::abs(key.time - time) < 0.035f;
-	}), keyIt->second.end());
-	return keyIt->second.size() != oldSize;
-}
-
-bool CCharacterAnimator::DuplicateKeyAtTime(float time)
-{
-	const auto keyIt = m_motionKeys.find(m_selectedBone);
-	if (keyIt == m_motionKeys.end())
-		return false;
-	for (const auto& key : keyIt->second)
-	{
-		if (std::abs(key.time - time) < 0.035f)
-		{
-			CaptureUndoIfNeeded();
-			MotionKeyframe copy = key;
-			copy.time = std::clamp(key.time + 1.0f / 30.0f, 0.0f, m_motionDuration);
-			m_motionKeys[m_selectedBone].push_back(copy);
-			SortKeys(m_motionKeys[m_selectedBone]);
-			m_motionTime = copy.time;
-			m_editorKey = copy;
-			return true;
-		}
-	}
-	return false;
-}
-
-void CCharacterAnimator::SetMotionFilename(const std::string& filename)
-{
-	m_motionFilename = filename;
-	LoadMotionFile(m_motionFilename);
 }
 
 void CCharacterAnimator::Update(
@@ -924,11 +1393,23 @@ void CCharacterAnimator::Update(
 			// 待機クリップの脚は腰が大きく沈む前提で作られていて、
 			// 腰を固定したまま適用すると宙に浮いた姿勢になるため使わない。
 			// 立ち止まって攻撃した場合は、脚は休止姿勢のまま(従来と同じ)。
+			// 脚の出どころは**技の初めに決めて、終わるまで変えない**。
+			//
+			// 以前は毎フレーム`state.walking`を見ていた。ところが技には踏み込みがあり、
+			// その移動でキャラクターが「歩いている」と判定される瞬間がある。
+			// すると脚の出どころが攻撃クリップから歩きクリップへ1フレームだけ入れ替わり、
+			// **足がその場で飛んだ**(実測: 技の最後のフレームで足首が0.41モデル単位動き、
+			// 前後のフレームは0.01〜0.02しか動いていなかった)。
+			if (m_attackLowerBodyPending)
+			{
+				m_attackLowerBodyPending = false;
+				m_attackLowerBodyFromLocomotion = state.walking;
+			}
 			const bool useRunForAttack = state.running && m_runAnimation != nullptr;
-			aiAnimation* lowerBodyAnimation = state.walking
+			aiAnimation* lowerBodyAnimation = m_attackLowerBodyFromLocomotion
 				? (useRunForAttack ? m_runAnimation : m_walkAnimation)
 				: nullptr;
-			if (state.walking)
+			if (m_attackLowerBodyFromLocomotion)
 			{
 				m_walkFrameAccumulator += (useRunForAttack
 					? m_runPlaybackRate
@@ -938,18 +1419,155 @@ void CCharacterAnimator::Update(
 			const int lowerBodyFrame = m_walkFrame;
 			const float lowerBodyFraction =
 				m_walkFrameAccumulator - std::floor(m_walkFrameAccumulator);
+			// 脚のつなぎの長さはこの後のフレームで決まる(最長0.40秒)。
+			// 時間を数えるのは長めに許しておき、実際の進み具合は下の割り算で決める。
+			const float attackBlendLimit = std::max(m_attackBlendDuration, 0.40f);
 			float attackBlendRate = 1.0f;
-			if (m_attackBlendTime < m_attackBlendDuration)
+			float attackLegBlendRate = 1.0f;
+			if (m_attackBlendTime < attackBlendLimit)
 			{
 				m_attackBlendTime += deltaSeconds;
-				const float linearBlend = std::clamp(
-					m_attackBlendTime / std::max(m_attackBlendDuration, 0.001f),
-					0.0f,
-					1.0f);
-				attackBlendRate = linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+				const auto smoothRate = [this](float duration)
+				{
+					const float linear = std::clamp(
+						m_attackBlendTime / std::max(duration, 0.001f), 0.0f, 1.0f);
+					return linear * linear * (3.0f - 2.0f * linear);
+				};
+				attackBlendRate = smoothRate(m_attackBlendDuration);
+				attackLegBlendRate = smoothRate(m_attackLegBlendDuration);
 			}
 
-			if (lowerBodyAnimation != nullptr)
+			// --- 踏み込みのある攻撃(ルートモーション) ---
+			// 立ち止まって攻撃するときは、脚と腰の沈み込みも攻撃クリップから取り、
+			// クリップの腰が前へ進んだ分だけキャラクターの位置を前へ出す。
+			//
+			// 以前は脚を攻撃クリップから外し、腰も固定していたため、
+			// 攻撃中は棒立ちのまま腕を振るだけで、その場から一歩も動かなかった。
+			// 脚を入れたときに脚が開いて座り込んだのは、腰を固定したまま
+			// 「腰が沈む前提の脚の角度」だけを使っていたためである。
+			// ここでは腰の沈み込み(割合で換算・制限なし)と回転の変化を取り込み、
+			// 前後左右の移動はキャラクターの位置へ移す。移動を腰にも残すと二重に進んで足が滑る。
+			const bool useRootMotion = lowerBodyAnimation == nullptr &&
+				!m_pelvis.empty() && m_clipToWorld > 0.0f;
+			if (useRootMotion)
+			{
+				unsigned int attackKeys = 0;
+				for (unsigned int c = 0; c < m_importedAttackAnimation->mNumChannels; ++c)
+					attackKeys = std::max(attackKeys, m_importedAttackAnimation->mChannels[c]->mNumRotationKeys);
+				// 1.0ちょうどを渡すと、SampleLocalPose側の巻き戻しで先頭へ戻ってしまうので手前で止める。
+				const float attackTime = attackKeys > 1
+					? std::clamp(m_importedAnimationFrameAccumulator / static_cast<float>(attackKeys - 1),
+						0.0f, 0.9999f)
+					: 0.0f;
+
+				std::vector<std::string> attackBones;
+				attackBones.reserve(m_importedAttackBones.size() + 8);
+				for (const std::string& bone : m_importedAttackBones)
+				{
+					if (bone != m_pelvis)
+						attackBones.push_back(bone);
+				}
+				for (const std::string& bone : LowerBodyBones())
+				{
+					if (std::find(attackBones.begin(), attackBones.end(), bone) == attackBones.end())
+						attackBones.push_back(bone);
+				}
+
+				std::unordered_map<std::string, Matrix4x4> attackPose =
+					mesh.SampleLocalPose(m_importedAttackAnimation, attackTime, attackBones);
+				attackPose[m_pelvis] = mesh.SampleHipsInPlace(
+					m_importedAttackAnimation, attackTime, m_pelvis, m_attackHipsRotationMode);
+
+				// 攻撃中の腰の高さは、**技を始めた瞬間の高さへそろえる**。
+				// クリップの中での腰の上下動(踏み切って跳ぶ・沈み込む)はそのまま残す。
+				//
+				// 経緯:
+				//  1. もともとクリップの腰の高さをそのまま使っていた。クリップごとに高さの基準が違うので、
+				//     攻撃に入った1フレーム目で体が3.8単位跳ね上がっていた(実測)。
+				//  2. そこで高さを立ち姿に固定したところ、**クリップの上下動まで消えてしまい**、
+				//     ダッシュ攻撃が跳ばずに膝が地面についた(ユーザー指摘)。
+				//  3. いまは「始めた瞬間の差」だけを引く。基準のずれは消え、跳ぶ動きは残る。
+				// 体が地面へ引き下ろされないことは、接地側でも守っている(GameScene)。
+				{
+					// 高さの軸はモデルによって違う。腰の休止姿勢で最も大きい成分を高さとみなす
+					// (このプレイヤーは親がZ軸を上にしている)。
+					const Matrix4x4 restPelvis = mesh.GetRestLocalMatrix(m_pelvis);
+					const float components[3] = {
+						restPelvis._41, restPelvis._42, restPelvis._43 };
+					int axis = 0;
+					for (int i = 1; i < 3; ++i)
+						if (std::abs(components[i]) > std::abs(components[axis]))
+							axis = i;
+					const auto heightOf = [axis](const Matrix4x4& matrix)
+					{
+						return axis == 0 ? matrix._41 : (axis == 1 ? matrix._42 : matrix._43);
+					};
+					Matrix4x4& pelvis = attackPose[m_pelvis];
+					if (m_attackHipsOffsetPending)
+					{
+						m_attackHipsOffsetPending = false;
+						// 直前の姿勢(歩き・待機)の腰の高さに合わせる。
+						const auto previous = m_attackBlendFromPose.find(m_pelvis);
+						const float standing = previous != m_attackBlendFromPose.end()
+							? heightOf(previous->second)
+							: heightOf(restPelvis);
+						m_attackHipsHeightOffset = standing - heightOf(pelvis);
+					}
+					if (axis == 0) pelvis._41 += m_attackHipsHeightOffset;
+					else if (axis == 1) pelvis._42 += m_attackHipsHeightOffset;
+					else pelvis._43 += m_attackHipsHeightOffset;
+				}
+
+				// 攻撃の出だしは直前の姿勢(歩き・待機)から短く補間する。
+				// 攻撃に入る最初のフレームで、足がどれだけ動くかを測り、つなぎの長さを決める。
+				// 脚の長さ(股からつま先まで)に対する割合で見るので、モデルを差し替えても合う。
+				if (m_attackLegBlendPending)
+				{
+					m_attackLegBlendPending = false;
+					m_attackLegBlendDuration = m_attackBlendFromPose.empty()
+						? 0.24f
+						: LegBlendDurationFor(mesh, m_attackBlendFromPose, attackPose);
+					// 脚は混ぜるのではなく、始めた瞬間のズレを覚えて後で減らす。
+					BuildLegWarp(
+						m_attackBlendFromPose, attackPose, WarpBones(), m_attackLegWarp);
+				}
+				// 上半身は今までどおり、直前の姿勢から短く混ぜる。
+				if (attackBlendRate < 1.0f && !m_attackBlendFromPose.empty())
+				{
+					for (auto& [bone, matrix] : attackPose)
+					{
+						// 脚と腰はワープ側で扱う(ここで混ぜると二重になる)。
+						if (IsLowerBodyBone(bone) || bone == m_pelvis)
+							continue;
+						const auto from = m_attackBlendFromPose.find(bone);
+						if (from != m_attackBlendFromPose.end())
+							matrix = CAnimationMesh::BlendLocalMatrix(from->second, matrix, attackBlendRate);
+					}
+				}
+				// 脚は「ずらしを減らしていく」。クリップの動きは最初から全開で出る。
+				ApplyLegWarp(m_attackLegWarp, 1.0f - attackLegBlendRate, attackPose);
+				if (attackLegBlendRate >= 1.0f)
+					m_attackLegWarp.clear();
+				static const std::unordered_map<std::string, Matrix4x4> noManualPose;
+				mesh.ApplyLocalPose(boneComb, attackPose, noManualPose);
+
+				// 前回からの腰の水平移動を、キャラクターから見た右・前へ直して溜める。
+				// Mixamoのクリップは元は+Zが前・右が-Xだが、読み込み時の aiProcess_ConvertToLeftHanded で
+				// Zが反転するので、ゲーム内では**-Zが前**、右は-Xのまま。
+				// 以前は+Zを前として足していたため、踏み込む攻撃がすべて後ろへ下がっていた
+				// (ダッシュ攻撃で「走っている向きと攻撃の向きが違う」と指摘され、位置のログで発覚)。
+				// 調査プログラムで腰の移動を測るときも、同じ読み込みフラグでないと前後が逆に見えるので注意。
+				const Vector3 previous = mesh.SampleBonePositionOffset(
+					m_importedAttackAnimation, m_rootMotionPreviousTime, m_pelvis);
+				const Vector3 current = mesh.SampleBonePositionOffset(
+					m_importedAttackAnimation, attackTime, m_pelvis);
+				m_pendingRootMotionForward +=
+					-(current.z - previous.z) * m_clipToWorld * m_attackRootMotionScale;
+				m_pendingRootMotionRight +=
+					-(current.x - previous.x) * m_clipToWorld * m_attackRootMotionScale;
+				m_rootMotionPreviousTime = attackTime;
+			}
+			else if (lowerBodyAnimation != nullptr)
 			{
 				mesh.UpdateLayeredAnimation(
 					boneComb,
@@ -994,6 +1612,15 @@ void CCharacterAnimator::Update(
 		m_locomotionBlendFromPose = mesh.CaptureCurrentLocalPose();
 		m_locomotionBlendTime = 0.0f;
 		m_locomotionBlendActive = true;
+		// 戻り先の足運びの位相を、いまの脚に最も近いところへ合わせる(足の入れ替わりを防ぐ)。
+		ResyncLocomotionPhase(mesh, m_locomotionBlendFromPose);
+		// 戻りにかける時間も、足が実際に動く距離で決める。
+		// 技によって最後の足の開き方が違うので、一律にすると
+		// 大きく開いた技から戻るときだけ足が飛んで見える。
+		m_locomotionLegBlendDuration = LegBlendDurationFor(
+			mesh, m_locomotionBlendFromPose, LocomotionLegTargetPose(mesh, state));
+		// 戻りの脚も同じ考え方。戻り先の姿勢はこのフレームの後半で作るので、そこで覚える。
+		m_locomotionLegWarpPending = true;
 		m_motionPlaying = false;
 	}
 
@@ -1010,42 +1637,43 @@ void CCharacterAnimator::Update(
 			{
 				m_motionTime = m_motionDuration;
 				m_motionPlaying = false;
+				if (m_dodgeMotion)
+				{
+					// 前転の最後の姿勢から待機・移動へ補間して戻す(戻さないと起き上がりの瞬間に姿勢が跳ぶ)。
+					m_locomotionBlendFromPose = mesh.CaptureCurrentLocalPose();
+					m_locomotionBlendTime = 0.0f;
+					m_locomotionBlendActive = true;
+					ResyncLocomotionPhase(mesh, m_locomotionBlendFromPose);
+					m_locomotionLegBlendDuration = LegBlendDurationFor(
+						mesh, m_locomotionBlendFromPose, LocomotionLegTargetPose(mesh, state));
+					m_locomotionLegWarpPending = true;
+				}
 			}
 		}
 	}
 
-	if (m_comboPreviewActive && !IsMotionPlaying())
-	{
-		if (m_comboPreviewStep < 3)
-		{
-			++m_comboPreviewStep;
-			if (m_comboPreviewHeavy)
-				PlayHeavyAttackMotion(m_comboPreviewStep);
-			else
-				PlayAttackMotion(m_comboPreviewStep);
-			return;
-		}
-		m_comboPreviewActive = false;
-	}
-
 	float locomotionBlendRate = 1.0f;
+	float locomotionLegBlendRate = 1.0f;
 	const std::unordered_map<std::string, Matrix4x4>* locomotionBlendFromPose = nullptr;
 	if (m_locomotionBlendActive)
 	{
 		m_locomotionBlendTime += deltaSeconds;
-		const float linearBlend = std::clamp(
-			m_locomotionBlendTime / std::max(m_locomotionBlendDuration, 0.001f),
-			0.0f,
-			1.0f);
-		locomotionBlendRate = linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+		const auto smoothRate = [this](float duration)
+		{
+			const float linear = std::clamp(
+				m_locomotionBlendTime / std::max(duration, 0.001f), 0.0f, 1.0f);
+			return linear * linear * (3.0f - 2.0f * linear);
+		};
+		locomotionBlendRate = smoothRate(m_locomotionBlendDuration);
+		locomotionLegBlendRate = smoothRate(m_locomotionLegBlendDuration);
 		locomotionBlendFromPose = &m_locomotionBlendFromPose;
-		if (linearBlend >= 1.0f)
+		// 脚のほうが長いので、脚が終わるまで続ける。
+		if (locomotionLegBlendRate >= 1.0f && locomotionBlendRate >= 1.0f)
 			m_locomotionBlendActive = false;
 	}
 
-	// 再生停止中でもタイムラインの現在位置の姿勢をエディターへ表示する。
-	// GameSceneではワンショット再生中だけこの姿勢を適用する。
-	if (m_useCustomMotion && (m_motionPlaying || m_editorEnabled) && !m_motionKeys.empty())
+	// ワンショット再生中だけ、この姿勢を適用する。
+	if (m_useCustomMotion && m_motionPlaying && !m_motionKeys.empty())
 	{
 		std::unordered_map<std::string, Matrix4x4> deltas;
 		EvaluateCustomMotion(m_motionTime, deltas);
@@ -1072,6 +1700,34 @@ void CCharacterAnimator::Update(
 					customPose[boneName] = hiddenPose;
 			}
 		}
+		if (m_dodgeMotion && m_motionPlaying)
+		{
+			if (m_dodgeBasePosePending)
+			{
+				// 回避を始めた瞬間の姿勢。前転の出だしはこの姿勢から補間する。
+				// UpdateManualPose()は「休止姿勢からの差」を受け取る(差 * 休止姿勢)ので、
+				// 保存したローカル行列(差 * 休止姿勢そのもの)から休止姿勢を外して差へ直す。
+				// そのまま渡すと休止姿勢が二重に掛かる。
+				m_dodgeBasePose.clear();
+				for (const auto& [boneName, local] : mesh.CaptureCurrentLocalPose())
+					m_dodgeBasePose[boneName] = local * mesh.GetRestLocalMatrix(boneName).Invert();
+				m_attackBlendFromPose = m_dodgeBasePose;
+				m_attackBlendTime = 0.0f;
+				m_dodgeBasePosePending = false;
+			}
+			// 肩から先は構えたまま転がる(モンスターハンターの前転も武器を構えたまま転がる)。
+			// 前転のキーの腕の値は休止姿勢(Tポーズ)からの差なので、使うと両腕を横へ広げた形になっていた。
+			for (const auto& [boneName, basePose] : m_dodgeBasePose)
+			{
+				const std::string normalized = NormalizeBoneName(boneName);
+				if (normalized.find("shoulder") != std::string::npos ||
+					normalized.find("arm") != std::string::npos ||
+					normalized.find("hand") != std::string::npos)
+				{
+					customPose[boneName] = basePose;
+				}
+			}
+		}
 		if (m_motionPlaying && m_attackBlendTime < m_attackBlendDuration)
 		{
 			m_attackBlendTime += deltaSeconds;
@@ -1089,6 +1745,16 @@ void CCharacterAnimator::Update(
 		}
 		m_lastRenderedPose = customPose;
 		mesh.UpdateManualPose(boneComb, customPose);
+		return;
+	}
+
+	// 移動のブレンドツリー。待機・歩き・走りと、ロックオン中の横歩き・後ろ歩きを
+	// 速度に応じて混ぜる。設定されていなければ下の従来経路(歩き/走りの切り替え)を使う。
+	if (!state.jumping &&
+		UpdateLocomotionBlendSpace(
+			mesh, boneComb, state, deltaSeconds, locomotionBlendFromPose,
+			locomotionBlendRate, locomotionLegBlendRate))
+	{
 		return;
 	}
 
@@ -1401,6 +2067,7 @@ void CCharacterAnimator::BuildFallbackAttackMotion()
 {
 	m_importedAttackPose = false;
 	m_motionKeys.clear();
+	m_dodgeMotion = false;
 	m_motionDuration = 0.95f;
 	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
 		if (boneName.empty())
@@ -1777,18 +2444,21 @@ void CCharacterAnimator::BuildFallbackDodgeMotion()
 {
 	m_importedAttackPose = false;
 	m_motionKeys.clear();
-	m_motionDuration = 0.40f;
+	m_dodgeMotion = true;
+	// 前転の長さはプレイヤーの移動と同じ定数を使う(モーションだけ先に終わると、滑りながら立ち上がって見える)。
+	m_motionDuration = Combat::Tuning::PLAYER_DODGE_SECONDS;
 	const auto addKeys = [this](const std::string& boneName, const std::vector<Vector3>& rotations) {
 		if (boneName.empty()) return;
 		BoneKeys& keys = m_motionKeys[boneName];
-		// 60fpsで24フレーム相当の回避動作にする。
+		// キーの位置は元の0.4秒の回避で作った割合のまま、長さに合わせて伸ばす。
 		// 中間角度の差を意図的にPIより大きくし、Quaternion::Slerpが立ち姿勢への最短経路ではなく
 		// 前転の一回転全体を補間するようにする。
 		const float times[] = { 0.00f, 0.05f, 0.12f, 0.20f, 0.29f, 0.36f, 0.40f };
+		const float timeScale = m_motionDuration / 0.40f;
 		for (size_t i = 0; i < rotations.size() && i < 7; ++i)
 		{
 			MotionKeyframe key;
-			key.time = times[i];
+			key.time = times[i] * timeScale;
 			key.rotation = rotations[i];
 			keys.push_back(key);
 		}
@@ -2115,6 +2785,7 @@ bool CCharacterAnimator::LoadMotion(const std::string& filename)
 		}
 	}
 	m_motionKeys = std::move(loadedKeys);
+	m_dodgeMotion = false;
 	m_importedAttackPose = isImportedSwordAttack;
 	if (isImportedSwordAttack)
 		StripAttackLowerBody();
@@ -2215,238 +2886,3 @@ bool CCharacterAnimator::LoadIdlePose(const std::string& filename)
 	return !m_idlePose.empty();
 }
 
-void CCharacterAnimator::RenderMotionEditor()
-{
-	ImGui::SetNextWindowPos(ImVec2(20.0f, 80.0f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(420.0f, 760.0f), ImGuiCond_FirstUseEver);
-	ImGui::Begin("Motion Editor");
-	if (!ImGui::GetIO().WantCaptureKeyboard && ImGui::GetIO().KeyCtrl)
-	{
-		if (ImGui::IsKeyPressed(ImGuiKey_Z))
-			UndoEditorChange();
-		if (ImGui::IsKeyPressed(ImGuiKey_Y))
-			RedoEditorChange();
-	}
-	ImGui::Text("攻撃モーション編集：ボーンを選び、時間ごとにポーズを登録します");
-	if (!m_motionChoices.empty())
-	{
-		const std::string currentLabel = std::filesystem::path(m_motionFilename).stem().string();
-		if (ImGui::BeginCombo("Downloaded attack", currentLabel.c_str()))
-		{
-			for (size_t i = 0; i < m_motionChoices.size(); ++i)
-			{
-				const std::string label = std::filesystem::path(m_motionChoices[i]).stem().string();
-				const bool selected = static_cast<int>(i) == m_selectedMotionIndex;
-				if (ImGui::Selectable(label.c_str(), selected))
-				{
-					if (LoadMotionFile(m_motionChoices[i]))
-					{
-						m_selectedMotionIndex = static_cast<int>(i);
-						std::ofstream selection("assets/motion/selected_attack.txt", std::ios::trunc);
-						if (selection)
-							selection << m_motionFilename << "\n";
-					}
-				}
-				if (selected)
-					ImGui::SetItemDefaultFocus();
-			}
-			ImGui::EndCombo();
-		}
-		ImGui::TextDisabled("Selected clip is also used by GameScene next launch");
-	}
-	ImGui::Checkbox("Use custom motion", &m_useCustomMotion);
-	ImGui::SameLine();
-	ImGui::Checkbox("Loop", &m_motionLoop);
-	ImGui::Text("状態: %s   読込ボーン: %d   時間: %.3f / %.3f",
-		m_motionPlaying ? "再生中" : "停止中",
-		m_motionMappedBoneCount,
-		m_motionTime,
-		m_motionDuration);
-	ImGui::Text("Idle base pose bones: %d", static_cast<int>(m_idlePose.size()));
-	ImGui::SliderFloat("Duration", &m_motionDuration, 0.05f, 10.0f, "%.2f sec");
-	ImGui::SliderFloat("Timeline", &m_motionTime, 0.0f, m_motionDuration, "%.3f sec");
-
-	const float timelineWidth = std::max(ImGui::GetContentRegionAvail().x, 300.0f);
-	const float timelineHeight = 92.0f;
-	const ImVec2 timelinePos = ImGui::GetCursorScreenPos();
-	ImGui::InvisibleButton("MotionTimeline", ImVec2(timelineWidth, timelineHeight));
-	const bool timelineHovered = ImGui::IsItemHovered();
-	ImDrawList* timelineDraw = ImGui::GetWindowDrawList();
-	const float timelineLeft = timelinePos.x + 8.0f;
-	const float timelineRight = timelinePos.x + timelineWidth - 8.0f;
-	const float timelineTop = timelinePos.y + 8.0f;
-	const float timelineBottom = timelinePos.y + timelineHeight - 8.0f;
-	const float timelineSpan = std::max(m_motionDuration, 0.05f);
-	const auto timelineX = [timelineLeft, timelineRight, timelineSpan](float time) {
-		return timelineLeft + std::clamp(time / timelineSpan, 0.0f, 1.0f) * (timelineRight - timelineLeft);
-	};
-	timelineDraw->AddRectFilled(ImVec2(timelineLeft, timelineTop), ImVec2(timelineRight, timelineBottom), IM_COL32(25, 30, 38, 255), 4.0f);
-	for (int frame = 0; frame <= static_cast<int>(std::ceil(timelineSpan * 30.0f)); frame += 5)
-	{
-		const float time = static_cast<float>(frame) / 30.0f;
-		if (time > timelineSpan)
-			break;
-		const float x = timelineX(time);
-		timelineDraw->AddLine(ImVec2(x, timelineTop + 20.0f), ImVec2(x, timelineBottom), IM_COL32(75, 82, 95, 180), 1.0f);
-		timelineDraw->AddText(ImVec2(x + 2.0f, timelineTop + 2.0f), IM_COL32(170, 180, 195, 220), std::to_string(frame).c_str());
-	}
-	const auto selectedKeysIt = m_motionKeys.find(m_selectedBone);
-	if (selectedKeysIt != m_motionKeys.end())
-	{
-		for (const auto& key : selectedKeysIt->second)
-		{
-			const float x = timelineX(key.time);
-			const ImU32 color = std::abs(key.time - m_motionTime) < 0.02f
-				? IM_COL32(255, 215, 70, 255) : IM_COL32(75, 205, 240, 255);
-			timelineDraw->AddCircleFilled(ImVec2(x, timelineTop + 58.0f), 5.0f, color, 8);
-		}
-	}
-	const float currentX = timelineX(m_motionTime);
-	timelineDraw->AddLine(ImVec2(currentX, timelineTop), ImVec2(currentX, timelineBottom), IM_COL32(255, 100, 80, 255), 2.0f);
-
-	const auto timelineTimeFromMouse = [&]() {
-		return std::clamp((ImGui::GetIO().MousePos.x - timelineLeft) / (timelineRight - timelineLeft) * timelineSpan, 0.0f, timelineSpan);
-	};
-	if (timelineHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-	{
-		const float clickedTime = timelineTimeFromMouse();
-		if (!SelectKeyAtTime(clickedTime))
-			m_motionTime = clickedTime;
-		else
-		{
-			m_timelineDragging = true;
-			m_timelineDragFrom = m_motionTime;
-			BeginEditTransaction();
-		}
-	}
-	if (timelineHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-		DeleteKeyAtTime(timelineTimeFromMouse());
-	if (m_timelineDragging && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-	{
-		const float newTime = timelineTimeFromMouse();
-		if (MoveSelectedKey(m_timelineDragFrom, newTime))
-			m_timelineDragFrom = newTime;
-	}
-	if (m_timelineDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
-	{
-		m_timelineDragging = false;
-		EndEditTransaction();
-	}
-	ImGui::TextDisabled("Timeline: click to scrub / drag key / right-click key to delete");
-
-	if (ImGui::Button(m_motionPlaying ? "Pause" : "Play"))
-		m_motionPlaying = !m_motionPlaying;
-	ImGui::SameLine();
-	if (ImGui::Button("Stop"))
-	{
-		m_motionPlaying = false;
-		m_motionTime = 0.0f;
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Undo") && CanUndoEditorChange())
-		UndoEditorChange();
-	ImGui::SameLine();
-	if (ImGui::Button("Redo") && CanRedoEditorChange())
-		RedoEditorChange();
-	ImGui::SameLine();
-	if (ImGui::Button("Add / Update Key"))
-		AddOrUpdateCurrentKey();
-	ImGui::SameLine();
-	ImGui::TextDisabled("手順：①ボーン選択 → ②時間 → ③数値入力 → ④キー追加");
-
-	if (ImGui::BeginCombo("Bone", m_selectedBone.c_str()))
-	{
-		for (const auto& boneName : m_boneNames)
-		{
-			const bool selected = boneName == m_selectedBone;
-			if (ImGui::Selectable(boneName.c_str(), selected))
-				SelectBone(boneName);
-			if (selected)
-				ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-
-	MotionKeyframe editedKey = m_editorKey;
-	Vector3 degrees(
-		editedKey.rotation.x * 180.0f / PI,
-		editedKey.rotation.y * 180.0f / PI,
-		editedKey.rotation.z * 180.0f / PI);
-	if (ImGui::InputFloat3("Rotation (degrees)", &degrees.x))
-	{
-		editedKey.rotation = Vector3(
-			degrees.x * PI / 180.0f,
-			degrees.y * PI / 180.0f,
-			degrees.z * PI / 180.0f);
-		BeginEditTransaction();
-		PreviewEditorKey(editedKey);
-	}
-	if (ImGui::IsItemActivated())
-		BeginEditTransaction();
-	if (ImGui::IsItemDeactivatedAfterEdit())
-		EndEditTransaction();
-	if (ImGui::InputFloat3("Position", &editedKey.position.x))
-	{
-		BeginEditTransaction();
-		PreviewEditorKey(editedKey);
-	}
-	if (ImGui::IsItemActivated())
-		BeginEditTransaction();
-	if (ImGui::IsItemDeactivatedAfterEdit())
-		EndEditTransaction();
-	if (ImGui::InputFloat3("Scale", &editedKey.scale.x))
-	{
-		editedKey.scale.x = std::max(editedKey.scale.x, 0.01f);
-		editedKey.scale.y = std::max(editedKey.scale.y, 0.01f);
-		editedKey.scale.z = std::max(editedKey.scale.z, 0.01f);
-		BeginEditTransaction();
-		PreviewEditorKey(editedKey);
-	}
-	if (ImGui::IsItemActivated())
-		BeginEditTransaction();
-	if (ImGui::IsItemDeactivatedAfterEdit())
-		EndEditTransaction();
-
-	const auto keyIt = m_motionKeys.find(m_selectedBone);
-	const size_t keyCount = keyIt == m_motionKeys.end() ? 0 : keyIt->second.size();
-	ImGui::Text("Selected bone keys: %zu", keyCount);
-	if (keyIt != m_motionKeys.end())
-	{
-		for (size_t i = 0; i < keyIt->second.size(); ++i)
-		{
-			const MotionKeyframe& key = keyIt->second[i];
-			const std::string label = "Key " + std::to_string(i) + "  @ " +
-				std::to_string(key.time).substr(0, 5) + " sec";
-			if (ImGui::Selectable(label.c_str(), std::abs(m_motionTime - key.time) < 0.001f))
-			{
-				m_motionTime = key.time;
-				m_editorKey = key;
-			}
-		}
-	}
-	if (ImGui::Button("Delete Key At Timeline") && keyIt != m_motionKeys.end())
-	{
-		DeleteKeyAtTime(m_motionTime);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Duplicate Key"))
-		DuplicateKeyAtTime(m_motionTime);
-	if (ImGui::Button("Save Motion"))
-		SaveMotion(m_motionFilename);
-	ImGui::SameLine();
-	if (ImGui::Button("Load Motion"))
-		LoadMotion(m_motionFilename);
-	char filenameBuffer[260]{};
-	std::snprintf(filenameBuffer, sizeof(filenameBuffer), "%s", m_motionFilename.c_str());
-	if (ImGui::InputText("File", filenameBuffer, sizeof(filenameBuffer)))
-		m_motionFilename = filenameBuffer;
-	ImGui::Text("File format: .motion (plain text, editable by hand)");
-	ImGui::Separator();
-	ImGui::Text("使い方");
-	ImGui::BulletText("ボーンを選択");
-	ImGui::BulletText("Timelineで時間を決める");
-	ImGui::BulletText("回転・位置・拡縮を入力");
-	ImGui::BulletText("ポーズごとにAdd / Update Keyを押す");
-	ImGui::BulletText("Playで確認してSave Motionで保存");
-	ImGui::End();
-}

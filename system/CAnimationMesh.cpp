@@ -5,6 +5,7 @@
 #include <cctype>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
@@ -183,7 +184,6 @@ void CAnimationMesh::LoadSwordAttachmentPreset()
 	std::ifstream input(m_swordPresetPath);
 	if (!input)
 	{
-		m_swordPresetStatus = "No saved preset (using defaults)";
 		return;
 	}
 
@@ -199,33 +199,6 @@ void CAnimationMesh::LoadSwordAttachmentPreset()
 		else if (key == "rotation_z") m_swordRotationDegrees.z = value;
 		else if (key == "scale") m_swordScale = value;
 	}
-	m_swordPresetStatus = "Loaded: " + m_swordPresetPath;
-}
-
-void CAnimationMesh::SaveSwordAttachmentPreset()
-{
-	if (m_swordPresetPath.empty())
-	{
-		m_swordPresetStatus = "Cannot save: no sword asset path";
-		return;
-	}
-
-	std::ofstream output(m_swordPresetPath, std::ios::trunc);
-	if (!output)
-	{
-		m_swordPresetStatus = "Cannot save: file is not writable";
-		return;
-	}
-
-	output << "# Fallen Paladin sword attachment preset\n"
-		<< "offset_x " << m_swordHandOffset.x << "\n"
-		<< "offset_y " << m_swordHandOffset.y << "\n"
-		<< "offset_z " << m_swordHandOffset.z << "\n"
-		<< "rotation_x " << m_swordRotationDegrees.x << "\n"
-		<< "rotation_y " << m_swordRotationDegrees.y << "\n"
-		<< "rotation_z " << m_swordRotationDegrees.z << "\n"
-		<< "scale " << m_swordScale << "\n";
-	m_swordPresetStatus = "Saved: " + m_swordPresetPath;
 }
 
 bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
@@ -446,8 +419,7 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 	}
 
 	const auto boneIt = m_DebugBoneMatrices.find(m_swordBoneName);
-	const bool useBoneAttachment = !m_swordForceTestPlacement &&
-		boneIt != m_DebugBoneMatrices.end();
+	const bool useBoneAttachment = boneIt != m_DebugBoneMatrices.end();
 	const Matrix4x4 boneMatrix = useBoneAttachment
 		? boneIt->second
 		: Matrix4x4::Identity;
@@ -461,9 +433,8 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 	const Matrix4x4 sizeMatrix = drawProxy
 		? Matrix4x4::CreateScale(m_swordProxyLength)
 		: Matrix4x4::CreateScale(m_swordScale);
-	const Vector3 placement = useBoneAttachment
-		? m_swordHandOffset
-		: m_swordTestPosition;
+	// 手の骨が見つからなかったときは原点へ置く(剣が行方不明にならないようにするため)。
+	const Vector3 placement = useBoneAttachment ? m_swordHandOffset : Vector3();
 	const Matrix4x4 swordLocal = centerCorrection * sizeMatrix *
 		Matrix4x4::CreateFromYawPitchRoll(
 			rotationRadians.y, rotationRadians.x, rotationRadians.z) *
@@ -683,11 +654,6 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 				<< " vertices=" << subset.VertexNum << std::endl;
 		}
 		m_swordWorldSegmentValid = false;
-		if (!m_swordDebugRegistered)
-		{
-			DebugUI::RedistDebugFunction([this]() { RenderSwordDebug(); });
-			m_swordDebugRegistered = true;
-		}
 		return;
 	}
 	std::filesystem::path swordPath = m_swordUsesPlayerAsset
@@ -768,97 +734,8 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 			<< " attachBone=" << m_swordBoneName
 			<< " scale=" << m_swordScale << std::endl;
 	}
-	if (!m_swordDebugRegistered)
-	{
-		DebugUI::RedistDebugFunction([this]() { RenderSwordDebug(); });
-		m_swordDebugRegistered = true;
-	}
 	LoadSwordAttachmentPreset();
 
-}
-
-void CAnimationMesh::RenderSwordDebug()
-{
-	ImGui::SetNextWindowPos(ImVec2(900.0f, 80.0f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(430.0f, 470.0f), ImGuiCond_FirstUseEver);
-	ImGui::Begin("Sword Attachment Debug");
-	ImGui::Checkbox("Draw sword", &m_swordEnabled);
-	ImGui::Checkbox("Use guaranteed sword", &m_swordUseGuaranteedProxy);
-	ImGui::Checkbox("Force test placement", &m_swordForceTestPlacement);
-	ImGui::TextColored(
-		m_swordUsesPlayerAsset && m_swordMesh
-			? ImVec4(0.25f, 1.0f, 0.35f, 1.0f)
-			: (m_swordProxyMesh ? ImVec4(0.25f, 1.0f, 0.35f, 1.0f) : ImVec4(1.0f, 0.25f, 0.25f, 1.0f)),
-		m_swordUsesPlayerAsset && m_swordMesh
-			? "MODEL SWORD: EQUIPPED"
-			: (m_swordProxyMesh ? "GUARANTEED SWORD: READY" : "GUARANTEED SWORD: FAILED"));
-	ImGui::Text("Asset: %s", m_swordAssetPath.empty() ? "NOT FOUND" : m_swordAssetPath.c_str());
-	ImGui::SeparatorText("LIVE FIT - changes apply immediately");
-	ImGui::TextWrapped("Drag the values while watching the character. Save attachment keeps the fit for the next launch.");
-	ImGui::DragFloat3("Rotation XYZ (deg)", &m_swordRotationDegrees.x, 0.25f, -180.0f, 180.0f, "%.2f");
-	if (m_swordForceTestPlacement)
-		ImGui::DragFloat3("Test position", &m_swordTestPosition.x, 0.05f, -1000.0f, 1000.0f, "%.3f");
-	else
-		ImGui::DragFloat3("Hand offset (local)", &m_swordHandOffset.x, 0.01f, -10.0f, 10.0f, "%.3f");
-	ImGui::DragFloat("Model scale", &m_swordScale, 0.005f, 0.001f, 1000.0f, "%.3f");
-	if (ImGui::Button("Save attachment"))
-		SaveSwordAttachmentPreset();
-	ImGui::SameLine();
-	if (ImGui::Button("Load saved"))
-		LoadSwordAttachmentPreset();
-	ImGui::SameLine();
-	if (ImGui::Button("Reset default"))
-	{
-		m_swordRotationDegrees = Vector3(81.50f, -46.50f, 76.75f);
-		m_swordHandOffset = Vector3(0.650f, -0.070f, 0.646f);
-		m_swordScale = 1.0f;
-		m_swordPresetStatus = "Reset in memory (press Save attachment to keep it)";
-	}
-	ImGui::TextWrapped("Preset: %s", m_swordPresetStatus.c_str());
-	ImGui::Text("Attach bone: %s", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str());
-	if (ImGui::BeginCombo("Right hand bone", m_swordBoneName.empty() ? "NOT FOUND" : m_swordBoneName.c_str()))
-	{
-		std::vector<std::string> candidates;
-		for (const auto& [name, bone] : m_BoneDictionary)
-			if (SwordBonePriority(name) > 0) candidates.push_back(name);
-		std::sort(candidates.begin(), candidates.end(), [](const std::string& a, const std::string& b) {
-			return SwordBonePriority(a) > SwordBonePriority(b);
-		});
-		for (const std::string& name : candidates)
-		{
-			const bool selected = name == m_swordBoneName;
-			if (ImGui::Selectable(name.c_str(), selected)) m_swordBoneName = name;
-			if (selected) ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-	if (ImGui::Button("Show beside player"))
-	{
-		m_swordUseGuaranteedProxy = true;
-		m_swordForceTestPlacement = true;
-		m_swordTestPosition = Vector3(30.0f, 55.0f, 0.0f);
-		m_swordRotationDegrees = Vector3(0.0f, 0.0f, -90.0f);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Attach to right hand"))
-	{
-		m_swordUseGuaranteedProxy = true;
-		m_swordForceTestPlacement = false;
-	}
-	if (!m_swordMesh)
-	{
-		ImGui::TextColored(ImVec4(1.0f, 0.25f, 0.25f, 1.0f), "NOT LOADED");
-		ImGui::Text("Asset: %s", m_swordAssetPath.empty() ? "NOT FOUND" : m_swordAssetPath.c_str());
-	}
-	else
-	{
-		ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "LOADED");
-		ImGui::Text("Vertices: %zu", m_swordMesh->GetVertices().size());
-		ImGui::Text("Subsets: %zu", m_swordMesh->GetSubsets().size());
-		ImGui::Text("Model center: %.1f, %.1f, %.1f",
-			m_swordModelCenter.x, m_swordModelCenter.y, m_swordModelCenter.z);
-	}
-	ImGui::End();
 }
 
 // 階層構造を考慮したボーンコンビネーション行列を更新
@@ -1065,14 +942,22 @@ float CAnimationMesh::GetAnimatedLocalMaxZ() const
 
 float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) const
 {
-	if (m_vertices.empty())
-		return 0.0f;
-
 	// 行ベクトル規約でX軸へθ回転すると、ワールドYは y*cosθ - z*sinθ になる。
 	// 基準姿勢のθ=90度では -z となり、Z最大の頂点が最下点になる(従来の実装)。
 	// θ=90度+pのときは cos=-sin(p)、sin=cos(p) なので、高さは -y*sin(p) - z*cos(p)。
-	const float sinPitch = std::sin(extraPitchRadians);
-	const float cosPitch = std::cos(extraPitchRadians);
+	return GetAnimatedLowestAlong(
+		Vector3(0.0f, -std::sin(extraPitchRadians), -std::cos(extraPitchRadians)));
+}
+
+float CAnimationMesh::GetAnimatedLocalMinY() const
+{
+	return GetAnimatedLowestAlong(Vector3(0.0f, 1.0f, 0.0f));
+}
+
+float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
+{
+	if (m_vertices.empty())
+		return 0.0f;
 
 	std::array<const BONE*, MAX_BONE> bonesByIndex{};
 	for (const auto& [name, bone] : m_BoneDictionary)
@@ -1114,7 +999,7 @@ float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) cons
 			skinned = vertex.Position;
 		}
 
-		const float height = -skinned.y * sinPitch - skinned.z * cosPitch;
+		const float height = skinned.Dot(upAxis);
 		lowestHeight = std::min(lowestHeight, height);
 		hasVertex = true;
 	}
@@ -1433,6 +1318,230 @@ void CAnimationMesh::UpdateLayeredAnimation(
 	}
 }
 
+namespace
+{
+	// 行ベクトル規約で、点pを中心にrotだけ回す行列。
+	Matrix4x4 RotateAboutPoint(const Vector3& p, const Matrix4x4& rot)
+	{
+		return Matrix4x4::CreateTranslation(-p) * rot * Matrix4x4::CreateTranslation(p);
+	}
+
+	Vector3 MatrixPosition(const Matrix4x4& m)
+	{
+		return Vector3(m._41, m._42, m._43);
+	}
+
+	float SafeAcos(float value)
+	{
+		return std::acos(std::clamp(value, -1.0f, 1.0f));
+	}
+
+	// 目標までの距離を、脚を伸ばしきる長さの手前で滑らかに抑える。
+	// 硬く切ると、遠い目標のときに膝が急に伸びきって棒のような脚になる。
+	float SoftClampDistance(float distance, float maxLength, float softening)
+	{
+		const float soft = std::max(softening, 0.0001f);
+		const float threshold = std::max(maxLength - soft, 0.0f);
+		if (distance <= threshold)
+			return distance;
+		const float over = distance - threshold;
+		return threshold + soft * (1.0f - std::exp(-over / soft));
+	}
+}
+
+bool CAnimationMesh::GetBoneModelPosition(const std::string& boneName, Vector3& outPosition) const
+{
+	const auto found = m_DebugBoneMatrices.find(boneName);
+	if (found == m_DebugBoneMatrices.end())
+		return false;
+	outPosition = MatrixPosition(found->second);
+	return true;
+}
+
+bool CAnimationMesh::AddBoneLocalRotations(
+	const std::unordered_map<std::string, Matrix4x4>& localRotations)
+{
+	// 行列が1ビットも変わっていないか。Update()がこの骨を書き換えたかの判定に使う。
+	const auto sameMatrix = [](const Matrix4x4& a, const Matrix4x4& b)
+	{
+		return std::memcmp(&a, &b, sizeof(Matrix4x4)) == 0;
+	};
+
+	bool changed = false;
+	// 1) 前回ここで足した分を取り消す。
+	//    Update()はクリップにキーがある骨しかAnimationMatrixを書き換えない。
+	//    キーが無い骨は前フレームの姿勢(=前回足した結果)が残っているので、
+	//    そこへさらに足すと回転が積み重なって骨が折れ曲がる。
+	//    クリップが書き換えていれば(行列が変わっていれば)、その姿勢が正しいので取り消さない。
+	for (const auto& [boneName, layer] : m_LayeredBoneRotations)
+	{
+		auto bone = m_BoneDictionary.find(boneName);
+		if (bone == m_BoneDictionary.end())
+			continue;
+		if (!sameMatrix(bone->second.AnimationMatrix, layer.afterLayer))
+			continue;
+		bone->second.AnimationMatrix = layer.beforeLayer;
+		changed = true;
+	}
+	m_LayeredBoneRotations.clear();
+
+	// 2) 今回の分を足す。
+	for (const auto& [boneName, rotation] : localRotations)
+	{
+		auto bone = m_BoneDictionary.find(boneName);
+		if (bone == m_BoneDictionary.end())
+			continue;
+		LayeredBoneRotation layer;
+		layer.beforeLayer = bone->second.AnimationMatrix;
+		// 行ベクトル規約: 先に回してからクリップのローカル変換を掛けると、骨の根元を中心に回る。
+		bone->second.AnimationMatrix = rotation * layer.beforeLayer;
+		layer.afterLayer = bone->second.AnimationMatrix;
+		m_LayeredBoneRotations.emplace(boneName, layer);
+		changed = true;
+	}
+	return changed;
+}
+
+void CAnimationMesh::RefreshBoneMatrices(BoneCombMatrix& bonecombarray)
+{
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		(void)name;
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.idx] = bone.Matrix.Transpose();
+	}
+}
+
+bool CAnimationMesh::SolveLegIK(
+	const LegIKChain& chain,
+	const Vector3& targetToeModelPosition,
+	float maxExtensionRatio,
+	float softening)
+{
+	auto upperIt = m_BoneDictionary.find(chain.upperLeg);
+	auto lowerIt = m_BoneDictionary.find(chain.lowerLeg);
+	auto footIt = m_BoneDictionary.find(chain.foot);
+	if (upperIt == m_BoneDictionary.end() ||
+		lowerIt == m_BoneDictionary.end() ||
+		footIt == m_BoneDictionary.end())
+	{
+		return false;
+	}
+	const auto upperGlobalIt = m_DebugBoneMatrices.find(chain.upperLeg);
+	const auto lowerGlobalIt = m_DebugBoneMatrices.find(chain.lowerLeg);
+	const auto footGlobalIt = m_DebugBoneMatrices.find(chain.foot);
+	const auto toeGlobalIt = m_DebugBoneMatrices.find(chain.toe);
+	if (upperGlobalIt == m_DebugBoneMatrices.end() ||
+		lowerGlobalIt == m_DebugBoneMatrices.end() ||
+		footGlobalIt == m_DebugBoneMatrices.end() ||
+		toeGlobalIt == m_DebugBoneMatrices.end())
+	{
+		return false;
+	}
+
+	const Matrix4x4 upperGlobal = upperGlobalIt->second;
+	const Matrix4x4 lowerGlobal = lowerGlobalIt->second;
+	const Matrix4x4 footGlobal = footGlobalIt->second;
+	const Matrix4x4 toeGlobal = toeGlobalIt->second;
+
+	// a=股、b=膝、c=足首。tは足首の目標。
+	// 足首を目標にするのは、足の向きを元の姿勢のまま残すため。
+	// つま先を目標にして解いてから足の向きを戻すと、その分つま先が目標からずれる
+	// (実測でロック中も1コマ0.1ほど動いていた)。
+	// 足首の目標 = つま先の目標 + 「元の姿勢での足首とつま先の差」。
+	const Vector3 a = MatrixPosition(upperGlobal);
+	const Vector3 b = MatrixPosition(lowerGlobal);
+	const Vector3 c = MatrixPosition(footGlobal);
+	const Vector3 toeToFoot = MatrixPosition(footGlobal) - MatrixPosition(toeGlobal);
+	Vector3 t = targetToeModelPosition + toeToFoot;
+
+	const float lab = (b - a).Length();
+	const float lcb = (c - b).Length();
+	if (lab < 0.0001f || lcb < 0.0001f)
+		return false;
+
+	Vector3 toTarget = t - a;
+	const float rawDistance = toTarget.Length();
+	if (rawDistance < 0.0001f)
+		return false;
+	const float maxLength = (lab + lcb) * std::clamp(maxExtensionRatio, 0.1f, 1.0f);
+	const float lat = std::max(SoftClampDistance(rawDistance, maxLength, softening), 0.0001f);
+	toTarget /= rawDistance;
+	t = a + toTarget * lat;
+
+	Vector3 ac = c - a;
+	Vector3 ab = b - a;
+	Vector3 ba = a - b;
+	Vector3 bc = c - b;
+	if (ac.Length() < 0.0001f)
+		return false;
+
+	// 今の角度と、目標へ届くための角度(余弦定理)。
+	Vector3 acN = ac; acN.Normalize();
+	Vector3 abN = ab; abN.Normalize();
+	Vector3 baN = ba; baN.Normalize();
+	Vector3 bcN = bc; bcN.Normalize();
+	const float currentHipAngle = SafeAcos(acN.Dot(abN));
+	const float currentKneeAngle = SafeAcos(baN.Dot(bcN));
+	const float aimAngle = SafeAcos(acN.Dot(toTarget));
+	const float desiredHipAngle = SafeAcos(
+		(lcb * lcb - lab * lab - lat * lat) / (-2.0f * lab * lat));
+	const float desiredKneeAngle = SafeAcos(
+		(lat * lat - lab * lab - lcb * lcb) / (-2.0f * lab * lcb));
+
+	// 膝の曲がる面の法線。脚が伸びきっていると求められないので、そのときは足の向きから補う。
+	Vector3 bendAxis = ac.Cross(ab);
+	if (bendAxis.Length() < 0.0001f)
+		bendAxis = Vector3(footGlobal._11, footGlobal._12, footGlobal._13);
+	if (bendAxis.Length() < 0.0001f)
+		return false;
+	bendAxis.Normalize();
+	Vector3 aimAxis = ac.Cross(t - a);
+	const bool hasAim = aimAxis.Length() > 0.0001f;
+	if (hasAim)
+		aimAxis.Normalize();
+
+	// 股の回転(膝の角度合わせ + 目標へ向ける)をモデル空間で作る。
+	Matrix4x4 hipRotation = Matrix4x4::CreateFromAxisAngle(
+		bendAxis, desiredHipAngle - currentHipAngle);
+	if (hasAim)
+		hipRotation = hipRotation * Matrix4x4::CreateFromAxisAngle(aimAxis, aimAngle);
+	const Matrix4x4 hipTransform = RotateAboutPoint(a, hipRotation);
+
+	const Matrix4x4 upperGlobalNew = upperGlobal * hipTransform;
+	const Matrix4x4 lowerGlobalAfterHip = lowerGlobal * hipTransform;
+	const Matrix4x4 footGlobalAfterHip = footGlobal * hipTransform;
+
+	// 膝の回転は、股を回した後の位置と面で作る。
+	const Vector3 bAfter = MatrixPosition(lowerGlobalAfterHip);
+	const Vector3 cAfter = MatrixPosition(footGlobalAfterHip);
+	Vector3 kneeAxis = (cAfter - a).Cross(bAfter - a);
+	if (kneeAxis.Length() < 0.0001f)
+		kneeAxis = bendAxis;
+	kneeAxis.Normalize();
+	const Matrix4x4 kneeTransform = RotateAboutPoint(
+		bAfter,
+		Matrix4x4::CreateFromAxisAngle(kneeAxis, desiredKneeAngle - currentKneeAngle));
+
+	const Matrix4x4 lowerGlobalNew = lowerGlobalAfterHip * kneeTransform;
+	const Matrix4x4 footGlobalChain = footGlobalAfterHip * kneeTransform;
+
+	// 足首は元の向きのまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
+	Matrix4x4 footGlobalNew = footGlobal;
+	const Vector3 footPosition = MatrixPosition(footGlobalChain);
+	footGlobalNew._41 = footPosition.x;
+	footGlobalNew._42 = footPosition.y;
+	footGlobalNew._43 = footPosition.z;
+
+	// ローカル行列へ戻す。親の行列は「今のローカル行列の逆 × 今のモデル空間の行列」で求まる。
+	const Matrix4x4 upperParent = upperIt->second.AnimationMatrix.Invert() * upperGlobal;
+	upperIt->second.AnimationMatrix = upperGlobalNew * upperParent.Invert();
+	lowerIt->second.AnimationMatrix = lowerGlobalNew * upperGlobalNew.Invert();
+	footIt->second.AnimationMatrix = footGlobalNew * lowerGlobalNew.Invert();
+	return true;
+}
+
 std::unordered_map<std::string, Matrix4x4> CAnimationMesh::CaptureCurrentLocalPose() const
 {
 	std::unordered_map<std::string, Matrix4x4> pose;
@@ -1440,6 +1549,248 @@ std::unordered_map<std::string, Matrix4x4> CAnimationMesh::CaptureCurrentLocalPo
 	for (const auto& [boneName, bone] : m_BoneDictionary)
 		pose.emplace(boneName, bone.AnimationMatrix);
 	return pose;
+}
+
+std::unordered_map<std::string, Matrix4x4> CAnimationMesh::SampleLocalPose(
+	aiAnimation* animation,
+	float normalizedTime,
+	const std::vector<std::string>& boneNames)
+{
+	std::unordered_map<std::string, Matrix4x4> pose;
+	if (animation == nullptr)
+		return pose;
+
+	// ApplyAnimationToBonesはボーン辞書へ直接書き込むので、対象ボーンの今の値を退避してから
+	// 休止姿勢へ戻し、クリップを適用して読み取り、最後に元へ戻す。
+	std::vector<std::pair<std::string, Matrix4x4>> saved;
+	saved.reserve(boneNames.size());
+	for (const std::string& name : boneNames)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt == m_BoneDictionary.end())
+			continue;
+		saved.emplace_back(name, boneIt->second.AnimationMatrix);
+		boneIt->second.AnimationMatrix = GetRestLocalMatrix(name);
+	}
+
+	// 正規化時間をキー番号と小数部へ直す。キー数はチャンネルごとに違うことがあるので、
+	// ApplyAnimationToBonesと同じく回転キーの最大数を基準にする。
+	unsigned int maxRotationKeys = 0;
+	for (unsigned int c = 0; c < animation->mNumChannels; ++c)
+		maxRotationKeys = std::max(maxRotationKeys, animation->mChannels[c]->mNumRotationKeys);
+	const float wrapped = normalizedTime - std::floor(normalizedTime);
+	const float keyPosition = maxRotationKeys > 1
+		? wrapped * static_cast<float>(maxRotationKeys - 1)
+		: 0.0f;
+	const int frame = static_cast<int>(std::floor(keyPosition));
+	const float fraction = keyPosition - static_cast<float>(frame);
+	// ループ指定にすると末尾でキー番号が0へ巻き戻るため、ここでは非ループで渡す
+	// (正規化時間の巻き戻しは上で済ませている)。
+	ApplyAnimationToBones(animation, frame, fraction, boneNames, false, std::string());
+
+	for (auto& [name, previous] : saved)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		pose.emplace(name, boneIt->second.AnimationMatrix);
+		boneIt->second.AnimationMatrix = previous;
+	}
+	return pose;
+}
+
+void CAnimationMesh::ApplyLocalPose(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, Matrix4x4>& localPose,
+	const std::unordered_map<std::string, Matrix4x4>& manualLocalRotations)
+{
+	m_DebugBoneMatrices.clear();
+	for (auto& [name, bone] : m_BoneDictionary)
+		bone.AnimationMatrix = GetRestLocalMatrix(name);
+
+	for (const auto& [name, matrix] : localPose)
+	{
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt != m_BoneDictionary.end())
+			boneIt->second.AnimationMatrix = matrix;
+	}
+
+	for (const auto& [name, rotation] : manualLocalRotations)
+	{
+		if (localPose.find(name) != localPose.end())
+			continue;
+		auto boneIt = m_BoneDictionary.find(name);
+		if (boneIt != m_BoneDictionary.end())
+			boneIt->second.AnimationMatrix = rotation * GetRestLocalMatrix(name);
+	}
+
+	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.idx] = bone.Matrix.Transpose();
+	}
+}
+
+Matrix4x4 CAnimationMesh::BlendLocalMatrix(const Matrix4x4& from, const Matrix4x4& to, float amount)
+{
+	return BlendLocalSrt(from, to, amount);
+}
+
+namespace
+{
+	const aiNodeAnim* FindChannel(const aiAnimation* animation, const std::string& boneName)
+	{
+		if (animation == nullptr)
+			return nullptr;
+		for (unsigned int c = 0; c < animation->mNumChannels; ++c)
+		{
+			const aiNodeAnim* channel = animation->mChannels[c];
+			if (channel != nullptr && boneName == channel->mNodeName.C_Str())
+				return channel;
+		}
+		return nullptr;
+	}
+
+	aiVector3D SamplePositionKeys(const aiNodeAnim* channel, float normalizedTime)
+	{
+		if (channel->mNumPositionKeys == 0)
+			return aiVector3D(0.0f, 0.0f, 0.0f);
+		if (channel->mNumPositionKeys == 1)
+			return channel->mPositionKeys[0].mValue;
+		const float position = std::clamp(normalizedTime, 0.0f, 1.0f) *
+			static_cast<float>(channel->mNumPositionKeys - 1);
+		const unsigned int index = std::min(
+			channel->mNumPositionKeys - 2,
+			static_cast<unsigned int>(std::floor(position)));
+		const float blend = std::clamp(position - static_cast<float>(index), 0.0f, 1.0f);
+		const aiVector3D& a = channel->mPositionKeys[index].mValue;
+		const aiVector3D& b = channel->mPositionKeys[index + 1].mValue;
+		return a + (b - a) * blend;
+	}
+
+	aiQuaternion SampleRotationKeys(const aiNodeAnim* channel, float normalizedTime)
+	{
+		if (channel->mNumRotationKeys == 0)
+			return aiQuaternion();
+		if (channel->mNumRotationKeys == 1)
+			return channel->mRotationKeys[0].mValue;
+		const float position = std::clamp(normalizedTime, 0.0f, 1.0f) *
+			static_cast<float>(channel->mNumRotationKeys - 1);
+		const unsigned int index = std::min(
+			channel->mNumRotationKeys - 2,
+			static_cast<unsigned int>(std::floor(position)));
+		const float blend = std::clamp(position - static_cast<float>(index), 0.0f, 1.0f);
+		aiQuaternion result;
+		aiQuaternion::Interpolate(
+			result, channel->mRotationKeys[index].mValue, channel->mRotationKeys[index + 1].mValue, blend);
+		result.Normalize();
+		return result;
+	}
+
+	Matrix4x4 QuaternionToMatrix(const aiQuaternion& q)
+	{
+		Quaternion dx{};
+		dx.x = q.x;
+		dx.y = q.y;
+		dx.z = q.z;
+		dx.w = q.w;
+		return Matrix4x4::CreateFromQuaternion(dx);
+	}
+}
+
+Vector3 CAnimationMesh::SampleBonePositionOffset(
+	aiAnimation* animation, float normalizedTime, const std::string& boneName) const
+{
+	const aiNodeAnim* channel = FindChannel(animation, boneName);
+	if (channel == nullptr || channel->mNumPositionKeys == 0)
+		return Vector3(0.0f, 0.0f, 0.0f);
+	const aiVector3D now = SamplePositionKeys(channel, normalizedTime);
+	const aiVector3D& origin = channel->mPositionKeys[0].mValue;
+	return Vector3(now.x - origin.x, now.y - origin.y, now.z - origin.z);
+}
+
+Matrix4x4 CAnimationMesh::SampleHipsInPlace(
+	aiAnimation* animation, float normalizedTime, const std::string& boneName, int rotationMode) const
+{
+	Matrix4x4 rest = GetRestLocalMatrix(boneName);
+	const aiNodeAnim* channel = FindChannel(animation, boneName);
+	if (channel == nullptr)
+		return rest;
+
+	Vector3 restPosition(rest._41, rest._42, rest._43);
+	Matrix4x4 restRotation = rest;
+	restRotation._41 = 0.0f;
+	restRotation._42 = 0.0f;
+	restRotation._43 = 0.0f;
+
+	// 上下: クリップの腰の高さを、そのままモデルの腰の高さにする。
+	//
+	// 以前は「クリップ先頭からの変化」を割合で足していた。ところが slash (5) のように
+	// クリップの先頭ですでにしゃがんでいる(腰41cm、立つと約92cm)クリップでは、
+	// 変化が0のまま腰だけが立った高さに残り、しゃがんだ脚の角度で足が宙に浮いた(実機で確認)。
+	// 脚の角度はクリップの腰の高さを前提に作られているので、高さは絶対値で合わせる必要がある。
+	//
+	// 前提: クリップの位置キーとモデルの腰の休止位置が同じ単位(Mixamoはどちらもcm)。
+	// 高さの軸はクリップはY、モデルの親空間は最も大きい成分の軸(このモデルではZ)。
+	if (channel->mNumPositionKeys > 0)
+	{
+		const aiVector3D now = SamplePositionKeys(channel, normalizedTime);
+		const float ax = std::abs(restPosition.x);
+		const float ay = std::abs(restPosition.y);
+		const float az = std::abs(restPosition.z);
+		if (az >= ax && az >= ay)
+			restPosition.z = std::copysign(now.y, restPosition.z);
+		else if (ay >= ax)
+			restPosition.y = std::copysign(now.y, restPosition.y);
+		else
+			restPosition.x = std::copysign(now.y, restPosition.x);
+	}
+
+	Matrix4x4 rotation = restRotation;
+	if (rotationMode == 1 && channel->mNumRotationKeys > 0)
+	{
+		// クリップのバインド姿勢からの回転の変化を、腰自身のローカル空間で休止姿勢へ重ねる。
+		// 行ベクトル規約: 変化 = 現在 * 基準の逆、結果 = 変化 * 休止姿勢。
+		// 親空間で重ねる(休止姿勢 * 基準の逆 * 現在)と、親の上の軸がクリップと違うモデルでは
+		// 回転の軸がずれ、腰のひねりが前後の倒れに化けてキャラクターが寝転ぶ。
+		//
+		// 基準: クリップのファイル自身のバインド姿勢(Mixamoのクリップでは腰の回転なし = 単位回転。調査で確認)。
+		// モデルの休止姿勢も同じバインド姿勢なので、クリップの腰の向きがそのままモデルに再現される。
+		//
+		// 以前の基準と、それぞれの問題:
+		// - 攻撃クリップ自身の先頭: 先頭で前かがみ・しゃがみのクリップ(slash (5)など)ではその傾きが消え、脚の角度と合わない。
+		// - 待機クリップの先頭: 待機は片手剣の構えで**腰が55度ひねれている**。その分だけ攻撃中の体が常に斜めを向き、
+		//   前へ跳ぶダッシュ攻撃で「前を向いているのに斜めを向いて攻撃する」と指摘された。
+		const Matrix4x4 now = QuaternionToMatrix(SampleRotationKeys(channel, normalizedTime));
+		rotation = now * restRotation;
+	}
+	else if (rotationMode == 2 && channel->mNumRotationKeys > 0)
+	{
+		rotation = QuaternionToMatrix(SampleRotationKeys(channel, normalizedTime));
+	}
+	return rotation * Matrix4x4::CreateTranslation(restPosition);
+}
+
+float CAnimationMesh::DominantAxisComponent(const Matrix4x4& localMatrix)
+{
+	const float x = localMatrix._41;
+	const float y = localMatrix._42;
+	const float z = localMatrix._43;
+	if (std::abs(z) >= std::abs(x) && std::abs(z) >= std::abs(y))
+		return z;
+	return std::abs(y) >= std::abs(x) ? y : x;
+}
+
+Matrix4x4 CAnimationMesh::GetRestLocalMatrix(const std::string& boneName) const
+{
+	const auto rest = m_RestLocalMatrices.find(boneName);
+	return rest != m_RestLocalMatrices.end() ? rest->second : Matrix4x4::Identity;
+}
+
+float CAnimationMesh::GetRestBoneModelHeight(const std::string& boneName) const
+{
+	const auto rest = m_RestGlobalMatrices.find(boneName);
+	// 行ベクトル規約なので平行移動は4行目にある。
+	return rest != m_RestGlobalMatrices.end() ? rest->second._42 : 0.0f;
 }
 
 void CAnimationMesh::UpdateManualPose(
