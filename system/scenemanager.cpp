@@ -16,9 +16,9 @@ void SceneManager::Dispose()
 	m_currentSceneName.clear();
 }
 
-void SceneManager::SetCurrentScene(std::string currentscenename)
+void SceneManager::SetCurrentScene(std::string currentscenename, bool force)
 {
-    if (currentscenename.empty() || currentscenename == m_currentSceneName)
+    if (currentscenename.empty() || (!force && currentscenename == m_currentSceneName))
     {
         return;
     }

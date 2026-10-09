@@ -161,6 +161,12 @@ private:
 	bool m_legChainsResolved = false;
 	// プレイヤーの描画用の接地。立ち姿勢の持ち上げ量と地面の高さ(前転中だけ体の最下点で合わせ直す)。
 	float m_playerStandingGroundOffsetY = 0.0f;
+	// 毎フレーム作り直す接地の持ち上げ量(変化の速さを制限するため、前の値を覚えておく)。
+	float m_playerGroundOffsetY = 0.0f;
+	bool m_playerGroundOffsetReady = false;
+	// 足の骨から靴底までの距離。最初のフレームに1度だけ測る。
+	float m_playerSoleOffsetY = 0.0f;
+	bool m_playerSoleOffsetReady = false;
 	float m_playerGroundY = 0.0f;
 	// プレイヤーの実際の移動速度(ワールド単位/秒)。カメラの自動追従に使う。
 	Vector3 m_playerWorldVelocity{ 0.0f, 0.0f, 0.0f };

@@ -127,14 +127,37 @@ void ThirdPersonCamera::Update(
 		(std::abs(look.deltaX) > 0.0f || std::abs(look.deltaY) > 0.0f);
 	if (manualLook)
 	{
-		m_cameraYaw = WrapAngle(m_cameraYaw - look.deltaX * m_mouseSensitivity);
-		m_pitch = std::clamp(m_pitch + look.deltaY * m_mouseSensitivity, MIN_PITCH, MAX_PITCH);
+		// 生の移動量を「これから回す分」へ足す。
+		m_pendingYaw -= look.deltaX * m_mouseSensitivity;
+		m_pendingPitch += look.deltaY * m_mouseSensitivity;
 		m_timeSinceManualLook = 0.0f;
 		m_recenterActive = false;
 	}
 	else
 	{
 		m_timeSinceManualLook += std::max(deltaSeconds, 0.0f);
+	}
+
+	// 溜めた分を少しずつ使う(慣らし)。
+	// 一度に全部使わないので、マウスを勢いよく振っても視点が飛ばず、
+	// 手を止めると残りが指数的に消えて流れるように止まる。
+	if (std::abs(m_pendingYaw) > 0.000001f || std::abs(m_pendingPitch) > 0.000001f)
+	{
+		const float use = 1.0f - std::exp(-std::max(deltaSeconds, 0.0f) / LOOK_SMOOTH_SECONDS);
+		float yawStep = m_pendingYaw * use;
+		float pitchStep = m_pendingPitch * use;
+		// 1秒あたりの回転に上限を設ける。画面が1フレームで大きく回るのを防ぐ。
+		const float limit = LOOK_MAX_SPEED * std::max(deltaSeconds, 0.0001f);
+		yawStep = std::clamp(yawStep, -limit, limit);
+		pitchStep = std::clamp(pitchStep, -limit, limit);
+		m_pendingYaw -= yawStep;
+		m_pendingPitch -= pitchStep;
+		m_cameraYaw = WrapAngle(m_cameraYaw + yawStep);
+		const float newPitch = std::clamp(m_pitch + pitchStep, MIN_PITCH, MAX_PITCH);
+		// 上下は端で止まるので、使い切れなかった分は捨てる(溜め続けると手を離した後に動く)。
+		if (newPitch != m_pitch + pitchStep)
+			m_pendingPitch = 0.0f;
+		m_pitch = newPitch;
 	}
 
 	if (m_recenterActive)

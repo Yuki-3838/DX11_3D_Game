@@ -119,9 +119,21 @@ private:
 	float m_cameraYaw = PI;
 	// 少し高い位置から引いた、戦闘全体を見渡しやすい構図にする。
 	float m_pitch = CAMERA_DEFAULT_PITCH;
-	// マウスの移動量1カウントあたりの回転(ラジアン)。約0.06度。
-	// 実機でマウスを動かすと1フレームに数百〜数千カウント入るので、これより大きいと少し振るだけで1回転する。
-	float m_mouseSensitivity = 0.0010f;
+	// マウスの移動量1カウントあたりの回転(ラジアン)。
+	// 実機でマウスを動かすと1フレームに数百〜数千カウント入るので、
+	// これが大きいと少し振るだけで視点が飛ぶ。
+	// 0.0010では「速すぎる」との指摘があったため0.00045まで下げた(デバッグ表示のスライダーで調整可)。
+	float m_mouseSensitivity = 0.00045f;
+	// --- マウスの慣らし ---
+	// 生の移動量をそのまま足すと、1フレームの飛び込み量がそのまま視点の飛びになる。
+	// いったん「これから回す分」として溜めて、毎フレーム一部だけ使う。
+	// 手を止めれば残りも指数的に消えるので、流れるように止まる。
+	float m_pendingYaw = 0.0f;
+	float m_pendingPitch = 0.0f;
+	// 慣らしの時間(秒)。大きいほど滑らかだが、操作が遅れて感じる。
+	static constexpr float LOOK_SMOOTH_SECONDS = 0.055f;
+	// 1秒あたりの回転の上限(ラジアン)。マウスを勢いよく振っても視点が飛ばない。
+	static constexpr float LOOK_MAX_SPEED = 4.2f;
 	float m_lookDistance = 70.0f;
 	float m_desiredDistance = 70.0f;
 	float m_currentDistance = 70.0f;

@@ -358,11 +358,10 @@ SRT player::getRenderSRT() const
 {
 	SRT renderSrt = m_srt;
 	renderSrt.pos.y += m_visualGroundOffsetY;
-	if (m_motionState == MotionState::Walk || m_motionState == MotionState::Run)
-	{
-		const float step = std::sinf(m_motionTime * (m_motionState == MotionState::Run ? 10.0f : 7.0f));
-		renderSrt.pos.y -= std::fabs(step) * 0.12f;
-	}
+	// ここで上下に揺らすのはやめた(2026-09-29)。
+	// |sin|は折り返しで向きが急に変わるうえ、実際の足の運びとも合っていないため、
+	// 歩きがかくついて見える原因になっていた。
+	// 上下動はクリップの姿勢から接地の計算(GameScene)を通して出る。
 	if (m_isKnockedBack)
 	{
 		// 飛ばされている間は上体を後ろへ反らせる。移動だけだと押されて滑っているように見え、

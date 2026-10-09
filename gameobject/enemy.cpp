@@ -328,10 +328,20 @@ void enemy::update(uint64_t dt)
 	}
 
 	// 咆哮の間は何もしない(攻撃の判断もしない)。
+	//
+	// **終わりの判定はここで行うこと**。
+	// 以前は下のswitchの`case MotionState::Roar`に書いていたが、
+	// このreturnがswitchより前にあるため一度も評価されず、
+	// 一度吠えた敵が二度と動かなくなっていた(怒りは260ダメージで入るので、戦闘中に突然止まる)。
 	if (m_motionState == MotionState::Roar)
 	{
-		m_srt.pos += m_move;
-		return;
+		if (m_stateTime < Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS)
+		{
+			m_srt.pos += m_move;
+			return;
+		}
+		// 吠え終わったら様子見へ戻す。この先は通常どおり動く。
+		changeState(MotionState::Circle);
 	}
 
 	if (m_motionState == MotionState::Approach && distance <= ATTACK_DISTANCE)
@@ -429,11 +439,7 @@ void enemy::update(uint64_t dt)
 					: MotionState::Retreat);
 		}
 		break;
-	case MotionState::Roar:
-		// 吠えている間は動かず、攻撃もしない。プレイヤーが立て直す時間になる。
-		if (m_stateTime >= Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS)
-			changeState(MotionState::Circle);
-		break;
+	// 咆哮(Roar)はここへ来ない。上で早期に処理して終わりの判定も済ませている。
 	case MotionState::Flinch:
 		// 怯んでいる間は何もしない。向き直りもしないので、背後へ回り込む機会になる。
 		// 明けたら様子見へ戻す。後退させると、反撃に踏み込んだプレイヤーから逃げてしまい、

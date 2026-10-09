@@ -15,7 +15,8 @@ class SceneManager : NonCopyable{
 	static inline std::string m_currentSceneName{};
 
 public:
-	static void SetCurrentScene(std::string);
+	// forceをtrueにすると、同じシーン名でも作り直す(戦いのやり直しに使う)。
+	static void SetCurrentScene(std::string, bool force = false);
 	static void Dispose();
 	static void Init();
 	static void Update(uint64_t deltatime);

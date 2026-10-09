@@ -8,6 +8,7 @@
 
 #include "CAnimationMesh.h"
 #include "LocomotionBlendSpace.h"
+#include "CombatAttackTable.h"
 
 namespace Combat { struct PlayerComboStep; }
 
@@ -51,8 +52,9 @@ public:
 	// 足が地面を滑らないよう、クリップの腰の移動量から「1倍速で再生したときの移動速度」を求め、
 	// ゲーム内の実際の速さに合わせて再生速度を決める。そのためメッシュとモデルの倍率が要る。
 	// walkSpeed/runSpeedはゲーム側の歩き・ダッシュの速さで、歩き・走りのクリップを切り替える境目になる。
+	// クリップごとの足運びの位相のずれを測るため、meshは非constで受ける。
 	void SetLocomotionBlendSpace(
-		const CAnimationMesh& mesh,
+		CAnimationMesh& mesh,
 		float modelScale,
 		const std::array<aiAnimation*, 8>& clips,
 		float walkSpeed,
@@ -61,6 +63,14 @@ public:
 		const std::array<aiAnimation*, 3>& weakAnimations,
 		const std::array<aiAnimation*, 3>& heavyAnimations);
 	bool LoadMotionFile(const std::string& filename);
+	/**
+	 * @brief いま再生中の技が「地面を離れる技」か。
+	 *
+	 * 接地の計算で使う。地面を離れる技の間だけ、足を地面へ着けにいくのをやめる。
+	 * 腰が上がったかどうかで自動判定しようとしたが、**膝を伸ばしただけでも腰は上がる**ので
+	 * 区別できなかった(弱2・弱3で0.8〜0.9単位浮いた)。技ごとに決めるのが確実である。
+	 */
+	bool AttackLeavesGround() const { return m_attackLeavesGround; }
 	void PlayAttackMotion();
 	void PlayAttackMotion(int comboStep);
 	void PlayHeavyAttackMotion();
@@ -176,6 +186,10 @@ private:
 	std::string m_rightKnee;
 	std::string m_leftFoot;
 	std::string m_rightFoot;
+	// つま先。足首まででつないでも、つま先の骨が残ると**そこだけ1フレーム跳ぶ**。
+	// 攻撃クリップはつま先を動かすが、移動・待機側で扱っていないと休止姿勢へ戻るためである。
+	std::string m_leftToe;
+	std::string m_rightToe;
 
 	std::vector<std::string> m_boneNames;
 	// 読み込んだ攻撃クリップは見せたい上半身のチェーンだけを動かす。
@@ -201,6 +215,42 @@ private:
 	float m_hitStopSeconds = 0.0f;
 	float m_attackBlendTime = 1.0f;
 	float m_attackBlendDuration = 0.08f;
+	// **脚だけは長くつなぐ**。
+	// 腕は速く動いてほしい(攻撃の出だしが鈍ると操作が重く感じる)が、脚を同じ速さでつなぐと
+	// クリップごとに違う足の位置へ一瞬で移ってしまい、人の歩き方にならない。
+	// 足を踏みかえるには人間でも0.2秒ほどかかる。
+	// 長さは固定ではなく、**足が実際にどれだけ動くか**で決める(攻撃に入る最初のフレームで測る)。
+	// 技のつなぎによって足の位置の差は大きく違い、
+	// 近いのに長くつなぐと足が止まって見え、遠いのに短いと足が飛んで見える。
+	float m_attackLegBlendDuration = 0.24f;
+	bool m_attackLegBlendPending = false;
+	// 地面を離れる技か(いまはダッシュ攻撃だけ)。
+	bool m_attackLeavesGround = false;
+	// 技の間、脚をどこから取るか。**技の初めに決めて、終わるまで変えない**。
+	// 毎フレーム見直すと、踏み込みで体が動いた拍子に脚の出どころが入れ替わり、
+	// その1フレームだけ足が別の場所へ飛ぶ。
+	bool m_attackLowerBodyFromLocomotion = false;
+	bool m_attackLowerBodyPending = false;
+	/**
+	 * @brief 脚の「ずらし」(モーションワープ)。骨ごとの、自分のローカル空間で足す回転。
+	 *
+	 * 2つの姿勢を混ぜるやり方だと、つないでいる間はクリップの動きそのものが鈍る
+	 * (混ぜる相手が止まっているため)。踏み込みの勢いが出ない。
+	 * そこで**クリップは最初から全開で再生**し、
+	 * 「始めた瞬間の足の位置のズレ」だけを足して、時間をかけて0へ戻す。
+	 * 足はクリップの勢いのまま動き、しかも前の姿勢から連続する。
+	 *
+	 * 作り方: 直前の姿勢をF、クリップの最初の姿勢をL0とすると、ずらしは C = F * L0⁻¹。
+	 * 行ベクトル規約なので「C × クリップのローカル行列」の順に掛けると骨の根元を中心に回る。
+	 * 休止姿勢の平行移動は両方に共通なので、Cは**回転だけ**になり、骨が外れることはない。
+	 */
+	std::unordered_map<std::string, Matrix4x4> m_attackLegWarp;
+	std::unordered_map<std::string, Matrix4x4> m_locomotionLegWarp;
+	bool m_locomotionLegWarpPending = false;
+	// 攻撃クリップの腰の高さを、技を始めた瞬間の高さへそろえるためのずらし量。
+	// クリップの中での腰の上下動(踏み切り・沈み込み)はそのまま残す。
+	float m_attackHipsHeightOffset = 0.0f;
+	bool m_attackHipsOffsetPending = false;
 	float m_lastAttackTorsoYaw = 0.0f;
 	float m_lastAttackTorsoPitch = 0.0f;
 	std::unordered_map<std::string, Matrix4x4> m_lastRenderedPose;
@@ -210,7 +260,9 @@ private:
 	// 攻撃終了後も、最後の攻撃姿勢から待機/移動姿勢へ段差なく戻す。
 	std::unordered_map<std::string, Matrix4x4> m_locomotionBlendFromPose;
 	float m_locomotionBlendTime = 1.0f;
-	float m_locomotionBlendDuration = 0.10f;
+	// 攻撃・前転から移動/待機へ戻す時間。脚は上半身より大きく動くので、短すぎると足が一瞬で入れ替わる。
+	float m_locomotionBlendDuration = 0.18f;
+	float m_locomotionLegBlendDuration = 0.30f;
 	bool m_locomotionBlendActive = false;
 	bool m_useCustomMotion = false;
 	bool m_motionPlaying = false;
@@ -256,6 +308,11 @@ private:
 		// 1周期で腰が進む距離(ゲーム内の単位)。再生速度を移動速度へ合わせるのに使う。
 		float cycleDistance = 0.0f;
 		float cycleSeconds = 1.0f;
+		// 前向き歩きを基準にした足運びの位相のずれ(0〜1)。
+		// クリップはそれぞれ違うタイミングで足を上げるので、同じ正規化時間で混ぜると
+		// 「片方は左足を上げ、もう片方は左足を着いている」姿勢が混ざって足が入れ替わる。
+		// 読み込み時に測って、サンプルする位相をクリップごとにずらす。
+		float phaseOffset = 0.0f;
 	};
 	// [方向(前,右,後,左) x 2 + 歩調(歩き=0,走り=1)]
 	std::array<BlendSpaceClip, 8> m_blendSpaceClips{};
@@ -276,6 +333,31 @@ private:
 	// 入力の速度をそのまま使うと、キーを押した瞬間に重みが跳ぶので、なめらかに追従させる。
 	float m_smoothedVelocityRight = 0.0f;
 	float m_smoothedVelocityForward = 0.0f;
+	// 歩きクリップで両足が最も揃う位相。止まるときはここへ足を収める。
+	// これを使わずに位相を止めた場所で固めると、脚を開いた姿勢のまま立ち姿へ混ざり、
+	// 足の位置が最大79単位(脚の長さは約84)一気に動いていた。
+	float m_locomotionStopPhase = 0.0f;
+	bool m_footPhaseMeasured = false;
+	// クリップごとの足運びの位相を測り、止まる姿勢を作る。
+	void MeasureLocomotionFootPhases(CAnimationMesh& mesh);
+	// 今の脚の姿勢に最も近い位相へ合わせ直す。攻撃や前転から移動へ戻るときに使う。
+	void ResyncLocomotionPhase(
+		CAnimationMesh& mesh,
+		const std::unordered_map<std::string, Matrix4x4>& pose);
+	/**
+	 * @brief 脚のつなぎに何秒かけるかを、**足が実際に動く距離**から決める。
+	 *
+	 * 近い姿勢へ長くかけると足が止まって見え、遠い姿勢へ短くかけると足が飛んで見える。
+	 * 距離は脚の長さに対する割合で見るので、モデルを差し替えても同じ判断になる。
+	 */
+	float LegBlendDurationFor(
+		CAnimationMesh& mesh,
+		const std::unordered_map<std::string, Matrix4x4>& fromPose,
+		const std::unordered_map<std::string, Matrix4x4>& toPose) const;
+	// 攻撃・前転から戻るときの、戻り先の脚の姿勢(移動中ならクリップ、止まっていれば休止姿勢)。
+	std::unordered_map<std::string, Matrix4x4> LocomotionLegTargetPose(
+		CAnimationMesh& mesh,
+		const CharacterAnimationState& state);
 	const BlendSpaceClip& BlendSpaceClipOf(Anim::LocomotionDirection direction, Anim::LocomotionGait gait) const;
 	bool UpdateLocomotionBlendSpace(
 		CAnimationMesh& mesh,
@@ -283,5 +365,30 @@ private:
 		const CharacterAnimationState& state,
 		float deltaSeconds,
 		const std::unordered_map<std::string, Matrix4x4>* blendFromPose,
-		float blendRate);
+		float blendRate,
+		// 脚だけに使う補間の進み具合(上半身より遅く戻す)。
+		float legBlendRate);
+	// 骨が脚かどうか(LowerBodyBonesに入っているか)。
+	bool IsLowerBodyBone(const std::string& boneName) const;
+	/**
+	 * @brief ずらし(ワープ)の対象にする骨。脚**と腰**。
+	 *
+	 * 腰を外すと、技の腰の位置から立ち姿の腰の位置へ一瞬で移る。
+	 * 腰は脚の親なので、膝もくるぶしもつま先も**まとめて同じ量だけ平行移動**し、
+	 * 脚全体がその場で飛んで見える(実測: 技の最後の1フレームで膝・足首・つま先が
+	 * そろって0.27モデル単位ずれていた)。
+	 */
+	const std::vector<std::string>& WarpBones() const;
+	mutable std::vector<std::string> m_warpBonesCache;
+	// 「直前の姿勢」と「クリップの最初の姿勢」から、脚のずらしを作る。
+	static void BuildLegWarp(
+		const std::unordered_map<std::string, Matrix4x4>& fromPose,
+		const std::unordered_map<std::string, Matrix4x4>& clipPose,
+		const std::vector<std::string>& legBones,
+		std::unordered_map<std::string, Matrix4x4>& outWarp);
+	// ずらしを、残り具合(1で全部・0で無し)だけ効かせる。
+	static void ApplyLegWarp(
+		const std::unordered_map<std::string, Matrix4x4>& warp,
+		float amount,
+		std::unordered_map<std::string, Matrix4x4>& pose);
 };
