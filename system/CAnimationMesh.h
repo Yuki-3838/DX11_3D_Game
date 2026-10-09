@@ -1,6 +1,7 @@
 #pragma once
 
 #include "transform.h"
+#include	"WeaponFit.h"
 #include "CStaticMesh.h"
 #include "AssimpPerse.h"
 #include "CAnimationData.h"
@@ -75,7 +76,16 @@ protected:
 	bool m_swordEnabled = true;
 	bool m_swordUseGuaranteedProxy = true;
 	std::vector<uint32_t> m_embeddedSwordVertexIndices{};
+	// 手本にする握り方(剣ボーンのローカル空間)。埋め込みの剣から測る。
+	WeaponFit::Result m_handWeaponFit{};
+	// いま持ち替えている武器の形(その武器のモデル空間)。
+	WeaponFit::Result m_equippedWeaponFit{};
+	bool m_greatSwordEquipped = false;
+	bool m_greatSwordLoaded = false;
 
+	// 埋め込みの剣から、手の握り方(握りの位置と刃の向き)を測る。
+	// 別の武器を自動で持たせるための「手本」になる。
+	void MeasureEmbeddedSword();
 	void LoadSwordAttachmentPreset();
 
 	// 1本のクリップを、指定したボーンだけへ適用する。
@@ -308,6 +318,19 @@ public:
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
+
+	// --- 武器の持ち替え(大剣) ---
+	// 埋め込みの片手剣を隠し、別のモデルを手本の握り方へ自動で合わせて持たせる。
+	// 手本は埋め込みの剣(MeasureEmbeddedSword)。武器ごとに角度と位置を手で測り直さなくてよい。
+	// 大剣用のモデルがまだ無いので、いまは assets/model/Sword.fbx を大剣の長さで使う。
+	// 本物の大剣モデルが用意できたら、読み込むファイルを差し替えるだけで持てる。
+	bool EquipGreatSword(bool equip);
+	// 持ち替え中に埋め込みの片手剣を隠す。UpdateSwordWorldTransform()の後に毎フレーム呼ぶ。
+	void ApplyEquippedWeaponVisibility(BoneCombMatrix& bonecombarray);
+	bool IsGreatSwordEquipped() const { return m_greatSwordEquipped; }
+	// 測定結果(デバッグ表示用)。手本の握り方と、いま持っている武器の形。
+	const WeaponFit::Result& GetHandWeaponFit() const { return m_handWeaponFit; }
+	const WeaponFit::Result& GetEquippedWeaponFit() const { return m_equippedWeaponFit; }
 	void Draw();
 	bool IsSwordLoaded() const { return m_swordMesh != nullptr || m_swordEmbeddedInPlayerAsset; }
 	bool GetSwordWorldSweep(Vector3& base, Vector3& tip, Vector3& previousTip) const

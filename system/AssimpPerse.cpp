@@ -333,10 +333,28 @@ namespace myAssimp{
 				else
 				{
 					auto texture = std::make_unique<CTexture>();
-					std::string texname = texturedirectory + std::string(1, static_cast<char>(47)) + texpath;
+					// モデルに書かれているテクスチャの場所は、作った人の環境の絶対パス
+					// (例 "C:\BlenderProjects\FantasySword.jpg")になっていることがある。
+					// そのまま繋ぐと存在しない場所を読みにいって失敗し、武器が真っ黒になる。
+					// ファイル名だけを取り出して、指定のテクスチャ置き場から探す。
+					std::string texfile = texpath;
+					const size_t separator = texfile.find_last_of("/\\");
+					if (separator != std::string::npos)
+						texfile = texfile.substr(separator + 1);
+					std::string texname =
+						texturedirectory + std::string(1, static_cast<char>(47)) + texfile;
 					if (texture->Load(texname))
 					{
 						g_diffuseTextures[m] = std::move(texture);
+					}
+					else if (texfile != texpath)
+					{
+						// ファイル名だけでも見つからなければ、元のパスでも試す
+						// (モデルと同じ場所へ相対パスで置いてある場合)。
+						std::string original =
+							texturedirectory + std::string(1, static_cast<char>(47)) + texpath;
+						if (texture->Load(original))
+							g_diffuseTextures[m] = std::move(texture);
 					}
 				}
 			}

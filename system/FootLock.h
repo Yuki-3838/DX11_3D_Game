@@ -40,11 +40,14 @@ struct Settings
 	// ロック位置からこれだけ離れたら、無理に引っ張らずに解除する。
 	// 脚の長さ(股からつま先まで約11)を超える目標は届かず、届かないまま固定し続けると
 	// 脚が伸びきったまま結局滑る。届く範囲で解除する。
-	float unlockDistance = 9.0f;
+	float unlockDistance = 2.0f;
 	// 接地と見なす高さ(足元からの高さ)。
 	float groundContactHeight = 4.0f;
 	// 解除したときに、ずれを戻すのにかける時間(秒)。
 	float releaseBlendSeconds = 0.15f;
+	// 固定を掛けるときに、効かせきるまでの時間(秒)。
+	// 0にすると、固定が掛かった瞬間に足が目標へ飛ぶ(実測で1フレームに0.15モデル単位動いた)。
+	float engageBlendSeconds = 0.12f;
 	// 地面の高さ(ワールドY)。
 	float groundY = -0.3f;
 };
@@ -59,6 +62,8 @@ struct FootState
 	float releaseTime = 0.0f;
 	Vector3 previousAnimatedPosition{ 0.0f, 0.0f, 0.0f };
 	bool hasPreviousPosition = false;
+	// 固定を掛けてからの時間。0からengageBlendSecondsまでかけて効かせる。
+	float engageTime = 0.0f;
 	// 直近の速さ(デバッグ表示用)。
 	float speed = 0.0f;
 
@@ -67,6 +72,7 @@ struct FootState
 		locked = false;
 		releaseOffset = Vector3(0.0f, 0.0f, 0.0f);
 		releaseTime = 0.0f;
+		engageTime = 0.0f;
 		hasPreviousPosition = false;
 		speed = 0.0f;
 	}
@@ -94,34 +100,59 @@ inline Vector3 Update(
 		return animatedWorldToe;
 	}
 
-	state.speed = (animatedWorldToe - state.previousAnimatedPosition).Length() / deltaSeconds;
+	// **水平の動きだけ**を見る。高さは接地の計算(体の一番低い点を地面に合わせる)が持っている。
+	//
+	// 以前は高さも固定していた。そのため、足が宙にある間に速さが下がると
+	// **その高さのまま固定され、立ち止まっても足が浮いたまま**になっていた
+	// (歩きをやめた後、1.8単位浮いたまま固まるのを実測)。
+	// 足の滑りを消すのに必要なのは水平方向だけなので、高さはモーションに任せる。
+	const Vector3 horizontalMove(
+		animatedWorldToe.x - state.previousAnimatedPosition.x,
+		0.0f,
+		animatedWorldToe.z - state.previousAnimatedPosition.z);
+	state.speed = horizontalMove.Length() / deltaSeconds;
 	state.previousAnimatedPosition = animatedWorldToe;
+
+	// 目標は「水平は固定した位置・高さはモーションのまま」。
+	const auto targetFrom = [&animatedWorldToe](const Vector3& locked)
+	{
+		return Vector3(locked.x, animatedWorldToe.y, locked.z);
+	};
 
 	if (state.locked)
 	{
-		const float distance = (animatedWorldToe - state.lockedPosition).Length();
+		const Vector3 offset(
+			animatedWorldToe.x - state.lockedPosition.x,
+			0.0f,
+			animatedWorldToe.z - state.lockedPosition.z);
+		const float distance = offset.Length();
 		if (state.speed > settings.unlockSpeed || distance > settings.unlockDistance)
 		{
 			// 解除。今のずれを覚えておき、少しずつ0へ戻す(急に戻すと足が跳ねる)。
 			state.locked = false;
-			state.releaseOffset = state.lockedPosition - animatedWorldToe;
+			state.releaseOffset = targetFrom(state.lockedPosition) - animatedWorldToe;
 			state.releaseTime = 0.0f;
 		}
 		else
 		{
-			return state.lockedPosition;
+			// 掛かりはじめは、モーションどおりの位置から固定位置へ少しずつ寄せる。
+			// いきなり固定位置へ飛ばすと、毎歩そこで足が跳ねて見える。
+			state.engageTime += deltaSeconds;
+			const float linear = std::clamp(
+				state.engageTime / std::max(settings.engageBlendSeconds, 0.001f), 0.0f, 1.0f);
+			const float weight = linear * linear * (3.0f - 2.0f * linear);
+			const Vector3 target = targetFrom(state.lockedPosition);
+			return animatedWorldToe + (target - animatedWorldToe) * weight;
 		}
 	}
 	else if (state.speed < settings.lockSpeed &&
 		animatedWorldToe.y <= settings.groundY + settings.groundContactHeight)
 	{
 		state.locked = true;
-		state.lockedPosition = Vector3(
-			animatedWorldToe.x,
-			std::max(animatedWorldToe.y, settings.groundY),
-			animatedWorldToe.z);
+		state.lockedPosition = animatedWorldToe;
 		state.releaseOffset = Vector3(0.0f, 0.0f, 0.0f);
-		return state.lockedPosition;
+		state.engageTime = 0.0f;
+		return animatedWorldToe;
 	}
 
 	// 解除直後のずれを、なめらかに0へ戻す。

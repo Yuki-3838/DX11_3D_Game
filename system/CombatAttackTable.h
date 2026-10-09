@@ -37,6 +37,23 @@ inline constexpr float ENEMY_MAX_HP = 2000.0f;
 inline constexpr int PLAYER_WEAK_DAMAGE = 25;
 inline constexpr int PLAYER_HEAVY_DAMAGE = 40;
 
+// --- 大剣 ---
+// 専用のモーションがまだ無いので、片手剣と同じクリップを**遅く再生**して重さを出す。
+// 遅くすると予兆・判定・硬直がまとめて伸びる(時間はクリップの秒 ÷ 再生速度で決まるため)。
+// 「大きく踏み込んで一撃が重いが、振り始めたら止まれない」武器にする。
+//
+// 射程はここに書かない。大剣の当たり判定はモデルの刃(握り→切っ先)から作られるので、
+// 長い武器へ差し替えれば自動的に長くなる(system/WeaponFit.h)。
+inline constexpr float GREAT_SWORD_PLAYBACK_SCALE = 0.68f; // 再生速度の倍率(小さいほど遅い)
+inline constexpr float GREAT_SWORD_COMBO_LINK_SCALE = 1.5f; // 次の段へ移るまでの間
+// 振りかぶりを長くする量(クリップの秒)。再生を遅くするだけでは溜めが足りず、
+// 振り上げの途中から始まって軽く見えるため、再生を始める位置を手前へ戻す。
+inline constexpr float GREAT_SWORD_WINDUP_EXTRA = 0.18f;
+inline constexpr float GREAT_SWORD_DAMAGE_SCALE = 1.9f;
+inline constexpr float GREAT_SWORD_POSTURE_SCALE = 2.1f;
+// 構えが重いので歩きも遅くなる(モンスターハンターの大剣と同じ考え方)。
+inline constexpr float GREAT_SWORD_MOVE_SCALE = 0.80f;
+
 /**
  * @brief 敵の攻撃クリップ(dragon_attack.dae)のどこで判定を出すか。
  *
@@ -327,8 +344,21 @@ struct PlayerComboStep
     float TotalSeconds() const { return (clipEnd - clipStart) / playbackRate; }
 };
 
+/**
+ * @brief プレイヤーの武器。
+ *
+ * 攻撃の時間(予兆・判定・硬直)も威力も、この種類ごとに1つの表から引く。
+ * アニメーターと戦闘判定が同じ表を見るので、見た目の振りと当たる瞬間がずれない。
+ */
+enum class WeaponKind
+{
+    OneHanded,  ///< 片手剣。標準。
+    GreatSword, ///< 大剣。遅いが一撃が重い。
+};
+
 /** コンボの段(1〜3)の設定を引く。 */
-inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
+inline const PlayerComboStep& PlayerComboStepOf(
+    bool heavy, int comboStep, WeaponKind weapon = WeaponKind::OneHanded)
 {
     // 右腕の振りの計測値(クリップの秒): slash(5) 0.49-0.64 / slash 0.55-0.64 / slash(3) 0.74-0.86 /
     // attack 1.05-1.28 / attack(4) 0.17-0.55 / attack(3) 0.68-0.81 / slash(4) 1.28-1.40
@@ -358,6 +388,33 @@ inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
         { "assets/motion/sword and shield slash (4).fbx",  0.84f, 1.22f, 1.50f, 2.30f, 1.25f, 0.10f },
     };
     const int index = std::clamp(comboStep, 1, 3) - 1;
+    if (weapon == WeaponKind::GreatSword)
+    {
+        // 大剣は同じクリップを遅く再生して重さを出す。
+        // 表そのものを別に持たず、片手剣の値から作る。
+        // クリップを差し替えたときに片方だけ直し忘れる、ということが起きないようにするためである。
+        static PlayerComboStep greatWeak[3];
+        static PlayerComboStep greatHeavy[3];
+        static const bool built = []
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                greatWeak[i] = PlayerComboStepOf(false, i + 1);
+                greatWeak[i].playbackRate *= Tuning::GREAT_SWORD_PLAYBACK_SCALE;
+                greatWeak[i].comboLinkSeconds *= Tuning::GREAT_SWORD_COMBO_LINK_SCALE;
+                greatWeak[i].clipStart = std::max(
+                    0.0f, greatWeak[i].clipStart - Tuning::GREAT_SWORD_WINDUP_EXTRA);
+                greatHeavy[i] = PlayerComboStepOf(true, i + 1);
+                greatHeavy[i].playbackRate *= Tuning::GREAT_SWORD_PLAYBACK_SCALE;
+                greatHeavy[i].comboLinkSeconds *= Tuning::GREAT_SWORD_COMBO_LINK_SCALE;
+                greatHeavy[i].clipStart = std::max(
+                    0.0f, greatHeavy[i].clipStart - Tuning::GREAT_SWORD_WINDUP_EXTRA);
+            }
+            return true;
+        }();
+        (void)built;
+        return heavy ? greatHeavy[index] : greatWeak[index];
+    }
     return heavy ? heavyTable[index] : weak[index];
 }
 
@@ -376,6 +433,28 @@ inline const PlayerComboStep& PlayerDashAttackStep()
     static const PlayerComboStep step =
         { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f };
     return step;
+}
+
+/**
+ * @brief 武器ごとの威力の倍率。
+ *
+ * 大剣は一撃が重い代わりに、遅くて振り始めたら止まれない。
+ */
+inline float PlayerDamageScaleOf(WeaponKind weapon)
+{
+    return weapon == WeaponKind::GreatSword ? Tuning::GREAT_SWORD_DAMAGE_SCALE : 1.0f;
+}
+
+/** 武器ごとの怯み値の倍率。大剣は一撃で大きく怯ませる。 */
+inline float PlayerPostureScaleOf(WeaponKind weapon)
+{
+    return weapon == WeaponKind::GreatSword ? Tuning::GREAT_SWORD_POSTURE_SCALE : 1.0f;
+}
+
+/** 武器ごとの移動の速さの倍率。大剣は構えが重く、歩きも遅い。 */
+inline float PlayerMoveScaleOf(WeaponKind weapon)
+{
+    return weapon == WeaponKind::GreatSword ? Tuning::GREAT_SWORD_MOVE_SCALE : 1.0f;
 }
 
 /** プレイヤーの通常攻撃1段分。 */

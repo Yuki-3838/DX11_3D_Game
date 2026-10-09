@@ -454,7 +454,8 @@ void OneVsOneCombat::AdvancePlayerAttack(
 		// アニメーター側も同じ表を見るので、見た目の振りと判定がずれない。
 		const Combat::PlayerComboStep& comboStepData = IsPlayerDashAttack()
 			? Combat::PlayerDashAttackStep()
-			: Combat::PlayerComboStepOf(m_playerAttack.kind == AttackKind::Heavy, m_playerAttack.comboStep);
+			: Combat::PlayerComboStepOf(
+				m_playerAttack.kind == AttackKind::Heavy, m_playerAttack.comboStep, m_playerWeapon);
 		const float playerWindup = comboStepData.WindupSeconds();
 		const float playerActive = comboStepData.ActiveSeconds();
 		const float playerRecovery = comboStepData.RecoverySeconds();
@@ -474,7 +475,10 @@ void OneVsOneCombat::AdvancePlayerAttack(
 				m_playerHitLanded = true;
 				if (!m_enemyDebugInvincible)
 				{
-					const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
+					// 武器で威力が変わる(大剣は一撃が重い)。
+					const float damage =
+						(m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE) *
+						Combat::PlayerDamageScaleOf(m_playerWeapon);
 					m_enemyHp = std::max(0.0f, m_enemyHp - damage);
 				}
 				m_playerAttack.hit = true;

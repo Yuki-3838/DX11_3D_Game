@@ -49,6 +49,8 @@ public:
 	const char* getMotionStateName() const;
 	float getMotionTime() const;
 	bool isDodging() const;
+	// 移動の速さの倍率。重い武器(大剣)を持つと遅くなる。
+	void setMoveSpeedScale(float scale) { m_moveSpeedScale = scale > 0.05f ? scale : 0.05f; }
 	bool isInvincible() const;
 	int getDodgeFrame() const;
 	// 前転の進み具合(0〜1)。回避していないときは0。
@@ -92,6 +94,7 @@ private:
 	Vector3 m_dodgeDirection{0, 0, 0};
 	Vector3 m_pendingRootMotion{0, 0, 0};
 	bool m_lockOnEnabled = false;
+	float m_moveSpeedScale = 1.0f;
 	Vector3 m_lockOnTargetPosition{0, 0, 0};
 	bool m_isKnockedBack = false;
 	float m_knockbackTime = 0.0f;

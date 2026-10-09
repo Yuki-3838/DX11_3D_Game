@@ -49,6 +49,10 @@ public:
 	// 判定の長さ(半回転と一拍の合計)も、いつ止まっているかも、ここから同じ計算で求める。
 	// 別々に持つと「見た目は止まっているのに当たる」といったずれが生まれる。
 	void SetEnemySpinHalfTurns(int halfTurns) { m_enemySpinHalfTurns = halfTurns; }
+	// プレイヤーが持っている武器。攻撃の時間も威力もここから決まる。
+	// アニメーター側にも同じ種類を渡すこと(同じ表を見て、見た目と判定を合わせている)。
+	void SetPlayerWeapon(Combat::WeaponKind weapon) { m_playerWeapon = weapon; }
+	Combat::WeaponKind GetPlayerWeapon() const { return m_playerWeapon; }
 	// プレイヤーが走っているか。走りながら弱攻撃を押すとダッシュ攻撃になる(Update前に設定する)。
 	void SetPlayerSprinting(bool sprinting) { m_playerSprinting = sprinting; }
 	bool IsPlayerDashAttack() const { return m_playerAttack.dash && m_playerAttack.comboStep == 1; }
@@ -175,6 +179,7 @@ private:
     float m_enemyFacingYaw = 0.0f;
     int m_enemySpinHalfTurns = 1;
     bool m_playerSprinting = false;
+    Combat::WeaponKind m_playerWeapon = Combat::WeaponKind::OneHanded;
     AttackState m_playerAttack{};
     AttackState m_enemyAttack{};
 	CollisionDebugState m_collisionDebug{};

@@ -892,6 +892,16 @@ void GameScene::update(uint64_t deltatime)
 	// 持ったまま攻撃モーションだけが始まる状態になる。
 	// 吹き飛ばされている間も攻撃を受け付けない。飛ばされながら剣を振れると、
 	// 被弾が「読み違えた代償」にならない。
+	// 持っている武器を、アニメーターと戦闘判定の**両方**へ渡す。
+	// 攻撃の時間(予兆・判定・硬直)も威力も武器ごとの表から決まるので、
+	// 片方だけに渡すと見えている振りと当たる瞬間がずれる。
+	const Combat::WeaponKind playerWeapon =
+		(m_playerAnimationMesh && m_playerAnimationMesh->IsGreatSwordEquipped())
+			? Combat::WeaponKind::GreatSword
+			: Combat::WeaponKind::OneHanded;
+	m_playerAnimator.SetWeapon(playerWeapon);
+	m_combat.SetPlayerWeapon(playerWeapon);
+	m_player->setMoveSpeedScale(Combat::PlayerMoveScaleOf(playerWeapon));
 	const bool playerKnockedBack = m_player->isKnockedBack();
 	// 走っている最中に弱攻撃を押すとダッシュ攻撃(突進斬り)になる。
 	// 判定は前フレームの移動状態で行い、戦闘側とアニメーション側で同じ値を使う。
@@ -904,7 +914,8 @@ void GameScene::update(uint64_t deltatime)
 	{
 		if (heavyAttackInput)
 			m_playerAnimator.PlayHeavyAttackMotion(1);
-		else if (playerWasRunning)
+		// 大剣は走りからの踏み込み斬りを出さない。重い武器で軽快に突っ込むのは形が合わないため。
+		else if (playerWasRunning && playerWeapon != Combat::WeaponKind::GreatSword)
 			m_playerAnimator.PlayDashAttackMotion();
 		else
 			m_playerAnimator.PlayAttackMotion(1);
@@ -1039,27 +1050,123 @@ void GameScene::update(uint64_t deltatime)
 				velocityForward
 			});
 
-		// 前転中の接地。前転のモーションは腰を中心に体を一回転させるので、立ったときの高さのままだと
-		// 腰の高さで宙返りしているように見え、影からも離れる(実機キャプチャで確認)。
-		// 変形後の体の一番低い点を地面に合わせ、転がる体が地面に着くようにする。
-		// 前転の最初と最後は立ち姿勢なので、段差が出ないよう途中だけ効かせる(sinで0→1→0)。
-		// 体のすべての頂点をCPUで変形するので、回避中だけ計算する。
-		if (m_player->isDodging())
-		{
-			const float progress = m_player->getDodgeProgress();
-			const float weight = std::sin(progress * PI);
-			const float groundedOffset = m_playerGroundY -
-				m_playerAnimationMesh->GetAnimatedLocalMinY() * m_player->getSRT().scale.y;
-			m_player->setVisualGroundOffsetY(
-				m_playerStandingGroundOffsetY +
-				(groundedOffset - m_playerStandingGroundOffsetY) * weight);		}
-		else
-		{
-			m_player->setVisualGroundOffsetY(m_playerStandingGroundOffsetY);
-		}
 
 		// 接地している足のつま先をワールドへ固定し、脚をIKで合わせる(足の滑りを消す)。
 		UpdateFootLock(deltaSeconds);
+
+		// 接地。変形後の体の一番低い点を毎フレーム測り、それを地面の高さに合わせる。
+		//
+		// **足のIKより後で行うこと**。先に行うと、IKが脚を動かした分だけ高さがずれる
+		// (実測で待機中に平均1.37単位ずれた)。IKが使う高さは1フレーム前の値になるが、
+		// 高さはIKの目標に入れていない(水平だけを固定している)ので問題にならない。
+		//
+		// 以前は骨の初期姿勢(棒立ち)の高さで固定し、前転のときだけ測っていた。
+		// しかしクリップの脚は初期姿勢と同じ高さにあるとは限らない。実測すると、
+		//   歩き中: 体が0.3〜2.0単位浮く(歩きクリップは腰が沈む前提で作られている)
+		//   攻撃中: 最大4.6単位浮く
+		// さらに悪いことに、歩きをやめた瞬間に足の固定(FootLock)がその浮いた高さで掛かり、
+		// **宙に立ったまま固まっていた**(止まった後ずっと1.96単位浮いたまま。実測)。
+		// 「待機で浮く」「歩きがかくつく」「攻撃の足元が滑らかでない」はすべてこれが原因。
+		//
+		// 足元の高さは**足の骨から**求める。
+		// 体のすべての頂点の最下点を使うと、剣を振り下ろしたときに**剣の先**が最下点になり、
+		// 剣を地面に着けるために体が持ち上がって、足のほうが浮いてしまう
+		// (このモデルは剣がメッシュに入っている)。
+		// 最初のフレームで「頂点の最下点」と「足の骨」の差(靴底までの距離)を測り、以後はそれを足す。
+		// 頂点をCPUで変形しなくて済むので軽くもなる。
+		//
+		// 前転だけは体を丸めて背中から接地するので、従来どおり頂点の最下点を使う。
+		float lowestFootY = 0.0f;
+		bool haveFootBones = false;
+		{
+			const std::string* footBones[] = {
+				&m_leftLegChain.foot, &m_leftLegChain.toe,
+				&m_rightLegChain.foot, &m_rightLegChain.toe };
+			for (const std::string* bone : footBones)
+			{
+				Vector3 position{};
+				if (bone->empty() ||
+					!m_playerAnimationMesh->GetBoneModelPosition(*bone, position))
+					continue;
+				if (!haveFootBones || position.y < lowestFootY)
+					lowestFootY = position.y;
+				haveFootBones = true;
+			}
+		}
+		if (haveFootBones && !m_playerSoleOffsetReady)
+		{
+			m_playerSoleOffsetY = m_playerAnimationMesh->GetAnimatedLocalMinY() - lowestFootY;
+			m_playerSoleOffsetReady = true;
+		}
+		const bool useFootBones =
+			haveFootBones && m_playerSoleOffsetReady && !m_player->isDodging();
+		const float lowestLocalY = useFootBones
+			? lowestFootY + m_playerSoleOffsetY
+			: m_playerAnimationMesh->GetAnimatedLocalMinY();
+		const float groundedOffset =
+			m_playerGroundY - lowestLocalY * m_player->getSRT().scale.y;
+		if (!m_playerGroundOffsetReady)
+		{
+			m_playerGroundOffsetY = groundedOffset;
+			m_playerGroundOffsetReady = true;
+		}
+		// 技の間は、**クリップが本当に体を持ち上げた分だけ**浮かせる。
+		//
+		// 経緯:
+		//  1. 「一番低い足を地面へ」をそのまま技にも当てたら、ダッシュ攻撃で脚を抱えた分だけ
+		//     体が引き下ろされ、膝が地面についたまま飛んでいた(ユーザー指摘)。
+		//  2. そこで技の間は「体を下げない」ことにしたら、今度は弱1・弱3・強攻撃が浮いた
+		//     (これらのクリップは跳んでおらず、足が初期姿勢より高いだけだった)。
+		//  3. 腰が上がったかで自動判定しようとしたが、**膝を伸ばしただけでも腰は上がる**ので
+		//     区別できなかった(弱2・弱3が0.8〜0.9単位浮いた)。
+		//  4. いまは**技ごとに「地面を離れる技か」を決めている**(いまはダッシュ攻撃だけ)。
+		//     離れる技の間だけ体を下げない。ほかの技は足を地面に着ける。
+		const bool clipDecidesHeight =
+			m_combat.IsPlayerAttacking() || m_playerAnimator.IsMotionPlaying() ||
+			m_player->isKnockedBack();
+		const bool leavingGround =
+			clipDecidesHeight && m_playerAnimator.AttackLeavesGround();
+		const float targetGroundOffset = leavingGround
+			? std::max(groundedOffset, m_playerStandingGroundOffsetY)
+			: groundedOffset;
+		// **体の高さは「踏んでいる足」が決める。一番低い足ではない。**
+		//
+		// 毎フレーム「一番低い足」を地面へ合わせていたが、それは走りで破綻する。
+		// 走りには両足とも地面を離れる瞬間(跳んでいる間)があり、そこで一番低い足を
+		// 地面へ下ろそうとして体が沈む。実測すると走りで体が**2.34単位**(身長の13%)上下しており、
+		// これが「走りががくがく」の正体だった(歩きは0.87単位で、人の歩きとほぼ同じ)。
+		//
+		// 足が地面へめり込むのはすぐ直し(持ち上げは即座)、
+		// 足が地面から離れているぶんはゆっくり追う(跳んでいる間は体を下げない)。
+		// こうすると体の高さは踏んでいる足の高さに落ち着き、跳ぶ動きはそのまま残る。
+		const float difference = targetGroundOffset - m_playerGroundOffsetY;
+		if (difference > 0.0f)
+		{
+			// 持ち上げ: めり込みを直す。飛ばないように速さだけ制限する。
+			m_playerGroundOffsetY += std::min(difference, 240.0f * deltaSeconds);
+		}
+		else
+		{
+			// 下げる速さは場面で変える。
+			//
+			// **ゆっくり下げるのは走っているときだけ**(4/秒)。
+			// 走りには両足とも地面を離れる瞬間があり、そこで素早く下げると体が沈んで見える。
+			//
+			// それ以外は素早く(60/秒)。
+			// ・技の間: クリップが足を体へ引き上げるので、ゆっくりだと追いつけず
+			//   技の間ずっと浮いたままになる(実測: 弱1で平均1.52単位浮いていた)。
+			// ・技が終わった直後: 脚は前の技の姿勢から戻っている途中で、足がまだ高い。
+			//   ここでゆっくり下げると**技のあとしばらく浮いたまま**になる
+			//   (ユーザー指摘「強攻撃三段目終わった後、浮いてしまう」)。
+			// 立ち止まっているときは両足が地面を離れることはないので、素早く下げてよい。
+			const bool movingNow =
+				m_player->getMotionState() == player::MotionState::Run ||
+				m_player->getMotionState() == player::MotionState::Walk;
+			const float lowerPerSecond = (movingNow && !clipDecidesHeight) ? 4.0f : 60.0f;
+			m_playerGroundOffsetY +=
+				difference * (1.0f - std::exp(-deltaSeconds * lowerPerSecond));
+		}
+		m_player->setVisualGroundOffsetY(m_playerGroundOffsetY);
 
 		// 攻撃の踏み込み。アニメーターが溜めた「キャラクターから見た移動量」を
 		// ワールドの向きへ直し、次の更新でプレイヤーの位置へ足す(壁の衝突補正を通る)。
@@ -1148,6 +1255,9 @@ void GameScene::update(uint64_t deltatime)
 		// 描画と攻撃判定が同じワールド行列を使うようにする。
 		const Matrix4x4 playerWorld = m_player->getRenderSRT().GetMatrix();
 		m_playerAnimationMesh->UpdateSwordWorldTransform(playerWorld);
+		// 大剣へ持ち替えている間は、埋め込みの片手剣を消す。
+		// 取り付けに剣ボーンの行列を使うので、必ず上の処理の後に呼ぶ。
+		m_playerAnimationMesh->ApplyEquippedWeaponVisibility(m_playerBoneComb);
 
 		// 剣の軌跡。攻撃判定が出ている間だけ点を足す。
 		// 渡すのは武器ボーンから求めた刃のワールド座標だけなので、
@@ -1193,7 +1303,9 @@ void GameScene::update(uint64_t deltatime)
 		// 尾回転は半回転の回数で判定の長さと「一拍で止まっている時間」が変わる。
 		// 敵AIが決めた回数をそのまま渡し、判定側も同じ計算をする。
 		m_combat.SetEnemySpinHalfTurns(m_enemies.front()->getSpinHalfTurns());
-		m_combat.SetPlayerSprinting(playerWasRunning);
+		// 大剣のときはダッシュ攻撃へ派生させない(アニメーション側と条件を合わせる)。
+		m_combat.SetPlayerSprinting(
+			playerWasRunning && playerWeapon != Combat::WeaponKind::GreatSword);
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
@@ -1237,11 +1349,16 @@ void GameScene::update(uint64_t deltatime)
 			const Combat::AttackData& playerAttack = heavyHit
 				? Combat::PlayerHeavyAttack()
 				: Combat::PlayerWeakAttack();
+			// 怯み値も与ダメージも武器で変わる(大剣は一撃で大きく怯ませる)。
+			const float weaponPostureScale = Combat::PlayerPostureScaleOf(playerWeapon);
+			const float weaponDamageScale = Combat::PlayerDamageScaleOf(playerWeapon);
 			const float postureDamage = static_cast<float>(playerAttack.postureDamage) *
+				weaponPostureScale *
 				(punishHit ? Combat::Tuning::PUNISH_POSTURE_MULTIPLIER : 1.0f);
 			// 与えたダメージは怒りにも溜まる。しきい値を超えると敵が咆哮して怒り状態へ入る。
 			// 怯みより優先する(吠えている最中にのけぞらせると、どちらの動きか分からなくなる)。
-			if (m_enemies.front()->addRageDamage(static_cast<float>(playerAttack.damage)))
+			if (m_enemies.front()->addRageDamage(
+				static_cast<float>(playerAttack.damage) * weaponDamageScale))
 			{
 				// 咆哮の間は攻撃が来ない。戦闘側の攻撃も取り消して、構えかけを捨てさせる。
 				m_combat.CancelEnemyAttack();
@@ -1317,7 +1434,11 @@ void GameScene::update(uint64_t deltatime)
 				? GameFlow::Result::Victory
 				: GameFlow::Result::Defeat);
 			m_resultRequested = true;
-			GameFlow::RequestScene("ResultScene");
+			// ゲームループを使うならリザルトへ。本編だけなら同じ戦いをやり直す。
+			if (GameFlow::useGameLoop)
+				GameFlow::RequestScene("ResultScene");
+			else
+				GameFlow::RequestRestart();
 		}
     }
 	else
@@ -1372,8 +1493,17 @@ void GameScene::UpdateFootLock(float deltaSeconds)
 		return;
 	if (!m_legChainsResolved)
 	{
-		// 調整用: dev_settings.ini の foot_lock=0 で切れる(効果の比較に使う)。
-		m_footLockEnabled = GetDevSetting("foot_lock", "1") != "0";
+		// 足の固定は**既定で切ってある**(dev_settings.ini の foot_lock=1 で入る)。
+		//
+		// 理由(実測): 固定が掛かると、IKがつま先を固定位置へ寄せようとして
+		// **足首が1フレームで0.17モデル単位動く**。前後のフレームは0.003〜0.02しか動いていないので、
+		// 毎歩そこで足が飛んだように見えていた(ユーザー指摘「足がめっちゃとびとびに見える」)。
+		// 目標が脚の届く範囲の外にあるため、IKが解ききれずに足の高さまで変わってしまう。
+		// 切ると、つま先はモーションのとおりに動く(実測で補正量0)。
+		// 足が多少滑るのと引き換えだが、FootLock.hに引いた記事のとおり
+		// 「少し滑るほうが、モーションを壊すよりまし」と判断した。
+		// 元のクリップの歩幅に合う移動速度にできたら、入れ直して比べること。
+		m_footLockEnabled = GetDevSetting("foot_lock", "0") != "0";
 		// 骨の名前から左右の脚を1度だけ探す。モデルを差し替えても名前から拾えるようにしている。
 		FootLock::LegBoneNames left{};
 		FootLock::LegBoneNames right{};
@@ -2248,6 +2378,10 @@ void GameScene::init()
 	m_playerAnimationData.LoadAnimation(
 		GetDevSetting("dash_attack", Combat::PlayerDashAttackStep().clipFile), "dash_attack");
 	m_playerAnimator.SetDashAttackAnimation(m_playerAnimationData.GetAnimation("dash_attack", 0));
+	// 調整用: dev_settings.ini の weapon=great で大剣を持って始める。
+	// 大剣は専用のモデルもモーションもまだ無く、持ち方だけを自動で合わせている段階。
+	if (m_playerAnimationMesh && GetDevSetting("weapon", "") == "great")
+		m_playerAnimationMesh->EquipGreatSword(true);
 	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
 	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting("attack_hips_rotation", "1")));
 	if (playerIdleAnimation == nullptr)
@@ -3277,11 +3411,35 @@ void GameScene::DebugCombat()
 
 	// 撮影・調整用。動画を撮るときに、倒れない的を置いたり、自分が倒れないようにしたりする。
 	ImGui::SeparatorText("撮影・調整用");
+	{
+		bool useLoop = GameFlow::useGameLoop;
+		if (ImGui::Checkbox("ゲームループを使う(タイトル→ゲーム→リザルト)", &useLoop))
+			GameFlow::useGameLoop = useLoop;
+		ImGui::SameLine();
+		ImGui::TextDisabled(useLoop ? "(決着でリザルトへ)" : "(決着で戦いをやり直す)");
+	}
 	if (ImGui::Button("練習台の敵を置く(動かない・攻撃しない・倒れない)"))
 		PlaceTrainingDummy();
 	// 怒り状態の見た目と動きを、殴らずに確かめるためのボタン。
 	if (!m_enemies.empty() && ImGui::Button("敵を怒らせる(咆哮して怒り状態へ)"))
 		m_enemies.front()->forceRage();
+	// 武器の持ち替え。大剣は専用モデル・専用モーションが揃うまでの仮実装。
+	// 握り方は埋め込みの片手剣から測った「手本」へ自動で合わせている。
+	if (m_playerAnimationMesh)
+	{
+		bool greatSword = m_playerAnimationMesh->IsGreatSwordEquipped();
+		if (ImGui::Checkbox("大剣を持つ(仮のモデル・自動で握らせる)", &greatSword))
+			m_playerAnimationMesh->EquipGreatSword(greatSword);
+		const WeaponFit::Result& handFit = m_playerAnimationMesh->GetHandWeaponFit();
+		const WeaponFit::Result& weaponFit = m_playerAnimationMesh->GetEquippedWeaponFit();
+		ImGui::Text("手本の剣: 長さ %.0f / 重心は握りから %.0f%%",
+			handFit.length, handFit.balanceRatio * 100.0f);
+		if (weaponFit.valid)
+		{
+			ImGui::Text("持ち替えた武器: 長さ %.0f / 重心は握りから %.0f%%",
+				weaponFit.length, weaponFit.balanceRatio * 100.0f);
+		}
+	}
 	if (!m_enemies.empty())
 	{
 		bool passive = m_enemies.front()->isPassive();

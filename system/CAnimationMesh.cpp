@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include	"CAnimationMesh.h"
+#include	"WeaponFit.h"
 #include	"utility.h"
 #include	"meshmanager.h"
 #include	"DebugUI.h"
@@ -378,8 +379,161 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 	return true;
 }
 
+/**
+ * @brief 埋め込みの剣から「手がどう武器を握っているか」を測る。
+ *
+ * プレイヤーのモデルには剣が最初から入っていて(`mixamorig:Sword_joint`へスキニングされている)、
+ * 今の見た目は正しく手に収まっている。そこでその剣を手本にする。
+ * 剣の頂点を剣ボーンのローカル空間へ移し、`WeaponFit`で刃の向きと刃の面の向きを測ると、
+ * 「このボーンのどちらへ刃が伸びるか」が分かる。
+ * 別の武器(大剣など)は、その向きへ合わせるだけで手に収まる。
+ */
+void CAnimationMesh::MeasureEmbeddedSword()
+{
+	m_handWeaponFit = WeaponFit::Result{};
+	if (m_embeddedSwordVertexIndices.empty())
+		return;
+	const auto bone = m_BoneDictionary.find(m_swordBoneName);
+	if (bone == m_BoneDictionary.end())
+		return;
+
+	// 頂点はモデルのバインド姿勢の座標なので、剣ボーンのオフセット行列で
+	// ボーンのローカル空間へ移す(この描画器の行ベクトル規約では 頂点 × オフセット)。
+	const Matrix4x4& offset = bone->second.OffsetMatrix;
+	std::vector<Vector3> local;
+	local.reserve(m_embeddedSwordVertexIndices.size());
+	const auto& vertices = GetVertices();
+	for (uint32_t index : m_embeddedSwordVertexIndices)
+	{
+		if (index >= vertices.size())
+			continue;
+		local.push_back(Vector3::Transform(vertices[index].Position, offset));
+	}
+	m_handWeaponFit = WeaponFit::Analyze(local);
+}
+
+/**
+ * @brief 大剣へ持ち替える(falseで元の片手剣へ戻す)。
+ *
+ * 別モデルを**手本の握り方へ自動で合わせて**持たせる。
+ * 合わせ方は`WeaponFit::BuildAttachMatrix`が決める(握り・刃の向き・刃の面・長さ)。
+ * 武器ごとに角度と位置を人手で測り直す必要はない。
+ *
+ * 大剣専用のモデルがまだ無いので、いまは assets/model/Sword.fbx を大剣の長さで使う。
+ * 本物の大剣モデルが用意できたら、ここのファイル名を変えるだけで持てる。
+ *
+ * @return 持ち替えられたらtrue。手本が測れていない・モデルが無い場合はfalse。
+ */
+bool CAnimationMesh::EquipGreatSword(bool equip)
+{
+	if (!equip)
+	{
+		m_greatSwordEquipped = false;
+		m_swordEnabled = false;
+		return true;
+	}
+	if (m_greatSwordEquipped)
+		return true;
+	// 手本(埋め込みの剣)が測れていないと、どう握らせればよいか分からない。
+	if (!m_handWeaponFit.valid)
+		return false;
+
+	if (!m_greatSwordLoaded)
+	{
+		std::filesystem::path path("assets/model/Sword.fbx");
+		if (!std::filesystem::exists(path))
+			path = std::filesystem::path("../assets/model/Sword.fbx");
+		if (!std::filesystem::exists(path))
+			return false;
+		m_swordMesh = std::make_unique<CStaticMesh>();
+		m_swordMesh->Load(path.string(), "assets/model/", true);
+		m_swordRenderer.Init(*m_swordMesh);
+		std::vector<Vector3> positions;
+		positions.reserve(m_swordMesh->GetVertices().size());
+		for (const auto& vertex : m_swordMesh->GetVertices())
+			positions.push_back(vertex.Position);
+		m_equippedWeaponFit = WeaponFit::Analyze(positions);
+		m_greatSwordLoaded = true;
+		std::cout << "[Weapon] great sword length=" << m_equippedWeaponFit.length
+			<< " balance=" << m_equippedWeaponFit.balanceRatio << std::endl;
+	}
+	if (!m_equippedWeaponFit.valid)
+		return false;
+
+	m_greatSwordEquipped = true;
+	m_swordEnabled = true;
+	m_swordUseGuaranteedProxy = false;
+	// 埋め込みの片手剣は「剣ボーンを潰す」ことで消す(ApplyEquippedWeaponVisibility)。
+	// サブセット単位では消せない。このモデルは剣のサブセットが体の面まで含んでいて、
+	// 剣だけを非表示にすると体ごと消えてしまう(実機で確認)。
+	return true;
+}
+
+/**
+ * @brief 持ち替え中は、埋め込みの片手剣を見えなくする。
+ *
+ * 剣ボーン(`mixamorig:Sword_joint`)だけを極小に縮める。
+ * この骨に付いている頂点は埋め込みの剣だけなので、体には影響しない。
+ *
+ * **UpdateSwordWorldTransform()の後に呼ぶこと**。
+ * 大剣の取り付けは剣ボーンの行列を使うので、先に縮めると大剣も一緒に小さくなる。
+ */
+void CAnimationMesh::ApplyEquippedWeaponVisibility(BoneCombMatrix& bonecombarray)
+{
+	std::unordered_map<std::string, Matrix4x4> layer;
+	if (m_greatSwordEquipped && !m_swordBoneName.empty())
+		layer.emplace(m_swordBoneName, Matrix4x4::CreateScale(0.0001f));
+	// 空の表で呼ぶと、前に縮めた分が元へ戻る(AddBoneLocalRotationsは積み上がらない)。
+	if (AddBoneLocalRotations(layer))
+		RefreshBoneMatrices(bonecombarray);
+}
+
 void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 {
+	// 大剣を持っているときは、手本の握り方へ合わせた行列で描画と当たり判定を作る。
+	// 埋め込みの剣の処理より先に見る(埋め込みは隠してあるため)。
+	if (m_greatSwordEquipped && m_handWeaponFit.valid && m_equippedWeaponFit.valid)
+	{
+		const auto bone = m_DebugBoneMatrices.find(m_swordBoneName);
+		if (bone == m_DebugBoneMatrices.end())
+		{
+			m_swordWorldSegmentValid = false;
+			return;
+		}
+		const Matrix4x4 boneToWorld = bone->second * parentWorld;
+		// 握りは**剣ボーンの原点**に置く。
+		// 埋め込みの剣から測った握りの位置も使えそうに見えるが、実機で測ると
+		// ボーンの原点(=手の位置)から7.5単位もずれていた(このモデルでは柄と刃の境目の
+		// 判定がうまくいかず、柄を長く取りすぎていた)。
+		// 剣ボーンはもともと「武器を持つ場所」なので、原点をそのまま握りとする方が確実である。
+		// 刃の向きと刃の面の向きは、埋め込みの剣から測った値をそのまま手本にする。
+		WeaponFit::Result handReference = m_handWeaponFit;
+		handReference.gripLocal = Vector3(0.0f, 0.0f, 0.0f);
+
+		// 大きさはワールドでの長さで決める。ボーンの下は0.1倍などに縮んでいることがあるので、
+		// ボーンの倍率で割ってローカルの長さへ直す。
+		// プレイヤーの身長が約18単位なので、大剣は身長と同じくらいの長さにする
+		// (モンスターハンターの大剣も、だいたいハンターの背丈ほどある)。
+		constexpr float GREAT_SWORD_WORLD_LENGTH = 19.0f;
+		const float boneScale =
+			Vector3::TransformNormal(Vector3(1.0f, 0.0f, 0.0f), boneToWorld).Length();
+		const float desiredLocalLength = boneScale > 0.0001f
+			? GREAT_SWORD_WORLD_LENGTH / boneScale
+			: m_equippedWeaponFit.length;
+		const Matrix4x4 attach = WeaponFit::BuildAttachMatrix(
+			m_equippedWeaponFit, handReference, desiredLocalLength);
+		m_swordWorldMatrix = attach * boneToWorld;
+		// 当たり判定の線分も同じ行列から作る(見た目と判定が必ず一致する)。
+		const Vector3 nextBase =
+			Vector3::Transform(m_equippedWeaponFit.gripLocal, m_swordWorldMatrix);
+		const Vector3 nextTip =
+			Vector3::Transform(m_equippedWeaponFit.tipLocal, m_swordWorldMatrix);
+		m_swordPreviousWorldTip = m_swordWorldSegmentValid ? m_swordWorldTip : nextTip;
+		m_swordWorldBase = nextBase;
+		m_swordWorldTip = nextTip;
+		m_swordWorldSegmentValid = true;
+		return;
+	}
 	const bool drawProxy = m_swordUseGuaranteedProxy && m_swordProxyMesh;
 	const bool drawFbx = !m_swordUseGuaranteedProxy && m_swordMesh;
 	const bool collisionOnlyEmbeddedSword = m_swordEmbeddedInPlayerAsset;
@@ -653,6 +807,7 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 			std::cout << "[Sword] embedded mesh=" << subset.MeshName
 				<< " vertices=" << subset.VertexNum << std::endl;
 		}
+		MeasureEmbeddedSword();
 		m_swordWorldSegmentValid = false;
 		return;
 	}
