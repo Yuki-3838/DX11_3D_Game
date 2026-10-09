@@ -657,6 +657,11 @@ HUDは今も予兆中に攻撃名(`HEAVY SLAM`等)を出している。体の構
   - 理由: デバッグ版Assimpは`ucrtbased.dll` / `MSVCP140D.dll`という**デバッグ版CRT**へ依存する。
     これはVisual Studioが入っているPCにしか無く、再頒布も許可されていない。
     **Debug構成のビルドは絶対に配布しないこと**。
+- **クローン直後にソリューション全体をビルドすると、`MotionEditor.Wpf`で1件エラーが出る(2026-10-10 確認)**。
+  `error NETSDK1004: 資産ファイル project.assets.json が見つかりません`。
+  これはC#製のモーション編集ツールがNuGetの復元を済ませていないだけで、**ゲーム本体には影響しない**。
+  ゲームだけ建てるなら`/t:DX11_3D_Game`を付ける(MakeDistribution.batはそうしている)。
+  ツールも使うなら`dotnet restore tools/MotionEditor.Wpf`を一度流す。
 - **配布物を作るときは `MakeDistribution.bat`**。Release|x64をビルドし、
   実行ファイル・リリース版AssimpのDLL・`shader`・`assets`を`dist`へまとめる。
   - `dist`は約695MB。`assets`を丸ごとコピーしているため。減らすなら実際に読むモデルだけに絞る。
