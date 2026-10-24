@@ -1,6 +1,10 @@
 #include	<cstdint>
 #include    <string>
 #include	<fstream>
+#include	<cwchar>
+#include	<windows.h>
+#include	<shellapi.h>
+#pragma comment(lib, "shell32.lib")
 #include	"system/renderer.h"
 #include    "system/DebugUI.h"
 #include    "system/CDirectInput.h"
@@ -12,11 +16,8 @@
 
 namespace
 {
-// dev_settings.ini(未コミット・ローカル専用)に devmode=1 と書くと、
-// 起動時にタイトルを飛ばしてGameSceneへ直行し、ImGuiデバッグ表示も最初から出す。
-// ファイルが無い/devmode=0なら、提出用と同じ挙動(タイトルから開始・デバッグ非表示)になる。
-// 提出前にこのファイルを削除・devmode=0にする必要はない(存在しなければ何も変わらない)。
-// dev_settings.iniから1つの設定を読む。無ければ空文字。
+// dev_settings.ini(未コミット・ローカル専用)から1つの設定を読む。無ければ空文字。
+// ファイルが無ければ提出用と同じ挙動になるので、提出前に消す必要はない。
 std::string LoadSetting(const std::string& key)
 {
 	std::ifstream input("dev_settings.ini");
@@ -38,22 +39,61 @@ std::string LoadSetting(const std::string& key)
 	return {};
 }
 
-bool LoadDevModeSetting()
+// コマンドライン引数に指定の文字列があるか。
+// VSではツールバーのコマンドライン引数欄(またはプロジェクトのプロパティ→デバッグ→コマンド引数)で渡す。
+// __argv はこの環境では null のまま(読むとアクセス違反)なので、Windowsから直接受け取る。
+bool HasArg(const wchar_t* name)
 {
-	return LoadSetting("devmode") == "1";
+	int argc = 0;
+	LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	if (argv == nullptr)
+		return false;
+	bool found = false;
+	for (int i = 1; i < argc && !found; ++i)
+	{
+		found = (std::wcscmp(argv[i], name) == 0);
+	}
+	LocalFree(argv);
+	return found;
 }
 
-// タイトルとリザルトを使うか(ゲームループ)。
-//   gameloop=1 : タイトル → ゲーム → リザルト → タイトル
-//   gameloop=0 : ゲーム本編だけ。決着がついたら同じ戦いをやり直す。
-// 書いていない場合は、これまでどおり devmode で決める
-// (devmode=1 ならゲーム本編だけ、そうでなければゲームループ)。
-bool LoadGameLoopSetting(bool devMode)
+// いまの進行の形をウィンドウのタイトルに出す。
+// 画面へ文字を描く仕組みを増やさずに、どちらで動いているか一目で分かるようにする。
+void UpdateWindowTitle()
 {
-	const std::string value = LoadSetting("gameloop");
-	if (value.empty())
-		return !devMode;
-	return value != "0";
+	SetWindowText(
+		Application::GetWindow(),
+		GameFlow::useGameLoop
+			? TEXT("就職作品")
+			: TEXT("就職作品 ［本編だけ］ F5でゲームループへ"));
+}
+
+// 「進行の形」と「デバッグ表示」は別々に決める。
+// どちらも 引数 → dev_settings.ini → 既定(提出用) の順に見る。
+// 引数も設定ファイルも無ければ提出用と同じ挙動(ゲームループ・デバッグ非表示)。
+
+// タイトルとリザルトを使うか(ゲームループ)。
+//   --loop / gameloop=1 : タイトル → ゲーム → リザルト → タイトル
+//   --game / gameloop=0 : ゲーム本編だけ。決着がついたら同じ戦いをやり直す。
+bool ResolveUseGameLoop()
+{
+	if (HasArg(L"--game"))
+		return false;
+	if (HasArg(L"--loop"))
+		return true;
+	return LoadSetting("gameloop") != "0";
+}
+
+// 起動時からデバッグ表示を出すか。
+//   --debug   / devmode=1 : 出す
+//   --nodebug / devmode=0 : 出さない
+bool ResolveDebugVisible()
+{
+	if (HasArg(L"--nodebug"))
+		return false;
+	if (HasArg(L"--debug"))
+		return true;
+	return LoadSetting("devmode") == "1";
 }
 }
 
@@ -78,11 +118,11 @@ void gameinit()
 	//　シーン選択
 	// 通常の起動はタイトルシーンから開始する。
 	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
-	const bool devMode = LoadDevModeSetting();
-	GameFlow::useGameLoop = LoadGameLoopSetting(devMode);
+	GameFlow::useGameLoop = ResolveUseGameLoop();
 	// ゲームループを使うならタイトルから。本編だけなら直接ゲームへ。
 	SceneManager::SetCurrentScene(GameFlow::useGameLoop ? "TitleScene" : "GameScene");
-	if (devMode)
+	UpdateWindowTitle();
+	if (ResolveDebugVisible())
 	{
 		DebugUI::SetVisible(true);
 	}
@@ -96,6 +136,8 @@ void gameupdate(uint64_t deltatime)
     SoundManager::Update();
 
     // F1：ゲームシーン、F2：車モデルシーン、F4：デバッグ表示切り替え
+    // F5：ゲームループ(タイトル→ゲーム→リザルト)と本編だけの切り替え
+    //     デバッグ表示とは独立している(デバッグ表示は F4)
     // F3のゲーム内モーションエディター(MotionEditorScene)は2026-09-15にユーザー判断で外し、
     // 2026-09-24にシーンごと削除した。外部ツール(tools/MotionEditor.Wpf)と役割が重複しているため。
     // 戻したい場合はgitの履歴から取り出すこと。
@@ -110,6 +152,14 @@ void gameupdate(uint64_t deltatime)
     else if (input.IsKeyTriggered(DIK_F4))
     {
         DebugUI::ToggleVisible();
+    }
+    else if (input.IsKeyTriggered(DIK_F5))
+    {
+        // 進行の形だけを切り替える(デバッグ表示はそのまま)。
+        // 引数や設定ファイルを渡せないPC(お披露目先など)でも、その場で切り替えられるようにする。
+        // 決着がついた瞬間にこの値を見るので、戦闘中に押しても次の決着から効く。
+        GameFlow::useGameLoop = !GameFlow::useGameLoop;
+        UpdateWindowTitle();
     }
 
     SceneManager::Update(deltatime);

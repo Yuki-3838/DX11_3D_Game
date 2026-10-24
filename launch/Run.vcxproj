@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  起動ボタン専用のプロジェクト(ビルドするものは無い)。
+
+  VSツールバーの構成プルダウン(Debug / Release の欄)で「ゲームループ」「デバッグ」を選んで ▶ を押すと、
+  同じ DX11_3D_Game.exe(Debugビルド)をそれぞれの引数で起動する。
+    ゲームループ : タイトル → ゲーム → リザルト。デバッグ表示なし(F4で出せる)。 = 構成 GameLoop
+    デバッグ     : ゲーム本編だけを繰り返す。デバッグ表示あり。                 = 構成 DevDebug
+    Debug / Release : 引数なし(dev_settings.ini の設定どおり)。
+
+  ソリューションのスタートアッププロジェクトをこの Run にしておく必要がある。
+  ソリューション構成「ゲームループ」「デバッグ」では DX11_3D_Game は Debug でビルドされるので、
+  Debug と行き来しても作り直しにはならない。exe 本体はソリューションの依存関係で先にビルドされる。
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="GameLoop|Win32">
+      <Configuration>GameLoop</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DevDebug|Win32">
+      <Configuration>DevDebug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="GameLoop|x64">
+      <Configuration>GameLoop</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DevDebug|x64">
+      <Configuration>DevDebug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{53335480-904f-46c7-8750-c1bd207b6d97}</ProjectGuid>
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>MakeFileProj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <!-- 中間ファイルを本体と混ぜない -->
+    <IntDir>$(SolutionDir)obj\launch\$(Platform)\$(Configuration)\</IntDir>
+    <OutDir>$(IntDir)</OutDir>
+    <!-- ビルドするものは無い。空だと警告が出るので何もしないコマンドを置く -->
+    <NMakeBuildCommandLine>rem</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>rem</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>rem</NMakeCleanCommandLine>
+    <NMakeOutput />
+  </PropertyGroup>
+  <!-- 構成ごとの引数と、起動する exe の構成 -->
+  <PropertyGroup>
+    <LauncherExeConfiguration>$(Configuration)</LauncherExeConfiguration>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='GameLoop'">
+    <LauncherExeConfiguration>Debug</LauncherExeConfiguration>
+    <LauncherArguments>--loop --nodebug</LauncherArguments>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='DevDebug'">
+    <LauncherExeConfiguration>Debug</LauncherExeConfiguration>
+    <LauncherArguments>--game --debug</LauncherArguments>
+  </PropertyGroup>
+  <!-- DX11_3D_Game の出力先(既定の OutDir)に合わせる -->
+  <PropertyGroup Condition="'$(Platform)'=='x64'">
+    <LauncherTarget>$(SolutionDir)x64\$(LauncherExeConfiguration)\DX11_3D_Game.exe</LauncherTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='Win32'">
+    <LauncherTarget>$(SolutionDir)$(LauncherExeConfiguration)\DX11_3D_Game.exe</LauncherTarget>
+  </PropertyGroup>
+  <PropertyGroup>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommand>$(LauncherTarget)</LocalDebuggerCommand>
+    <LocalDebuggerCommandArguments>$(LauncherArguments)</LocalDebuggerCommandArguments>
+    <!-- 本体と同じく、リポジトリ直下から assets などを読む -->
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
