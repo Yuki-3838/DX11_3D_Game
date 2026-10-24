@@ -7,12 +7,21 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DX11_3D_Game", "DX11_3D_Gam
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MotionEditor.Wpf", "tools\MotionEditor.Wpf\MotionEditor.Wpf.csproj", "{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Run", "launch\Run.vcxproj", "{53335480-904F-46C7-8750-C1BD207B6D97}"
+	ProjectSection(ProjectDependencies) = postProject
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636} = {822241AC-8AF5-4DB0-B6D6-ED5400365636}
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
 		Debug|x86 = Debug|x86
 		Release|x64 = Release|x64
 		Release|x86 = Release|x86
+		ゲームループ|x64 = ゲームループ|x64
+		ゲームループ|x86 = ゲームループ|x86
+		デバッグ|x64 = デバッグ|x64
+		デバッグ|x86 = デバッグ|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.Debug|x64.ActiveCfg = Debug|x64
@@ -31,6 +40,38 @@ Global
 		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x64.Build.0 = Release|Any CPU
 		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x86.ActiveCfg = Release|Any CPU
 		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.Release|x86.Build.0 = Release|Any CPU
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.ゲームループ|x64.ActiveCfg = Debug|x64
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.ゲームループ|x64.Build.0 = Debug|x64
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.ゲームループ|x64.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.ゲームループ|x64.Build.0 = Debug|Any CPU
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.デバッグ|x64.ActiveCfg = Debug|x64
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.デバッグ|x64.Build.0 = Debug|x64
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.デバッグ|x64.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.デバッグ|x64.Build.0 = Debug|Any CPU
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Debug|x64.ActiveCfg = Debug|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Debug|x64.Build.0 = Debug|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Release|x64.ActiveCfg = Release|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Release|x64.Build.0 = Release|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.ゲームループ|x64.ActiveCfg = GameLoop|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.ゲームループ|x64.Build.0 = GameLoop|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x64.ActiveCfg = DevDebug|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x64.Build.0 = DevDebug|x64
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.ゲームループ|x86.ActiveCfg = Debug|Win32
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.ゲームループ|x86.Build.0 = Debug|Win32
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.ゲームループ|x86.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.ゲームループ|x86.Build.0 = Debug|Any CPU
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.デバッグ|x86.ActiveCfg = Debug|Win32
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.デバッグ|x86.Build.0 = Debug|Win32
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.デバッグ|x86.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.デバッグ|x86.Build.0 = Debug|Any CPU
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Debug|x86.ActiveCfg = Debug|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Debug|x86.Build.0 = Debug|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Release|x86.ActiveCfg = Release|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.Release|x86.Build.0 = Release|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.ゲームループ|x86.ActiveCfg = GameLoop|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.ゲームループ|x86.Build.0 = GameLoop|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x86.ActiveCfg = DevDebug|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x86.Build.0 = DevDebug|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
