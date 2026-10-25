@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <wrl/client.h>
 
 #include "CIndexBuffer.h"
 #include "CMaterial.h"
@@ -87,6 +88,18 @@ public:
 			"shader/unlitTextureVS.hlsl",
 			"shader/unlitTexturePS.hlsl");
 
+		// 深度は「比べるが書き込まない」。
+		// 比べないと、体の向こう側を通った軌跡まで体の手前に描かれる(キャラクターに被って見える)。
+		// 書き込むと、半透明の軌跡どうしで後ろ側が消える。
+		// Rendererにはこの組み合わせが無いので、軌跡だけで使う状態をここで作る。
+		D3D11_DEPTH_STENCIL_DESC depthDesc{};
+		depthDesc.DepthEnable = TRUE;
+		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+		depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+		depthDesc.StencilEnable = FALSE;
+		m_depthTestNoWrite.Reset();
+		Renderer::GetDevice()->CreateDepthStencilState(&depthDesc, m_depthTestNoWrite.GetAddressOf());
+
 		m_initialized = true;
 	}
 
@@ -116,7 +129,10 @@ public:
 
 		if (m_nodes.size() >= m_maxNodes)
 			m_nodes.erase(m_nodes.begin());
-		m_nodes.push_back({ base, tip, 0.0f });
+		// リボンは刃の途中から張る。根元(手元)から張ると、
+		// 体の周りを回す振りで腕や胴体の上に帯がかかる。
+		const Vector3 ribbonBase = base + (tip - base) * RIBBON_START_ON_BLADE;
+		m_nodes.push_back({ ribbonBase, tip, 0.0f });
 	}
 
 	/** 古い軌跡を消す。毎フレーム呼ぶ。 */
@@ -187,10 +203,13 @@ public:
 		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 		// リボンは薄い板なので、裏返っても消えないようカリングを切る。
-		// 半透明なので深度書き込みも切り、後ろの軌跡が消えないようにする。
+		// 深度は比べるが書き込まない(Initialize()の説明を参照)。
 		Renderer::DisableCulling(false);
 		Renderer::SetBlendState(BS_ALPHABLEND);
-		Renderer::SetDepthEnable(false);
+		if (m_depthTestNoWrite)
+			context->OMSetDepthStencilState(m_depthTestNoWrite.Get(), 0);
+		else
+			Renderer::SetDepthEnable(false);
 
 		context->DrawIndexed(m_indexCount, 0, 0);
 
@@ -213,6 +232,10 @@ private:
 	CIndexBuffer m_indexBuffer;
 	CMaterial m_material;
 	CShader m_shader;
+	// 刃の根元を0・先端を1としたときの、リボンを張り始める位置。
+	static constexpr float RIBBON_START_ON_BLADE = 0.35f;
+
+	Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_depthTestNoWrite;
 	std::size_t m_maxNodes = 24;
 	float m_lifetime = 0.16f;
 	unsigned int m_indexCount = 0;

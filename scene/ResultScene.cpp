@@ -4,18 +4,20 @@
 #include "../system/DebugUI.h"
 #include "../system/GameFlow.h"
 #include "../system/Inputmanager.h"
+#include "../system/GameInput.h"
 #include "../system/SoundManager.h"
 #include "../system/imgui/imgui.h"
 #include <dinput.h>
 
 void ResultScene::update(uint64_t)
 {
-    auto& input = CInputManager::GetInstance();
-    if (input.IsKeyTriggered(DIK_RETURN) || input.IsKeyTriggered(DIK_SPACE))
+    // キーボード(Enter・Space / Esc)でもゲームパッド(A・Start / B)でも進める。
+    const GameInput& input = GameInput::Get();
+    if (input.IsTriggered(GameAction::Confirm))
     {
         GameFlow::RequestScene("GameScene");
     }
-    else if (input.IsKeyTriggered(DIK_ESCAPE))
+    else if (input.IsTriggered(GameAction::Back))
     {
         GameFlow::RequestScene("TitleScene");
     }
@@ -45,7 +47,13 @@ void ResultScene::draw(uint64_t)
             GameFlow::RequestScene("GameScene");
         }
         ImGui::Spacing();
-        ImGui::Text("Enter / Space: リトライ   Esc: タイトルへ");
+        // ゲームパッドがつながっていればパッドのボタン名を出す。
+        const GameInput& input = GameInput::Get();
+        if (input.GetDisplayDevice() == InputDevice::Gamepad)
+            ImGui::Text("%s: リトライ   %s: タイトルへ",
+                input.GetButtonLabel(GameAction::Confirm), input.GetButtonLabel(GameAction::Back));
+        else
+            ImGui::Text("Enter / Space: リトライ   Esc: タイトルへ");
     }
     ImGui::End();
 }

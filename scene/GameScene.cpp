@@ -21,6 +21,7 @@
 #include	"../system/C3DShape.h"
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"
+#include	"../system/GameInput.h"
 #include	<dinput.h>
 #include	"../system/PlaneDrawer.h"
 #include	"../system/imgui/imgui.h"
@@ -417,6 +418,55 @@ namespace {
 		return slideVelocity;
 	}
 
+	// 壁に沿って滑らせる移動量を求める(モンスターハンターやフロム作品と同じ、壁に当たっても止まらない動き)。
+	// いったん全部動かしてから、めり込んだ壁ごとに法線方向へ押し戻す。
+	// 押し戻した後の位置で別の壁にめり込むことがある(多角形の闘技場の角)ので、数回くり返す。
+	// calcWallAdjustedMove()は「動いた先が壁に重なるなら止める」作りで、
+	// 角に来るたびに止まり、壁へ斜めに歩くと進めなくなっていた。
+	Vector3 calcWallSlideMove(
+		std::vector<WallData>& walldatas,
+		float radius,
+		Vector3 currentCenter,
+		Vector3 velocity)
+	{
+		constexpr int MAX_ITERATIONS = 4;
+		// 押し戻しをぴったり半径にすると、次のフレームでまた接触扱いになる。わずかに離す。
+		constexpr float SKIN = 0.01f;
+		Vector3 move = velocity;
+		for (int iteration = 0; iteration < MAX_ITERATIONS; ++iteration)
+		{
+			const std::vector<WallCollision> hits = checkWallCollision(
+				walldatas, radius, currentCenter, move);
+			if (hits.empty())
+				break;
+			for (const auto& hit : hits)
+			{
+				const PLANEINFO pi = hit.walldata.plane.GetPlaneInfo();
+				Vector3 normal(pi.plane.a, pi.plane.b, pi.plane.c);
+				const float normalLength = normal.Length();
+				if (normalLength <= 0.0001f)
+					continue;
+				normal /= normalLength;
+				const float planeD = pi.plane.d / normalLength;
+				// 移動前にいた側を「内側」とする。壁の向き(法線の正負)に頼らない。
+				float side = normal.Dot(currentCenter) + planeD >= 0.0f ? 1.0f : -1.0f;
+				const Vector3 next = currentCenter + move;
+				const float distance = (normal.Dot(next) + planeD) * side;
+				const float penetration = radius + SKIN - distance;
+				if (penetration > 0.0f)
+					move += normal * (side * penetration);
+			}
+		}
+		// 押し戻しても抜けられないとき(壁と壁の間に挟まれたなど)は、元の位置に留める。
+		if (!checkWallCollision(walldatas, radius, currentCenter, move).empty() &&
+			move.LengthSquared() > 0.0f &&
+			checkWallCollision(walldatas, radius, currentCenter, Vector3(0, 0, 0)).empty())
+		{
+			return Vector3(0, 0, 0);
+		}
+		return move;
+	}
+
 	Vector3 calcWallAvoidMove(
 		std::vector<WallData>& walldatas,
 		float radius,
@@ -798,24 +848,6 @@ void GameScene::DebugAudio()
 	ImGui::EndTabItem();
 }
 
-namespace
-{
-/**
- * @brief キーボードの入力がゲームへ届くか。
- *
- * 視点をマウスで操作している間(カーソルをゲーム画面へ固定している間)は、必ずゲームへ渡す。
- * カーソルを出してデバッグ表示を触っているとき(左Alt)だけ、ImGuiへ譲る。
- *
- * 以前はImGuiの`WantCaptureKeyboard`だけで判断していたが、これはデバッグ表示のウィンドウへ
- * **キーボードの焦点が移っただけでも真になる**。ロックオンのTabがImGuiの焦点移動と重なるため、
- * 一度Tabを押すと移動・ダッシュ・回避がすべて効かなくなっていた(実機のログで判明)。
- * デバッグ表示へ文字を打ち込んでいるとき(WantTextInput)だけは、これまでどおりゲームを止める。
- */
-bool KeyboardGoesToGame()
-{
-	return DebugUI::IsCursorLocked() || !ImGui::GetIO().WantTextInput;
-}
-} // namespace
 
 void GameScene::update(uint64_t deltatime)
 {
@@ -837,8 +869,10 @@ void GameScene::update(uint64_t deltatime)
 	const bool lockCursor = m_mouseLookCaptured && !m_resultRequested;
 	DebugUI::SetCursorLocked(lockCursor);
 	DebugUI::SetCursorVisible(!lockCursor);
-	if (!m_enemyIntroActive && KeyboardGoesToGame() &&
-		input.IsKeyTriggered(DIK_TAB))
+	// ゲームの操作はGameInput(仮想コントローラー)から「行動」として受け取る。
+	// キーボード・マウスとゲームパッドのどちらで押したかは、ここでは区別しない。
+	const GameInput& gameInput = GameInput::Get();
+	if (!m_enemyIntroActive && gameInput.IsTriggered(GameAction::LockOn))
 	{
 		if (m_lockOnTarget)
 		{
@@ -880,11 +914,51 @@ void GameScene::update(uint64_t deltatime)
 	}
 	if (m_enemies.empty() || m_combat.IsEnemyDefeated())
 		m_lockOnTarget = false;
-	const bool attackTriggered = !ImGui::GetIO().WantCaptureMouse &&
-		input.IsMouseTriggered(CInputManager::MOUSE_LEFT);
-	const bool heavyAttackTriggered = !ImGui::GetIO().WantCaptureMouse &&
-		input.IsMouseTriggered(CInputManager::MOUSE_RIGHT);
+	const bool rawAttackTriggered = gameInput.IsTriggered(GameAction::Attack);
+	const bool rawHeavyAttackTriggered = gameInput.IsTriggered(GameAction::HeavyAttack);
+	const bool rawDodgeTriggered = gameInput.IsTriggered(GameAction::Dodge);
 	const bool playerDodgeActive = m_player->isDodging();
+
+	// 先行入力。押した瞬間に出せなかった攻撃・回避を覚えておく。
+	// 以前は回避中のクリックや、攻撃の振り始め(回避で切れない区間)のスペースを捨てていたため、
+	// 「押したのに出ない」と感じる場面があった。
+	if (m_bufferedAction != BufferedAction::None)
+	{
+		m_bufferedActionTime -= deltaSeconds;
+		if (m_bufferedActionTime <= 0.0f)
+			m_bufferedAction = BufferedAction::None;
+	}
+	// 吹き飛ばされている間の入力は覚えない(飛ばされ終わった瞬間に勝手に動くと、被弾の代償が薄れる)。
+	if (m_player->isKnockedBack())
+		m_bufferedAction = BufferedAction::None;
+	else
+	{
+		// 攻撃中の攻撃は戦闘側がコンボの予約として受け付けるので、ここで覚えるのは回避中だけ。
+		const auto remember = [this](BufferedAction action) {
+			m_bufferedAction = action;
+			m_bufferedActionTime = INPUT_BUFFER_SECONDS;
+		};
+		if (playerDodgeActive && rawHeavyAttackTriggered)
+			remember(BufferedAction::HeavyAttack);
+		else if (playerDodgeActive && rawAttackTriggered)
+			remember(BufferedAction::Attack);
+		// 回避は、今すぐ出せないときだけ覚える(出せるときはそのまま出る)。
+		const bool dodgeBlockedNow = playerDodgeActive ||
+			(m_combat.IsPlayerAttacking() && !m_combat.CanCancelPlayerAttack(m_attackCancelEndFrame));
+		if (rawDodgeTriggered && dodgeBlockedNow)
+			remember(BufferedAction::Dodge);
+		// 回避を覚えた後に攻撃を押し直したら、後から押した方(攻撃=コンボの予約)を優先する。
+		else if (!playerDodgeActive && (rawAttackTriggered || rawHeavyAttackTriggered) &&
+			m_bufferedAction == BufferedAction::Dodge)
+			m_bufferedAction = BufferedAction::None;
+	}
+	// 覚えていた入力を、出せる状態になったら今押したものとして扱う。
+	const bool bufferedAttack = !playerDodgeActive && m_bufferedAction == BufferedAction::Attack;
+	const bool bufferedHeavyAttack = !playerDodgeActive && m_bufferedAction == BufferedAction::HeavyAttack;
+	const bool attackTriggered = rawAttackTriggered || bufferedAttack;
+	const bool heavyAttackTriggered = rawHeavyAttackTriggered || bufferedHeavyAttack;
+	if (bufferedAttack || bufferedHeavyAttack)
+		m_bufferedAction = BufferedAction::None;
 	// コンボ入力はボタンを押した瞬間だけ受け付ける。
 	// ボタンを押し続けても次の攻撃を予約せず、追加段数には再クリックを必要とする。
 	// 回避中のクリックは戦闘システムへ渡さない。回避中に攻撃を開始すると、
@@ -902,6 +976,7 @@ void GameScene::update(uint64_t deltatime)
 		m_combat.CanStartPlayerAttack();
 	if (attackStarted)
 	{
+		AimPlayerAttack();
 		if (heavyAttackInput)
 			m_playerAnimator.PlayHeavyAttackMotion(1);
 		else if (playerWasRunning)
@@ -911,12 +986,9 @@ void GameScene::update(uint64_t deltatime)
 		m_lastPlayerComboStep = 1;
 		m_lastPlayerHeavyAttack = heavyAttackInput;
 	}
-	const bool dodgeTriggered = KeyboardGoesToGame() && input.IsKeyTriggered(DIK_SPACE);
-	const bool sprinting = KeyboardGoesToGame() &&
-		// 移動キー(WASD)と同じく、DirectInputで取れない場合はWin32のキー状態でも読む(ゲームが前面のときだけ)。
-		(input.IsKeyPressed(DIK_LSHIFT) ||
-		 (GetForegroundWindow() == Application::GetWindow() &&
-		  (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0)) &&
+	const bool dodgeTriggered = rawDodgeTriggered ||
+		(m_bufferedAction == BufferedAction::Dodge && !attackStarted);
+	const bool sprinting = gameInput.IsPressed(GameAction::Sprint) &&
 		!m_combat.IsPlayerAttacking() && !m_player->isDodging();
 	if (sprinting)
 		m_playerStamina = std::max(0.0f, m_playerStamina - 28.0f * deltaSeconds);
@@ -929,6 +1001,8 @@ void GameScene::update(uint64_t deltatime)
 		(!m_combat.IsPlayerAttacking() || canCancelAttack);
 	if (canDodge)
 	{
+		if (m_bufferedAction == BufferedAction::Dodge)
+			m_bufferedAction = BufferedAction::None;
 		m_playerStamina -= 25.0f;
 		SoundManager::PlayDodge();
 		// 攻撃中は足を固定するが、設定したキャンセル時間内の回避だけは
@@ -969,12 +1043,13 @@ void GameScene::update(uint64_t deltatime)
 	SRT playerSrt = m_player->getSRT();
 	GM31::GE::Collision::BoundingSphere nextPlayerSphere = transformBSphere(m_localbsplayer, playerSrt);
 	Vector3 playerMove = nextPlayerSphere.center - prevPlayerSphere.center;
-	Vector3 adjustedPlayerMove = calcWallAdjustedMove(
+	// 壁に当たったら止めずに、壁に沿って滑らせる。
+	// 歩き・回避・吹き飛ばし・攻撃の踏み込みのどれも、ここを通る。
+	Vector3 adjustedPlayerMove = calcWallSlideMove(
 		walldatas,
 		prevPlayerSphere.radius,
 		prevPlayerSphere.center,
-		playerMove,
-		true);
+		playerMove);
 
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		auto playerHitWalls = checkWallCollision(
@@ -1452,6 +1527,8 @@ void GameScene::update(uint64_t deltatime)
 		(comboStep != m_lastPlayerComboStep ||
 		 m_combat.IsPlayerHeavyAttack() != m_lastPlayerHeavyAttack))
 	{
+		// コンボの2段目以降も、段の出だしで入力方向へ向き直れる(モンスターハンターと同じ)。
+		AimPlayerAttack();
 		if (m_combat.IsPlayerHeavyAttack())
 			m_playerAnimator.PlayHeavyAttackMotion(comboStep);
 		else
@@ -1464,6 +1541,15 @@ void GameScene::update(uint64_t deltatime)
 		m_lastPlayerComboStep = 0;
 		m_lastPlayerHeavyAttack = false;
 	}
+}
+
+void GameScene::AimPlayerAttack()
+{
+	if (!m_player)
+		return;
+	const bool lockedOn = m_lockOnTarget && !m_enemies.empty() && !m_combat.IsEnemyDefeated();
+	const Vector3 targetPosition = lockedOn ? m_enemies.front()->getSRT().pos : Vector3(0.0f, 0.0f, 0.0f);
+	m_player->aimAttack(m_camera.GetYaw(), lockedOn, targetPosition);
 }
 
 void GameScene::UpdateFootLock(float deltaSeconds)
@@ -1887,10 +1973,8 @@ void GameScene::draw(uint64_t deltatime)
 	// 闘技場に石の床と外周ブロックを描画する。
 	// 実際の衝突平面は後で描画し、ここでは見た目だけの外殻として
 	// m_wallsと同じ変換を使う。
-	m_arenaFloorVisual.SetSize(ARENA_RADIUS * 2.0f, 0.6f, ARENA_RADIUS * 2.0f);
-	SRT floorSrt{};
-	floorSrt.pos = Vector3(0.0f, -0.59f, 0.0f);
-	m_arenaFloorVisual.Draw(floorSrt, Color(0.24f, 0.20f, 0.16f, 1.0f));
+	// 床はマス目付き(ArenaFloor)。大きさと高さは初期化時に決めている。
+	m_arenaFloor.Draw();
 
 	Renderer::DisableCulling(false);
 	m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
@@ -2087,6 +2171,9 @@ void GameScene::DrawGameplayHud()
 	drawBar(top, m_combat.GetPlayerHp() / m_combat.GetPlayerMaxHp(), IM_COL32(75, 205, 75, 255));
 	drawBar(top + 24.0f, m_playerStamina / PLAYER_MAX_STAMINA, IM_COL32(235, 195, 55, 255));
 
+	if (m_showControlGuide)
+		DrawControlGuide();
+
 	if (!m_lockOnTarget || m_enemyIntroActive || m_enemies.empty())
 		return;
 
@@ -2133,6 +2220,54 @@ void GameScene::DrawGameplayHud()
 	drawList->AddLine(ImVec2(marker.x + markerRadius + corner, marker.y + markerRadius),
 		ImVec2(marker.x + markerRadius + corner, marker.y + markerRadius - corner), shadow, 6.0f);
 	drawList->AddCircleFilled(marker, 4.0f, lockColor);
+}
+
+void GameScene::DrawControlGuide()
+{
+	// 操作説明。遊ぶ人(作品を見る人)が操作を探して時間を使わないよう、戦闘中は常に画面の右下に出す。
+	// ゲームパッドがつながっていればパッドの表記、なければキーボード・マウスの表記にする(GameInput::GetDisplayDevice)。
+	const GameInput& gameInput = GameInput::Get();
+	struct Row { const char* action; const char* button; };
+	const Row rows[] = {
+		{ "移動", gameInput.GetMoveLabel() },
+		{ "視点", gameInput.GetLookLabel() },
+		{ "弱攻撃", gameInput.GetButtonLabel(GameAction::Attack) },
+		{ "強攻撃", gameInput.GetButtonLabel(GameAction::HeavyAttack) },
+		{ "回避", gameInput.GetButtonLabel(GameAction::Dodge) },
+		{ "ダッシュ", gameInput.GetButtonLabel(GameAction::Sprint) },
+		{ "ロックオン", gameInput.GetButtonLabel(GameAction::LockOn) },
+	};
+
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetForegroundDrawList(viewport);
+	const float lineHeight = ImGui::GetTextLineHeight() + 4.0f;
+	const float padding = 10.0f;
+	float actionWidth = 0.0f;
+	float buttonWidth = 0.0f;
+	for (const Row& row : rows)
+	{
+		actionWidth = std::max(actionWidth, ImGui::CalcTextSize(row.action).x);
+		buttonWidth = std::max(buttonWidth, ImGui::CalcTextSize(row.button).x);
+	}
+	const float columnGap = 16.0f;
+	const float boxWidth = padding * 2.0f + actionWidth + columnGap + buttonWidth;
+	const float boxHeight = padding * 2.0f + lineHeight * static_cast<float>(std::size(rows));
+	const ImVec2 boxMax(
+		viewport->Pos.x + viewport->WorkSize.x - 24.0f,
+		viewport->Pos.y + viewport->WorkSize.y - 24.0f);
+	const ImVec2 boxMin(boxMax.x - boxWidth, boxMax.y - boxHeight);
+
+	// 背景は半透明にして、敵の予兆(体の動き)を隠さない。明るい床の上でも文字が読める濃さにする。
+	drawList->AddRectFilled(boxMin, boxMax, IM_COL32(8, 10, 14, 190), 6.0f);
+	float y = boxMin.y + padding;
+	for (const Row& row : rows)
+	{
+		drawList->AddText(ImVec2(boxMin.x + padding, y), IM_COL32(230, 233, 240, 255), row.action);
+		drawList->AddText(
+			ImVec2(boxMin.x + padding + actionWidth + columnGap, y),
+			IM_COL32(255, 226, 150, 255), row.button);
+		y += lineHeight;
+	}
 }
 
 void GameScene::DrawEnemyIntroOverlay()
@@ -2182,6 +2317,10 @@ void GameScene::init()
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
 	m_playerWeaponTrail.Initialize();
 	m_hitEffect.Initialize();
+	// 床。以前の床(厚さ0.6の箱を-0.59に置いたもの)と上面の高さをそろえる(-0.29)。
+	// 色は試遊での指摘(距離感が分かりにくい)を受けて、まずはトレーニングステージ風にする。
+	// デバッグ表示の「撮影・調整用」から石の色合いへ切り替えられる。
+	m_arenaFloor.Initialize(ARENA_RADIUS * 2.0f, -0.29f, ArenaFloor::TrainingPalette());
 
 	m_camera.Init();
 	// 攻撃中の寄せは、この基準距離からの相対で決める。
@@ -3278,6 +3417,20 @@ void GameScene::UpdateGameplayCamera(float deltaSeconds)
 			look.deltaX = static_cast<float>(CDirectInput::GetInstance().GetMouseDeltaX());
 			look.deltaY = static_cast<float>(CDirectInput::GetInstance().GetMouseDeltaY());
 		}
+		// ゲームパッドの右スティック。カメラはマウスの移動量(ピクセル)で回る作りなので、
+		// 「1秒に回したい角度」をマウスの移動量に直して足す。
+		// スティックは倒している間ずっと回るので、カーソルを出していても効かせる。
+		const Vector2 lookStick = GameInput::Get().GetLookStick();
+		if (lookStick.LengthSquared() > 0.0f && m_camera.GetMouseSensitivity() > 0.0f)
+		{
+			constexpr float STICK_YAW_RADIANS_PER_SECOND = 2.6f;
+			constexpr float STICK_PITCH_RADIANS_PER_SECOND = 1.6f;
+			const float toMouse = deltaSeconds / m_camera.GetMouseSensitivity();
+			look.active = true;
+			look.deltaX += lookStick.x * STICK_YAW_RADIANS_PER_SECOND * toMouse;
+			// スティックは上が正、マウスは下が正(下へ動かすと見下ろす)。上へ倒すと見上げる。
+			look.deltaY -= lookStick.y * STICK_PITCH_RADIANS_PER_SECOND * toMouse;
+		}
 		m_camera.Update(
 			m_player->getSRT().pos,
 			m_playerWorldVelocity,
@@ -3386,6 +3539,21 @@ void GameScene::DebugCombat()
 
 	// 撮影・調整用。動画を撮るときに、倒れない的を置いたり、自分が倒れないようにしたりする。
 	ImGui::SeparatorText("撮影・調整用");
+	{
+		// 床の色合い。マス目の大きさは同じ(1マス10単位=約1m、太線は4マスごと)。
+		ImGui::TextUnformatted("床の色");
+		ImGui::SameLine();
+		if (ImGui::Button("トレーニングステージ風"))
+			m_arenaFloor.SetPalette(ArenaFloor::TrainingPalette());
+		ImGui::SameLine();
+		if (ImGui::Button("闘技場の石"))
+			m_arenaFloor.SetPalette(ArenaFloor::StonePalette());
+		ImGui::Checkbox("操作説明を画面の右下に出す", &m_showControlGuide);
+		const GameInput& gameInput = GameInput::Get();
+		ImGui::Text("ゲームパッド: %s / 操作説明: %s",
+			gameInput.IsGamepadConnected() ? "接続中" : "未接続",
+			gameInput.GetDisplayDevice() == InputDevice::Gamepad ? "ゲームパッド用" : "キーボード・マウス用");
+	}
 	{
 		bool useLoop = GameFlow::useGameLoop;
 		if (ImGui::Checkbox("ゲームループを使う(タイトル→ゲーム→リザルト)", &useLoop))

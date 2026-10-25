@@ -11,6 +11,7 @@
 #include	"system/scenemanager.h"
 #include	"fpscontrol.h"
 #include	"system/Inputmanager.h"
+#include	"system/GameInput.h"
 #include    "system/GameFlow.h"
 #include    "system/SoundManager.h"
 
@@ -133,6 +134,8 @@ void gameupdate(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
     input.Update();
+    // キーボード・マウスとゲームパッドを「行動」(攻撃・回避など)へまとめる。CInputManagerの後に呼ぶ。
+    GameInput::Get().Update();
     SoundManager::Update();
 
     // F1：ゲームシーン、F2：車モデルシーン、F4：デバッグ表示切り替え

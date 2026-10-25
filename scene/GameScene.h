@@ -10,6 +10,7 @@
 #include "../system/C3DShape.h"
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
+#include "../system/ArenaFloor.h"
 #include "../system/HitEffect.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
@@ -69,6 +70,11 @@ public:
 	// ローカルの境界ボックスのY寸法は高さではなく体の長さになる。境界ボックスの角を描画と同じ変換で動かして測る。
 	void GetEnemyVisualVerticalExtent(float& bottomY, float& height) const;
 	void UpdateGameplayCamera(float deltaSeconds = 0.0f);
+	// 攻撃(コンボの各段)の出だしに、プレイヤーを入力方向(無ければロックオン中の敵)へ向ける。
+	void AimPlayerAttack();
+	// 画面右下の操作説明。ゲームパッドがつながっていればパッドの表記にする。
+	void DrawControlGuide();
+	bool m_showControlGuide = true;
 	void UpdateCombatCameraDistance(float deltaSeconds);
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
 	void RenderShadowMap();
@@ -115,7 +121,8 @@ private:
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	// 見た目だけの闘技場パーツ。衝突判定はm_wallsが担当し、
 	// デバッグ編集画面とゲームプレイが同じ境界を共有する。
-	Box m_arenaFloorVisual{1.0f, 1.0f, 1.0f};
+	// 床はマス目付き(距離感をつかみやすくするため)。
+	ArenaFloor m_arenaFloor;
 	Box m_arenaWallVisual{1.0f, 1.0f, 1.0f};
 	Box m_arenaWallCapVisual{1.0f, 1.0f, 1.0f};
 	// 影生成パス用のシェーダー(深度だけを書き込む)。
@@ -173,6 +180,13 @@ private:
 	OneVsOneCombat m_combat;
 	int m_lastPlayerComboStep = 0;
 	bool m_lastPlayerHeavyAttack = false;
+	// 先行入力。回避中に押した攻撃や、キャンセルできない攻撃中に押した回避を少しの間覚えておき、
+	// 出せるようになった瞬間に出す(モンスターハンター・エルデンリングと同じ)。
+	// 覚えるのは最後に押した1つだけ。
+	enum class BufferedAction { None, Attack, HeavyAttack, Dodge };
+	BufferedAction m_bufferedAction = BufferedAction::None;
+	float m_bufferedActionTime = 0.0f;
+	static constexpr float INPUT_BUFFER_SECONDS = 0.3f;
 	bool m_resultRequested = false;
 	bool m_enemyIntroActive = true;
 	bool m_enemyRoarPlayed = false;
