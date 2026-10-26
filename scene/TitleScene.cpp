@@ -2,6 +2,7 @@
 
 #include "../system/GameFlow.h"
 #include "../system/Inputmanager.h"
+#include "../system/GameInput.h"
 #include "../system/CShader.h"
 #include "../system/DebugUI.h"
 #include "../system/SoundManager.h"
@@ -126,8 +127,8 @@ void TitleScene::update(uint64_t deltatime)
         return;
     }
 
-    auto& input = CInputManager::GetInstance();
-    if (input.IsKeyTriggered(DIK_RETURN) || input.IsKeyTriggered(DIK_SPACE))
+    // キーボード(Enter・Space)でもゲームパッド(A・Start)でも始められる。
+    if (GameInput::Get().IsTriggered(GameAction::Confirm))
     {
         StartTitleTransition(m_starting, m_transitionSeconds);
     }
@@ -367,9 +368,12 @@ void TitleScene::draw(uint64_t)
                 StartTitleTransition(m_starting, m_transitionSeconds);
 
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            const ImVec2 promptSize = ImGui::CalcTextSize("PRESS ENTER");
+            // ゲームパッドがつながっていればパッドのボタン名を出す。
+            const char* prompt = GameInput::Get().GetDisplayDevice() == InputDevice::Gamepad
+                ? "PRESS A" : "PRESS ENTER";
+            const ImVec2 promptSize = ImGui::CalcTextSize(prompt);
             ImGui::SetCursorPosX((contentWidth - promptSize.x) * 0.5f + ImGui::GetStyle().WindowPadding.x);
-            ImGui::TextDisabled("PRESS ENTER");
+            ImGui::TextDisabled("%s", prompt);
             ImGui::Dummy(ImVec2(0.0f, 10.0f));
 
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.13f, 0.16f, 1.0f));

@@ -75,9 +75,16 @@ public:
 	// updateの中で足すのは、壁との衝突補正(更新前後の差分で行う)を通すため。
 	void applyRootMotion(const Vector3& worldDelta);
 
+	// 攻撃(コンボの各段)の出だしに呼ぶ。入力している方向へ向き直る。
+	// 入力が無くロックオン中なら敵の方を向く。どちらでもなければ向きを変えない。
+	void aimAttack(float cameraYaw, bool lockedOn, const Vector3& targetPosition);
+
 	void setVel(const Vector3& vel);
 
 private:
+	// 移動の入力(前・右)。キーボードとゲームパッドの両方。調整用の自動移動もここで混ぜる。
+	void readMoveInput(float& forward, float& right) const;
+
 	Vector3 m_move{0,0,0};				// 遘ｻ蜍暮㍼
 	Vector3 m_destrot{0,0,0};			// 逶ｮ讓吝ｧｿ蜍｢
 	MotionState m_motionState = MotionState::Idle;

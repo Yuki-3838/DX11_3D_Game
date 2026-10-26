@@ -242,6 +242,8 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- 1つのプロジェクト内の.cppを、CPUのコア数ぶん並べてコンパイルする(/MP)。 -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -261,6 +263,8 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- 1つのプロジェクト内の.cppを、CPUのコア数ぶん並べてコンパイルする(/MP)。 -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -280,6 +284,8 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- 1つのプロジェクト内の.cppを、CPUのコア数ぶん並べてコンパイルする(/MP)。 -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -299,6 +305,8 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\DirectXTK\include;$(ProjectDir)..\third_party\assimp\include;$(ProjectDir)..\system\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- 1つのプロジェクト内の.cppを、CPUのコア数ぶん並べてコンパイルする(/MP)。 -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 /wd4828 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>

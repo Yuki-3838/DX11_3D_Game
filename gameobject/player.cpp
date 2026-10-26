@@ -6,6 +6,7 @@
 #include	"player.h"	
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"	
+#include	"../system/GameInput.h"
 #include	"../Application.h"
 #include	"../system/CombatAttackTable.h"
 
@@ -85,27 +86,56 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked) {
 	update(dt, cameraYaw, movementLocked, false, false);
 }
 
-void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool sprinting, bool dodgeTriggered) {
-
-	auto& input = CInputManager::GetInstance();
-	// GetAsyncKeyStateはPC全体のキー状態を返すので、ゲームのウィンドウが前面にあるときだけ使う。
-	// 以前は前面かどうかを見ておらず、別のアプリで押したキーでもプレイヤーが動いていた。
-	const bool gameIsForeground = GetForegroundWindow() == Application::GetWindow();
-	const auto isMoveKeyPressed = [&input, gameIsForeground](int directInputKey, int virtualKey) {
-		return input.IsKeyPressed(directInputKey) ||
-			(gameIsForeground && (GetAsyncKeyState(virtualKey) & 0x8000) != 0);
-	};
-
+void player::readMoveInput(float& forward, float& right) const
+{
+	// キーボード(WASD)とゲームパッド(左スティック)のどちらからでも、GameInputがまとめて返す。
+	const Vector2 move = GameInput::Get().GetMove();
+	forward = move.y;
+	right = move.x;
 	// 調整用の自動移動(dev_settings.iniのauto_walk)。撮影で確認するときに、外からキー入力を
 	// 送らずに歩かせるためのもの。撮影ツールのキー入力は、ゲームが前面でないと別のアプリへ飛んでしまう。
-	const bool moveForward = !movementLocked &&
-		(isMoveKeyPressed(DIK_W, 'W') || m_debugForcedForward > 0.0f);
-	const bool moveBackward = !movementLocked &&
-		(isMoveKeyPressed(DIK_S, 'S') || m_debugForcedForward < 0.0f);
-	const bool moveLeft = !movementLocked &&
-		(isMoveKeyPressed(DIK_A, 'A') || m_debugForcedRight < 0.0f);
-	const bool moveRight = !movementLocked &&
-		(isMoveKeyPressed(DIK_D, 'D') || m_debugForcedRight > 0.0f);
+	if (m_debugForcedForward != 0.0f)
+		forward = m_debugForcedForward;
+	if (m_debugForcedRight != 0.0f)
+		right = m_debugForcedRight;
+}
+
+void player::aimAttack(float cameraYaw, bool lockedOn, const Vector3& targetPosition)
+{
+	// 攻撃の出だしだけ、入力している方向へ向き直る(モンスターハンター・エルデンリングと同じ)。
+	// 攻撃中は移動を止めて振り向きもしないため、これが無いと
+	// 横を押しながら斬っても、元の向きのまま空を斬ってしまう。
+	// 向きは目標角度だけ変え、実際の回転はupdate()の振り向き(数フレームで回り切る)に任せる。
+	float forwardInput = 0.0f;
+	float rightInput = 0.0f;
+	readMoveInput(forwardInput, rightInput);
+	if (forwardInput != 0.0f || rightInput != 0.0f)
+	{
+		// 移動と同じく、カメラの水平な向きを基準にする。
+		const float moveX = -std::sinf(cameraYaw) * forwardInput + std::cosf(cameraYaw) * rightInput;
+		const float moveZ = std::cosf(cameraYaw) * forwardInput + std::sinf(cameraYaw) * rightInput;
+		m_destrot.y = std::atan2(-moveX, -moveZ);
+		return;
+	}
+	// 入力が無くロックオン中なら、敵の方へ振る。
+	// ロックオン中の移動では体を敵へ向けない作りなので、ここで向けないと
+	// 敵に背を向けて立ち止まったまま斬ったとき、空を斬ってしまう。
+	if (lockedOn)
+	{
+		const float toTargetX = targetPosition.x - m_srt.pos.x;
+		const float toTargetZ = targetPosition.z - m_srt.pos.z;
+		if (toTargetX * toTargetX + toTargetZ * toTargetZ > 0.0001f)
+			m_destrot.y = std::atan2(-toTargetX, -toTargetZ);
+	}
+}
+
+void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool sprinting, bool dodgeTriggered) {
+
+	// 移動の入力(前・右。スティックなら0〜1の途中の値も来る)。攻撃中などは0にする。
+	float moveForwardInput = 0.0f;
+	float moveRightInput = 0.0f;
+	if (!movementLocked)
+		readMoveInput(moveForwardInput, moveRightInput);
 	const bool jumpTriggered = false;
 	if (movementLocked)
 	{
@@ -150,8 +180,8 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		m_dodgeDirection = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y));
 		// 回避は入力した方向へ転がる。ロックオン中は常に敵を向いているので、
 		// 向いている方へ転がる作りのままだと、横へ避けたくても敵へ飛び込んでしまう。
-		const float dodgeForward = static_cast<float>(moveForward) - static_cast<float>(moveBackward);
-		const float dodgeRight = static_cast<float>(moveRight) - static_cast<float>(moveLeft);
+		const float dodgeForward = moveForwardInput;
+		const float dodgeRight = moveRightInput;
 		if (dodgeForward != 0.0f || dodgeRight != 0.0f)
 		{
 			const float length = std::sqrt(dodgeForward * dodgeForward + dodgeRight * dodgeRight);
@@ -216,8 +246,10 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 
 	// WASDはカメラの水平な向きを基準に移動する。
 	// Wは画面奥、A/Dは画面左右、Sは画面手前へ移動する。
-	const float forwardInput = static_cast<float>(moveForward) - static_cast<float>(moveBackward);
-	const float rightInput = static_cast<float>(moveRight) - static_cast<float>(moveLeft);
+	// スティックを少しだけ倒しても、移動の速さは変えない(向きだけを使う)。
+	// 速さを倒し具合に合わせると、移動のブレンドツリーと足の運びの調整をやり直す必要があるため。
+	const float forwardInput = moveForwardInput;
+	const float rightInput = moveRightInput;
 	const float inputLength = std::sqrt(forwardInput * forwardInput + rightInput * rightInput);
 	const bool isMoving = inputLength > 0.0f;
 	if (m_isJumping)
