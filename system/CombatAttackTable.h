@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <string>
+#include <vector>
 #include "../DX11_3D_Game/CombatDesign.h"
 
 /**
@@ -290,6 +293,41 @@ inline constexpr float PLAYER_DODGE_SECONDS = 0.50f;
 } // namespace Tuning
 
 /**
+ * @brief 攻撃の途中で起こす出来事(タイムラインのイベント)。
+ *
+ * クリップの決まった瞬間に、効果音・カメラの揺れ・火花を出す。
+ * 「当たったとき」の演出とは別で、当たらなくても出る(振りの風切り音や、地面を叩いた火花など)。
+ * 時刻はクリップの秒で持つ(再生速度を変えても、振りの同じ瞬間で起きる)。
+ */
+enum class TimelineEventType
+{
+    Sound,       ///< 効果音
+    CameraShake, ///< カメラの揺れ
+    Sparks,      ///< 剣先から火花
+    Count
+};
+
+/** イベントで鳴らせる効果音(SoundManagerにある音)。 */
+enum class TimelineSound
+{
+    Whoosh,       ///< 風切り音(回避と同じ音)
+    SwordHit,     ///< 斬撃音(命中時と同じ音)
+    DragonAttack, ///< 竜の攻撃の音
+    Roar,         ///< 咆哮
+    Count
+};
+
+struct TimelineEvent
+{
+    float time = 0.0f;            ///< 起こす時刻(クリップの秒)
+    TimelineEventType type = TimelineEventType::Sound;
+    TimelineSound sound = TimelineSound::Whoosh; ///< Sound用
+    float strength = 1.0f;        ///< CameraShake: 揺れの強さ / Sparks: 火花の大きさ
+    float duration = 0.2f;        ///< CameraShake: 揺れる時間(秒)
+    int count = 12;               ///< Sparks: 火花の本数
+};
+
+/**
  * @brief プレイヤーのコンボ1段分の、クリップと時間の対応。
  *
  * 以前は攻撃クリップを元の長さに関係なく0.95秒(強攻撃1.10秒)へ詰めて再生し、
@@ -306,10 +344,13 @@ inline constexpr float PLAYER_DODGE_SECONDS = 0.50f;
  *   強: 振りかぶって踏み込む振り下ろし → 前進しながらの回転斬り → 沈み込んで振り抜く回転斬り
  * 片手剣は「出が早く、振り終わりからすぐ次へつながる」ので、
  * 振りの手前から再生を始め(溜めを短く)、振り終わった直後から次の段へつなげる。
+ *
+ * 2026-10-26から、値は assets/data/attack_timeline.txt で上書きできる
+ * (ゲーム内のタイムラインエディター(F6)で編集・保存する)。下の表はファイルが無いときの既定値。
  */
 struct PlayerComboStep
 {
-    const char* clipFile = "";   ///< 既定のクリップ(dev_settings.ini の weak1..3 / heavy1..3 で差し替え可)
+    std::string clipFile;        ///< 使うクリップ(assets/motion の .fbx)
     float clipStart = 0.0f;      ///< 再生を始める位置(クリップの秒)。溜めの前半を飛ばす
     float hitStart = 0.0f;       ///< 攻撃判定が出始める位置(クリップの秒)
     float hitEnd = 0.0f;         ///< 攻撃判定が消える位置(クリップの秒)
@@ -320,45 +361,115 @@ struct PlayerComboStep
     /// クリップの移動量そのままでは足りない技だけ上げる。地面を蹴らずに滑って見えるので、
     /// 跳んでいる間の移動が主な技(ダッシュ攻撃)以外では1のままにすること。
     float rootMotionScale = 1.0f;
+    /// 剣の軌跡を出す区間(クリップの秒)。負の値なら攻撃判定と同じ区間。
+    float trailStart = -1.0f;
+    float trailEnd = -1.0f;
+    /// 途中で起こすイベント(効果音・カメラの揺れ・火花)。
+    std::vector<TimelineEvent> events;
 
     float WindupSeconds() const { return (hitStart - clipStart) / playbackRate; }
     float ActiveSeconds() const { return (hitEnd - hitStart) / playbackRate; }
     float RecoverySeconds() const { return (clipEnd - hitEnd) / playbackRate; }
     float TotalSeconds() const { return (clipEnd - clipStart) / playbackRate; }
+    float TrailStart() const { return trailStart >= 0.0f ? trailStart : hitStart; }
+    float TrailEnd() const { return trailEnd >= 0.0f ? trailEnd : hitEnd; }
+    /// 予約した次の段へ移れるようになる位置(クリップの秒)。
+    float ComboLinkClipTime() const { return hitEnd + comboLinkSeconds * playbackRate; }
 };
 
-/** コンボの段(1〜3)の設定を引く。 */
-inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
+/** 編集できるプレイヤーの技。タイムラインエディターとファイルの並び順。 */
+enum class PlayerAttackSlot
+{
+    Weak1, Weak2, Weak3,
+    Heavy1, Heavy2, Heavy3,
+    Dash,
+    Count
+};
+
+inline constexpr int PLAYER_ATTACK_SLOT_COUNT = static_cast<int>(PlayerAttackSlot::Count);
+
+/** ファイルに書く名前(英数字)。 */
+inline const char* PlayerAttackSlotKey(PlayerAttackSlot slot)
+{
+    static const char* keys[PLAYER_ATTACK_SLOT_COUNT] = {
+        "weak1", "weak2", "weak3", "heavy1", "heavy2", "heavy3", "dash" };
+    return keys[static_cast<int>(slot)];
+}
+
+/** 画面に出す名前。 */
+inline const char* PlayerAttackSlotLabel(PlayerAttackSlot slot)
+{
+    static const char* labels[PLAYER_ATTACK_SLOT_COUNT] = {
+        "弱1", "弱2", "弱3", "強1", "強2", "強3", "ダッシュ" };
+    return labels[static_cast<int>(slot)];
+}
+
+inline PlayerAttackSlot PlayerAttackSlotOf(bool heavy, int comboStep, bool dash = false)
+{
+    if (dash)
+        return PlayerAttackSlot::Dash;
+    const int index = std::clamp(comboStep, 1, 3) - 1;
+    return static_cast<PlayerAttackSlot>((heavy ? 3 : 0) + index);
+}
+
+/** 既定値(ファイルが無いとき・「既定に戻す」で使う)。 */
+inline const PlayerComboStep& DefaultPlayerAttack(PlayerAttackSlot slot)
 {
     // 右腕の振りの計測値(クリップの秒): slash(5) 0.49-0.64 / slash 0.55-0.64 / slash(3) 0.74-0.86 /
     // attack 1.05-1.28 / attack(4) 0.17-0.55 / attack(3) 0.68-0.81 / slash(4) 1.28-1.40
-    static const PlayerComboStep weak[3] = {
-        // 1段目: slash (5)。低く踏み込んで斬り、戻る。出が早い基本の一撃。
+    static const PlayerComboStep defaults[PLAYER_ATTACK_SLOT_COUNT] = {
+        // 弱1: slash (5)。低く踏み込んで斬り、戻る。出が早い基本の一撃。
         // (以前は跳躍斬りの attack を1段目にしていたが、立ち止まった状態からいきなり跳ぶのは
         //  弱攻撃の出だしにふさわしくない、とユーザー判断。跳躍斬りはダッシュ攻撃へ移した)
         { "assets/motion/sword and shield slash (5).fbx", 0.24f, 0.44f, 0.70f, 1.20f, 1.30f, 0.05f },
-        // 2段目: slash (3)。低い位置から斬り上げる。
+        // 弱2: slash (3)。低い位置から斬り上げる。
         // (以前は slash にしていたが、1段目と同じく「剣を同じ側へ振り上げて斜めに振り下ろす」軌道で、
         //  どちらの段か見分けられない、とユーザー指摘。右手の軌跡を測って、軌道が逆向きのものを選んだ)
         { "assets/motion/sword and shield slash (3).fbx", 0.44f, 0.68f, 0.92f, 1.60f, 1.25f, 0.08f },
-        // 3段目: attack (4)。反対側から横へ薙ぐ。振り下ろし → 斬り上げ → 横薙ぎと、段ごとに剣の向きを変える。
+        // 弱3: attack (4)。反対側から横へ薙ぐ。振り下ろし → 斬り上げ → 横薙ぎと、段ごとに剣の向きを変える。
         { "assets/motion/sword and shield attack (4).fbx", 0.02f, 0.15f, 0.58f, 0.95f, 1.20f, 0.10f },
-    };
-    static const PlayerComboStep heavyTable[3] = {
-        // 1段目: slash。高く振りかぶり、約42cm踏み込みながら振り下ろす。
+        // 強1: slash。高く振りかぶり、約42cm踏み込みながら振り下ろす。
         // 溜めを長めに見せて(0.36秒)、弱攻撃より重い一撃にする。
         // (以前は attack (4) だったが、弱攻撃の3段目へ回したので差し替えた)
         { "assets/motion/sword and shield slash.fbx",      0.10f, 0.50f, 0.72f, 1.30f, 1.10f, 0.08f },
-        // 2段目: attack (3)。約226cm前進しながら回転して斬る。
+        // 強2: attack (3)。約226cm前進しながら回転して斬る。
         // 回転しながら2回振るクリップで、2回目の振りは0.75〜1.05秒(手の速さが最大なのは0.95秒)。
         // 以前は判定の終わりを0.90秒にしていたため、次の段へ1.0秒で移り、振り切る前に3段目が始まっていた。
         // (右腕の関節の回転だけで振りの区間を測っていたので、体の回転で剣が動く分を見落としていた)
         { "assets/motion/sword and shield attack (3).fbx", 0.34f, 0.62f, 1.05f, 1.60f, 1.25f, 0.12f },
-        // 3段目: slash (4)。沈み込んで振り抜く回転斬り。締めの大技なので硬直が最も長い。
+        // 強3: slash (4)。沈み込んで振り抜く回転斬り。締めの大技なので硬直が最も長い。
         { "assets/motion/sword and shield slash (4).fbx",  0.84f, 1.22f, 1.50f, 2.30f, 1.25f, 0.10f },
+        // ダッシュ攻撃: attack(跳び上がって約223cm前へ出る斬り下ろし)。
+        // 踏み込みはクリップのままだと約22(身長の1.2倍)で、走りから出す技としては物足りない
+        // (ユーザー指摘「ダッシュattackはちょっと前に進んでほしい」)。跳んでいる間の移動なので、
+        // 1.6倍(約36、身長の2倍)まで伸ばしても地面を滑って見えない。
+        { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f },
     };
-    const int index = std::clamp(comboStep, 1, 3) - 1;
-    return heavy ? heavyTable[index] : weak[index];
+    return defaults[static_cast<int>(slot)];
+}
+
+/**
+ * @brief ゲームが実際に使う技のデータ(書き換えられる)。
+ *
+ * 起動時は既定値で始まり、assets/data/attack_timeline.txt があればその値で上書きされる
+ * (AttackTimelineFile::Load)。タイムラインエディターはここを直接書き換えるので、
+ * 編集した値はその場でゲームの攻撃にも効く。
+ */
+inline PlayerComboStep& EditablePlayerAttack(PlayerAttackSlot slot)
+{
+    static std::array<PlayerComboStep, PLAYER_ATTACK_SLOT_COUNT> steps = [] {
+        std::array<PlayerComboStep, PLAYER_ATTACK_SLOT_COUNT> result;
+        for (int i = 0; i < PLAYER_ATTACK_SLOT_COUNT; ++i)
+            result[i] = DefaultPlayerAttack(static_cast<PlayerAttackSlot>(i));
+        return result;
+    }();
+    return steps[static_cast<int>(slot)];
+}
+
+/** コンボの段(1〜3)の設定を引く。 */
+inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
+{
+    return EditablePlayerAttack(PlayerAttackSlotOf(heavy, comboStep));
 }
 
 /**
@@ -366,16 +477,10 @@ inline const PlayerComboStep& PlayerComboStepOf(bool heavy, int comboStep)
  *
  * モンスターハンターの片手剣の突進斬りと同じく、走りから派生して大きく踏み込み、距離を詰めて斬る。
  * 立ち止まった状態の弱攻撃1段目の代わりに出て、そのまま弱攻撃の2段目へつなげられる。
- * クリップは attack(跳び上がって約223cm前へ出る斬り下ろし)。
  */
 inline const PlayerComboStep& PlayerDashAttackStep()
 {
-    // 踏み込みはクリップのままだと約22(身長の1.2倍)で、走りから出す技としては物足りない
-    // (ユーザー指摘「ダッシュattackはちょっと前に進んでほしい」)。跳んでいる間の移動なので、
-    // 1.6倍(約36、身長の2倍)まで伸ばしても地面を滑って見えない。
-    static const PlayerComboStep step =
-        { "assets/motion/sword and shield attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f };
-    return step;
+    return EditablePlayerAttack(PlayerAttackSlot::Dash);
 }
 
 /** プレイヤーの通常攻撃1段分。 */

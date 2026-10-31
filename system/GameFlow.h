@@ -26,6 +26,12 @@ namespace GameFlow
     inline bool useGameLoop = true;
     // 本編だけのときに、決着後へ戦いをやり直すための合図。
     inline bool restartRequested = false;
+    /**
+     * @brief 起動したら、ゲーム本編で攻撃のタイムラインエディター(F6)を開いた状態にする。
+     * 起動引数 --timeline で立てる(VSの構成プルダウンの「攻撃タイムライン」)。
+     * 最初の1回だけ使う(リトライのたびに開き直さないよう、使ったら下ろす)。
+     */
+    inline bool openAttackTimelineOnStart = false;
 
     inline void SetResult(Result result)
     {

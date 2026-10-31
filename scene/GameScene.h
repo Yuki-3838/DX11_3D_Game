@@ -11,6 +11,7 @@
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
 #include "../system/ArenaFloor.h"
+#include "../system/AttackTimelineEditor.h"
 #include "../system/HitEffect.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
@@ -76,6 +77,59 @@ public:
 	void DrawControlGuide();
 	bool m_showControlGuide = true;
 	void UpdateCombatCameraDistance(float deltaSeconds);
+
+	// --- 攻撃のタイムライン(F6のエディターと、ゲーム中のイベント) ---
+	void OpenTimelineEditor();
+	void CloseTimelineEditor();
+	// エディターを開いている間の更新。ゲームは止め、プレイヤーを再生位置の姿勢にする。
+	void UpdateTimelineEditor(float deltaSeconds);
+	// プレイヤーを、技のクリップの指定した時刻の姿勢・位置にする(プレビュー)。
+	void PoseTimelinePreview(Combat::PlayerAttackSlot slot, float clipSeconds);
+	// プレビューで、いまの技を始める位置と向き。コンボを通して再生しているなら、前の段の踏み込みの分だけ前。
+	SRT TimelinePreviewBaseSrt() const;
+	// コンボの最初の段を始める位置と向き。「敵の前に立つ」なら、敵を向いて間合いの位置に立つ。
+	SRT TimelinePreviewStartSrt() const;
+	// クリップ全体を細かく区切って姿勢を作り、剣先の通り道・速さ・敵に当たる区間を求める。
+	void RecomputeTimelineAnalysis();
+	// エディターを開いている間の3D表示(剣先の通り道・剣の箱)。
+	void DrawTimelineEditor3D();
+	// 技のクリップ(Combat::EditablePlayerAttack(slot).clipFile)を読み込み直す。
+	bool ReloadAttackClip(Combat::PlayerAttackSlot slot);
+	// タイムラインのイベント(効果音・カメラの揺れ・火花)を起こす。
+	void FireTimelineEvent(const Combat::TimelineEvent& event);
+	// ゲーム中、再生している技のクリップの時刻を見て、イベントを起こし、剣の軌跡を出す。
+	void UpdateAttackTimelineEvents();
+	// 技を始めたときに呼ぶ。どの技のタイムラインを見るかを覚える。
+	void BeginAttackTimeline(Combat::PlayerAttackSlot slot);
+
+	AttackTimelineEditor m_timelineEditor;
+	AttackTimelineEditor::Analysis m_timelineAnalysis;
+	int m_timelineAnalysisRevision = -1;
+	Combat::PlayerAttackSlot m_timelineAnalysisSlot = Combat::PlayerAttackSlot::Weak1;
+	// 剣先と刃の根元の通り道(ワールド座標)と、それぞれのクリップの時刻。
+	std::vector<Vector3> m_timelinePathTips;
+	std::vector<Vector3> m_timelinePathBases;
+	std::vector<float> m_timelinePathTimes;
+	// エディターを開いた瞬間のプレイヤーの位置と向き。プレビューの踏み込みはここから足し、閉じたら戻す。
+	SRT m_timelineSavedPlayerSrt{};
+	float m_timelineSavedGroundOffsetY = 0.0f;
+	bool m_timelineBladeHitsEnemy = false;
+	bool m_timelineEditorWasOpen = false;
+	// 保存せずにエディターを閉じたときの注意を、画面に出しておく残り時間(秒)。
+	float m_timelineUnsavedNoticeTime = 0.0f;
+	// エディターのカメラ(右ドラッグで回り込む・ホイールで寄る)。
+	float m_timelineCameraYaw = 0.0f;
+	float m_timelineCameraPitch = 0.22f;
+	float m_timelineCameraDistance = 75.0f;
+	// エディターではカメラを直接置くので、揺れはここで作る。
+	float m_timelineShakeTime = 0.0f;
+	float m_timelineShakeDuration = 0.0f;
+	float m_timelineShakeStrength = 0.0f;
+	// ゲーム中のイベント: いま再生している技と、前のフレームに見たクリップの時刻。
+	Combat::PlayerAttackSlot m_playingAttackSlot = Combat::PlayerAttackSlot::Weak1;
+	float m_lastAttackEventClipTime = -1.0f;
+	bool m_attackTimelineActive = false;
+
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
 	void RenderShadowMap();
 	Matrix4x4 BuildLightViewProjection() const;

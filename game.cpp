@@ -76,9 +76,10 @@ void UpdateWindowTitle()
 // タイトルとリザルトを使うか(ゲームループ)。
 //   --loop / gameloop=1 : タイトル → ゲーム → リザルト → タイトル
 //   --game / gameloop=0 : ゲーム本編だけ。決着がついたら同じ戦いをやり直す。
+//   --timeline          : ゲーム本編だけで始め、攻撃のタイムラインエディターを開いておく。
 bool ResolveUseGameLoop()
 {
-	if (HasArg(L"--game"))
+	if (HasArg(L"--game") || HasArg(L"--timeline"))
 		return false;
 	if (HasArg(L"--loop"))
 		return true;
@@ -120,6 +121,7 @@ void gameinit()
 	// 通常の起動はタイトルシーンから開始する。
 	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
 	GameFlow::useGameLoop = ResolveUseGameLoop();
+	GameFlow::openAttackTimelineOnStart = HasArg(L"--timeline");
 	// ゲームループを使うならタイトルから。本編だけなら直接ゲームへ。
 	SceneManager::SetCurrentScene(GameFlow::useGameLoop ? "TitleScene" : "GameScene");
 	UpdateWindowTitle();

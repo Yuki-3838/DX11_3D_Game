@@ -175,6 +175,17 @@ void OneVsOneCombat::ClearEnemyCollisionDebug()
 	m_collisionDebug.enemyObb = {};
 }
 
+OneVsOneCombat::CollisionDebugState OneVsOneCombat::EvaluateSwordCollisionPreview(
+	const Vector3& swordBase,
+	const Vector3& swordTip,
+	const Vector3& previousSwordTip,
+	const BoundingBoxOBB& playerObb,
+	const BoundingBoxOBB& enemyObb)
+{
+	return EvaluateSwordCollision(
+		swordBase, swordTip, previousSwordTip, true, playerObb, enemyObb);
+}
+
 void OneVsOneCombat::UpdatePlayerCollisionDebug(
 	const Vector3& swordBase,
 	const Vector3& swordTip,

@@ -58,6 +58,14 @@ public:
 		m_playerHitGrace = 0.0f;
 	}
 	void ClearEnemyCollisionDebug();
+	// 剣と敵の当たり判定を、戦闘の状態を変えずに計算する(タイムラインエディターのプレビュー用)。
+	// 判定の作り方はゲーム中(Update)とまったく同じ。
+	static CollisionDebugState EvaluateSwordCollisionPreview(
+		const DirectX::SimpleMath::Vector3& swordBase,
+		const DirectX::SimpleMath::Vector3& swordTip,
+		const DirectX::SimpleMath::Vector3& previousSwordTip,
+		const GM31::GE::Collision::BoundingBoxOBB& playerObb,
+		const GM31::GE::Collision::BoundingBoxOBB& enemyObb);
 	void UpdatePlayerCollisionDebug(
 		const DirectX::SimpleMath::Vector3& swordBase,
 		const DirectX::SimpleMath::Vector3& swordTip,
