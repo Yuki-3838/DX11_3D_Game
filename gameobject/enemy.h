@@ -58,6 +58,9 @@ public:
 	void forceRage();
 	bool isEnraged() const { return m_rageSeconds > 0.0f; }
 	bool isRoaring() const { return m_motionState == MotionState::Roar; }
+	// 登場演出の咆哮。咆哮の音を鳴らしてからの秒を渡す(負なら咆哮していない)。
+	// 登場の間は敵のAIを動かさないので、状態(Roar)ではなく時刻を外から渡して姿勢だけを付ける。
+	void setIntroRoarTime(float seconds) { m_introRoarTime = seconds; }
 	// デバッグ表示用。次に怒るまでの溜まり具合と、怒りの残り時間。
 	float getRageDamage() const { return m_rageDamage; }
 	float getRageThreshold() const;
@@ -215,6 +218,7 @@ private:
 	// 怒り。与えられたダメージを溜め、しきい値を超えると一定時間だけ怒る。
 	float m_rageDamage = 0.0f;
 	float m_rageSeconds = 0.0f;
+	float m_introRoarTime = -1.0f;
 	int m_rageCount = 0;
 	float m_posture = 0.0f;
 	float m_flinchYawSign = 1.0f;

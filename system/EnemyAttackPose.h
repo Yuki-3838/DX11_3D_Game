@@ -538,6 +538,67 @@ inline EnemyTellPose EnemyRoarTellPose(float roarTime, float duration)
     return tell;
 }
 
+namespace PoseTuning
+{
+// 登場の咆哮。咆哮の音(assets/audio/dragon_roar.wav、約2.8秒)の大きさに口の開きを合わせる。
+// 音の大きさを0.1秒ごとに測ると、0.15秒で鳴り始め、0.5秒で最大、2.3秒まで大きいまま続き、2.7秒で消える。
+// 怒りの咆哮(EnemyRoarPose。1.3秒で閉じる)を使うと、まだ吠えている途中で口が閉じてしまう。
+inline constexpr float INTRO_ROAR_RISE_START = 0.10f;   ///< 首を上げ口を開き始める(音の鳴り始め)
+inline constexpr float INTRO_ROAR_RISE_END = 0.50f;     ///< 開き切る(音が最大になる)
+inline constexpr float INTRO_ROAR_HOLD_END = 2.30f;     ///< 開いたまま吠え続ける
+inline constexpr float INTRO_ROAR_CLOSE_END = 2.90f;    ///< 口を閉じて首を戻し終える
+inline constexpr float INTRO_ROAR_SECONDS = INTRO_ROAR_CLOSE_END;
+// 首の持ち上げ。怒りの咆哮(1.10)と同じにすると、体の反りと合わせて頭がほぼ真上を向き、
+// 登場のカメラ(正面やや上)から開いた口が見えなかった(撮影で確認)。口がカメラへ向く程度に抑える。
+inline constexpr float INTRO_ROAR_NECK_REAR = 0.55f;
+// 吠えている間の震え。あごを細かく、首をゆっくり左右へ振って、声を絞り出している感じを出す。
+inline constexpr float INTRO_ROAR_JAW_TREMBLE = 0.08f;
+inline constexpr float INTRO_ROAR_JAW_TREMBLE_SPEED = 55.0f;  ///< ラジアン/秒(約9回/秒)
+inline constexpr float INTRO_ROAR_NECK_SWAY = 0.10f;
+inline constexpr float INTRO_ROAR_NECK_SWAY_SPEED = 4.0f;     ///< ラジアン/秒
+} // namespace PoseTuning
+
+namespace Detail
+{
+/** 登場の咆哮の強さ(0〜1)。音に合わせて、上がる→吠え続ける→戻る。 */
+inline float IntroRoarEnvelope(float roarTime)
+{
+    using namespace PoseTuning;
+    if (roarTime <= INTRO_ROAR_RISE_START || roarTime >= INTRO_ROAR_CLOSE_END)
+        return 0.0f;
+    if (roarTime < INTRO_ROAR_RISE_END)
+        return FastOut((roarTime - INTRO_ROAR_RISE_START) / (INTRO_ROAR_RISE_END - INTRO_ROAR_RISE_START));
+    if (roarTime < INTRO_ROAR_HOLD_END)
+        return 1.0f;
+    return 1.0f - SmoothStep01((roarTime - INTRO_ROAR_HOLD_END) / (INTRO_ROAR_CLOSE_END - INTRO_ROAR_HOLD_END));
+}
+} // namespace Detail
+
+/** 登場の咆哮の体の反り。roarTime は咆哮の音を鳴らしてからの秒。 */
+inline EnemyPoseOffset EnemyIntroRoarPose(float roarTime)
+{
+    EnemyPoseOffset offset{};
+    offset.pitch = PoseTuning::ROAR_REAR_PITCH * Detail::IntroRoarEnvelope(roarTime);
+    return offset;
+}
+
+/** 登場の咆哮の首とあご。首を高く上げ、口を大きく開けたまま震わせる。 */
+inline EnemyTellPose EnemyIntroRoarTellPose(float roarTime)
+{
+    EnemyTellPose tell{};
+    const float envelope = Detail::IntroRoarEnvelope(roarTime);
+    // 震えは吠え続けている間だけ。開き始めと閉じ際は震わせず、動きの形を崩さない。
+    const float hold =
+        roarTime >= PoseTuning::INTRO_ROAR_RISE_END && roarTime < PoseTuning::INTRO_ROAR_HOLD_END ? 1.0f : 0.0f;
+    tell.neckPitch = PoseTuning::INTRO_ROAR_NECK_REAR * envelope;
+    tell.neckYaw = PoseTuning::INTRO_ROAR_NECK_SWAY * hold *
+        std::sin(roarTime * PoseTuning::INTRO_ROAR_NECK_SWAY_SPEED);
+    tell.jawOpen = PoseTuning::ROAR_JAW_OPEN * envelope +
+        PoseTuning::INTRO_ROAR_JAW_TREMBLE * hold *
+        std::sin(roarTime * PoseTuning::INTRO_ROAR_JAW_TREMBLE_SPEED);
+    return tell;
+}
+
 /** 攻撃の種類と段階から、部位ごとの動かし方を求める。 */
 inline EnemyTellPose EnemyAttackTellPose(
     EnemyAttackKind kind, EnemyAttackPhase phase, float phaseTime,

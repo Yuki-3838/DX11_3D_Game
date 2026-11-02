@@ -659,6 +659,9 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	if (!s_attackPoseEnabled)
 		return Combat::EnemyPoseOffset{};
 
+	// 登場の咆哮。登場の間はAIが動かないので、外から渡された時刻で姿勢を付ける。
+	if (m_introRoarTime >= 0.0f)
+		return Combat::EnemyIntroRoarPose(m_introRoarTime);
 	// 咆哮は最優先。吠えている間は攻撃の構えも弱り具合の姿勢も出さない。
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
@@ -699,6 +702,9 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 	// 全身の傾きと同じ切り替え(dev_settings.ini の enemy_attack_pose=0)で、比較用にまとめて切れる。
 	if (!s_attackPoseEnabled)
 		return Combat::EnemyTellPose{};
+	// 登場の咆哮。音に合わせて口を開け、吠えている間は開けたまま震わせる。
+	if (m_introRoarTime >= 0.0f)
+		return Combat::EnemyIntroRoarTellPose(m_introRoarTime);
 	// 咆哮は首を持ち上げてあごを開く。
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarTellPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
