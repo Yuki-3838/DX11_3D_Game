@@ -82,6 +82,17 @@ inline constexpr float SPIN_BRACE_PITCH = 0.14f; ///< 尾回転: 腰を落とし
 inline constexpr float SPIN_WIND_YAW = 0.40f;    ///< 尾回転: 回る向きと逆へ捻って溜める量
 inline constexpr float SPIN_OVERRUN_YAW = 0.18f; ///< 尾回転: 回り切って体が流れる量(隙の表現)
 
+// 火球: 上体を反らして首を持ち上げ(息を吸う)、吐く瞬間に前へ突き出す。
+// 叩き付けも上体を反らすので、あごを大きく開けて口の火(GameScene側の演出)を見せて区別する。
+inline constexpr float FIREBALL_REAR_PITCH = -0.20f; ///< 火球: 息を吸って反る量
+inline constexpr float FIREBALL_SPIT_PITCH = 0.12f;  ///< 火球: 吐くときの前のめり
+
+// 突進: 頭を低く下げて前へ構える(地面を掻く)。走っている間は前のめり、止まるときは後ろへ反って踏ん張る。
+inline constexpr float CHARGE_CROUCH_PITCH = 0.16f; ///< 突進: 予兆で頭を下げて構える量
+inline constexpr float CHARGE_RUN_PITCH = 0.12f;    ///< 突進: 走っている間の前のめり
+inline constexpr float CHARGE_RUN_SWAY_YAW = 0.06f; ///< 突進: 走りで体が左右に揺れる量
+inline constexpr float CHARGE_BRAKE_PITCH = -0.14f; ///< 突進: 滑って止まるときの後ろ反り
+
 /// 隙(Recovery)で姿勢が戻りきるまでの時間。長いほど「まだ動けない」ことが伝わる。
 inline constexpr float RECOVERY_SETTLE_SECONDS = 0.45f;
 } // namespace PoseTuning
@@ -236,6 +247,51 @@ inline EnemyPoseOffset EnemyAttackPose(
                 1.0f - Detail::SmoothStep01(phaseTime / PoseTuning::RECOVERY_SETTLE_SECONDS);
             offset.pitch = PoseTuning::SPIN_BRACE_PITCH * 0.7f * settle;
             offset.yaw = spin.sign * PoseTuning::SPIN_OVERRUN_YAW * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Fireball:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 息を吸い込むように上体を反らす。じわじわ溜めて、吐く直前が最も反っている。
+            offset.pitch = PoseTuning::FIREBALL_REAR_PITCH * windupT;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            // 反った姿勢から前へ突き出して吐く。
+            const float spit = Detail::FastOut(activeT);
+            offset.pitch =
+                PoseTuning::FIREBALL_REAR_PITCH * (1.0f - spit) +
+                PoseTuning::FIREBALL_SPIT_PITCH * spit;
+        }
+        else // Recovery
+        {
+            const float settle =
+                1.0f - Detail::SmoothStep01(phaseTime / PoseTuning::RECOVERY_SETTLE_SECONDS);
+            offset.pitch = PoseTuning::FIREBALL_SPIT_PITCH * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Charge:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 頭を下げて構える。地面を掻く前脚の動きは部位の構え(EnemyAttackTellPose)が担う。
+            offset.pitch = PoseTuning::CHARGE_CROUCH_PITCH * Detail::FastOut(windupT);
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            // 前のめりで走る。歩幅に合わせて体を左右へ揺らし、勢いを見せる。
+            offset.pitch = PoseTuning::CHARGE_RUN_PITCH +
+                (PoseTuning::CHARGE_CROUCH_PITCH - PoseTuning::CHARGE_RUN_PITCH) *
+                    (1.0f - Detail::SmoothStep01(phaseTime / 0.2f));
+            offset.yaw = PoseTuning::CHARGE_RUN_SWAY_YAW * std::sin(phaseTime * 14.0f);
+        }
+        else // Recovery
+        {
+            // 滑って止まる間は後ろへ反って踏ん張り、止まったらゆっくり戻る。
+            const float skid = Detail::Pulse01(
+                std::clamp(phaseTime / (Tuning::ENEMY_CHARGE_SKID_SECONDS * 1.6f), 0.0f, 1.0f));
+            offset.pitch = PoseTuning::CHARGE_BRAKE_PITCH * skid;
         }
         break;
 
@@ -456,6 +512,16 @@ inline constexpr float SPIN_TAIL_WHIP_OVERSHOOT = 0.75f;
 /// 振り抜き(追い越し)が始まる位置。半回転の何割を過ぎてから尾が追い越すか。
 inline constexpr float SPIN_TAIL_WHIP_START = 0.55f;
 inline constexpr float SPIN_NECK_TUCK = -0.35f;
+// 火球: 首を高く持ち上げてあごを大きく開け、口の中の火を見せる。吐く瞬間に首を前へ突き出す。
+inline constexpr float FIREBALL_NECK_REAR = 0.85f;
+inline constexpr float FIREBALL_NECK_SPIT = -0.40f;
+inline constexpr float FIREBALL_JAW = 0.95f;
+// 突進: 首を低く前へ伸ばし、前脚で地面を掻く(牛が走り出す前の動き)。走っている間は尾が大きく揺れる。
+inline constexpr float CHARGE_NECK_LOW = -0.55f;
+inline constexpr float CHARGE_PAW_LIFT = 0.40f;
+inline constexpr float CHARGE_PAW_SPEED = 9.0f; ///< 地面を掻く速さ(ラジアン/秒)
+inline constexpr float CHARGE_JAW = 0.45f;
+inline constexpr float CHARGE_TAIL_SWAY = 0.35f;
 } // namespace TellTuning
 
 /** 咆哮の部位の動き。首を持ち上げ、あごを大きく開く。 */
@@ -591,6 +657,54 @@ inline EnemyTellPose EnemyAttackTellPose(
             tell.tailYaw = spin.sign * TellTuning::SPIN_TAIL_OVERSHOOT * settle;
             tell.tailWhip = spin.sign * TellTuning::SPIN_TAIL_WHIP_OVERSHOOT * settle;
             tell.neckPitch = TellTuning::SPIN_NECK_TUCK * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Fireball:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 首を持ち上げ、あごは後半で大きく開く(開いた口の火が「もう吐く」の合図)。
+            tell.neckPitch = TellTuning::FIREBALL_NECK_REAR * windupT;
+            tell.jawOpen = TellTuning::FIREBALL_JAW *
+                Detail::SmoothStep01((phaseTime / windupSeconds - 0.35f) / 0.5f);
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            const float spit = Detail::FastOut(activeT);
+            tell.neckPitch =
+                TellTuning::FIREBALL_NECK_REAR * (1.0f - spit) +
+                TellTuning::FIREBALL_NECK_SPIT * spit;
+            tell.jawOpen = TellTuning::FIREBALL_JAW;
+        }
+        else
+        {
+            tell.neckPitch = TellTuning::FIREBALL_NECK_SPIT * settle;
+            tell.jawOpen = TellTuning::FIREBALL_JAW * settle;
+        }
+        break;
+
+    case EnemyAttackKind::Charge:
+        if (phase == EnemyAttackPhase::Windup)
+        {
+            // 首を低く構え、前脚で地面を2〜3回掻く。掻く動きは予兆の終わりへ向けて速くなる。
+            const float crouch = Detail::FastOut(windupT);
+            tell.neckPitch = TellTuning::CHARGE_NECK_LOW * crouch;
+            const float paw = std::max(0.0f, std::sin(
+                phaseTime * TellTuning::CHARGE_PAW_SPEED * (1.0f + 0.6f * windupT)));
+            tell.frontLegLift = TellTuning::CHARGE_PAW_LIFT * paw * crouch;
+        }
+        else if (phase == EnemyAttackPhase::Active)
+        {
+            // 走っている間。首は低いまま、あごを開いて吠え、尾は歩幅に合わせて大きく揺れる。
+            tell.neckPitch = TellTuning::CHARGE_NECK_LOW;
+            tell.jawOpen = TellTuning::CHARGE_JAW;
+            tell.tailYaw = TellTuning::CHARGE_TAIL_SWAY * std::sin(phaseTime * 14.0f + 1.2f);
+            tell.tailWhip = TellTuning::CHARGE_TAIL_SWAY * std::sin(phaseTime * 14.0f);
+        }
+        else
+        {
+            tell.neckPitch = TellTuning::CHARGE_NECK_LOW * settle;
+            tell.jawOpen = TellTuning::CHARGE_JAW * settle;
         }
         break;
 

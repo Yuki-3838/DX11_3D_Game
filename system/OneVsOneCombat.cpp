@@ -175,6 +175,17 @@ void OneVsOneCombat::ClearEnemyCollisionDebug()
 	m_collisionDebug.enemyObb = {};
 }
 
+OneVsOneCombat::CollisionDebugState OneVsOneCombat::EvaluateSwordCollisionPreview(
+	const Vector3& swordBase,
+	const Vector3& swordTip,
+	const Vector3& previousSwordTip,
+	const BoundingBoxOBB& playerObb,
+	const BoundingBoxOBB& enemyObb)
+{
+	return EvaluateSwordCollision(
+		swordBase, swordTip, previousSwordTip, true, playerObb, enemyObb);
+}
+
 void OneVsOneCombat::UpdatePlayerCollisionDebug(
 	const Vector3& swordBase,
 	const Vector3& swordTip,
@@ -319,6 +330,8 @@ void OneVsOneCombat::Update(
 			// そのため「当たる瞬間を1回だけ見る」方式では判定できず、
 			// 判定時間の間ずっと「いま尾がプレイヤーの方を通ったか」を見る。
 			const bool tailArc = Combat::EnemyAttackUsesTailArc(m_enemyAttackKind);
+			// 突進も、体ごと走って危険な場所そのものが動くので、判定時間の間ずっと見る。
+			const bool continuous = Combat::EnemyAttackHitsContinuously(m_enemyAttackKind);
 			// 尾回転は半回転ごとに1回まで当たる。半回転の間の一拍では判定を出さない
 			// (尾が止まっているので、そこへ歩いて当たるのは見た目と合わない)。
 			const int maxHits = Combat::EnemyMaxHitsOf(m_enemyAttackKind, m_enemySpinHalfTurns);
@@ -379,7 +392,9 @@ void OneVsOneCombat::Update(
 				// 尾がプレイヤーの方を通った(避けられた場合も含む)ときだけ使い切る。
 				// 権利は半回転ごとに1回(Combat::EnemyMaxHitsOf)。2回目も当たるようにしないと
 				// 「1回目を避けたら残りは無視してよい」ことになり、待ちの読み合いが消える。
-				if (!tailArc || wouldHit)
+				// 突進も同じで、走っている間に体がプレイヤーへ届いたときだけ使い切る。
+				// 前転の無敵で受けたときも使い切る(尾回転と同じく、合わせてくぐり抜けたら成功)。
+				if (!continuous || wouldHit)
 					++m_enemyAttack.hitCount;
 			}
             if (m_enemyAttack.elapsed >= enemyActive)
@@ -399,6 +414,18 @@ void OneVsOneCombat::Update(
         if (IsPlayerDefeated())
             m_playerAttack = { Phase::Defeated, 0.0f, false };
     }
+}
+
+bool OneVsOneCombat::ApplyEnemyProjectileHit(float damage)
+{
+	if (IsPlayerDefeated() || IsEnemyDefeated())
+		return false;
+	// 撮影・調整用の「プレイヤーを無敵」では、体力だけ減らさない(演出は呼び出し側が出す)。
+	if (!m_playerDebugInvincible)
+		m_playerHp = std::max(0.0f, m_playerHp - damage);
+	if (IsPlayerDefeated())
+		m_playerAttack = { Phase::Defeated, 0.0f, false };
+	return true;
 }
 
 void OneVsOneCombat::UpdateWithoutEnemy(

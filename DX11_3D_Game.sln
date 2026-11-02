@@ -22,6 +22,8 @@ Global
 		ゲームループ|x86 = ゲームループ|x86
 		デバッグ|x64 = デバッグ|x64
 		デバッグ|x86 = デバッグ|x86
+		攻撃タイムライン|x64 = 攻撃タイムライン|x64
+		攻撃タイムライン|x86 = 攻撃タイムライン|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.Debug|x64.ActiveCfg = Debug|x64
@@ -72,6 +74,18 @@ Global
 		{53335480-904F-46C7-8750-C1BD207B6D97}.ゲームループ|x86.Build.0 = GameLoop|Win32
 		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x86.ActiveCfg = DevDebug|Win32
 		{53335480-904F-46C7-8750-C1BD207B6D97}.デバッグ|x86.Build.0 = DevDebug|Win32
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.攻撃タイムライン|x64.ActiveCfg = Debug|x64
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.攻撃タイムライン|x64.Build.0 = Debug|x64
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.攻撃タイムライン|x64.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.攻撃タイムライン|x64.Build.0 = Debug|Any CPU
+		{53335480-904F-46C7-8750-C1BD207B6D97}.攻撃タイムライン|x64.ActiveCfg = AttackTimeline|x64
+		{53335480-904F-46C7-8750-C1BD207B6D97}.攻撃タイムライン|x64.Build.0 = AttackTimeline|x64
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.攻撃タイムライン|x86.ActiveCfg = Debug|Win32
+		{822241AC-8AF5-4DB0-B6D6-ED5400365636}.攻撃タイムライン|x86.Build.0 = Debug|Win32
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.攻撃タイムライン|x86.ActiveCfg = Debug|Any CPU
+		{D9E5EF5B-0AAE-4E9B-8B41-8D3C2C5F0F34}.攻撃タイムライン|x86.Build.0 = Debug|Any CPU
+		{53335480-904F-46C7-8750-C1BD207B6D97}.攻撃タイムライン|x86.ActiveCfg = AttackTimeline|Win32
+		{53335480-904F-46C7-8750-C1BD207B6D97}.攻撃タイムライン|x86.Build.0 = AttackTimeline|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

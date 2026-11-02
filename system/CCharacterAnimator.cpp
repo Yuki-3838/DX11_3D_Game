@@ -1027,6 +1027,7 @@ void CCharacterAnimator::PlayImportedComboStep(
 
 	// キーはクリップの長さに等間隔で並んでいるとみなす(ApplyAnimationToBonesと同じ前提)。
 	const float keysPerSecond = static_cast<float>(keys - 1) / clipSeconds;
+	m_importedClipKeysPerSecond = keysPerSecond;
 	m_importedAnimationFrameAccumulator = step.clipStart * keysPerSecond;
 	m_importedAnimationFrame = static_cast<int>(m_importedAnimationFrameAccumulator);
 	// 1更新(60Hz換算)あたりに進むキー数。Update側で経過時間を掛けて進めるので、fpsに依存しない。
@@ -1034,6 +1035,125 @@ void CCharacterAnimator::PlayImportedComboStep(
 	// 踏み込みは再生を始めた位置から数える(飛ばした溜めの分の移動は足さない)。
 	m_rootMotionPreviousTime = std::clamp(step.clipStart / clipSeconds, 0.0f, 0.9999f);
 	m_attackRootMotionScale = step.rootMotionScale;
+}
+
+aiAnimation* CCharacterAnimator::GetAttackAnimation(Combat::PlayerAttackSlot slot) const
+{
+	const int index = static_cast<int>(slot);
+	if (slot == Combat::PlayerAttackSlot::Dash)
+		return m_dashAttackAnimation;
+	if (index < 3)
+		return m_weakAttackAnimations[index];
+	if (index < 6)
+		return m_heavyAttackAnimations[index - 3];
+	return nullptr;
+}
+
+void CCharacterAnimator::SetAttackAnimation(Combat::PlayerAttackSlot slot, aiAnimation* animation)
+{
+	const int index = static_cast<int>(slot);
+	if (slot == Combat::PlayerAttackSlot::Dash)
+		m_dashAttackAnimation = animation;
+	else if (index < 3)
+		m_weakAttackAnimations[index] = animation;
+	else if (index < 6)
+		m_heavyAttackAnimations[index - 3] = animation;
+}
+
+float CCharacterAnimator::GetPlayingAttackClipSeconds() const
+{
+	if (m_importedAttackAnimation == nullptr || !m_motionPlaying || m_importedClipKeysPerSecond <= 0.0f)
+		return -1.0f;
+	return m_importedAnimationFrameAccumulator / m_importedClipKeysPerSecond;
+}
+
+float CCharacterAnimator::ClipSeconds(const aiAnimation* clip)
+{
+	if (clip == nullptr)
+		return 0.0f;
+	const double ticksPerSecond = clip->mTicksPerSecond > 0.0 ? clip->mTicksPerSecond : 30.0;
+	return static_cast<float>(clip->mDuration / ticksPerSecond);
+}
+
+bool CCharacterAnimator::PoseAttackClip(
+	CAnimationMesh& mesh,
+	BoneCombMatrix& boneComb,
+	aiAnimation* clip,
+	float clipSeconds,
+	float referenceClipSeconds)
+{
+	const float length = ClipSeconds(clip);
+	if (clip == nullptr || length <= 0.0f || m_pelvis.empty())
+		return false;
+	// 1.0ちょうどを渡すと、SampleLocalPose側の巻き戻しで先頭へ戻ってしまうので手前で止める。
+	const auto normalized = [length](float seconds) {
+		return std::clamp(seconds / length, 0.0f, 0.9999f);
+	};
+
+	// ボーンの選び方はゲームで技を再生するとき(Update の踏み込みのある攻撃)と同じ。
+	std::vector<std::string> bones;
+	bones.reserve(m_importedAttackBones.size() + 8);
+	for (const std::string& bone : m_importedAttackBones)
+	{
+		if (bone != m_pelvis)
+			bones.push_back(bone);
+	}
+	for (const std::string& bone : LowerBodyBones())
+	{
+		if (std::find(bones.begin(), bones.end(), bone) == bones.end())
+			bones.push_back(bone);
+	}
+	std::unordered_map<std::string, Matrix4x4> pose =
+		mesh.SampleLocalPose(clip, normalized(clipSeconds), bones);
+	Matrix4x4 pelvis = mesh.SampleHipsInPlace(
+		clip, normalized(clipSeconds), m_pelvis, m_attackHipsRotationMode);
+
+	// 腰の高さ: 技の始まりの高さを立ち姿(休止姿勢)へそろえ、そこからの上下動だけを残す。
+	const Matrix4x4 restPelvis = mesh.GetRestLocalMatrix(m_pelvis);
+	const Matrix4x4 startPelvis = mesh.SampleHipsInPlace(
+		clip, normalized(referenceClipSeconds), m_pelvis, m_attackHipsRotationMode);
+	const float components[3] = { restPelvis._41, restPelvis._42, restPelvis._43 };
+	int axis = 0;
+	for (int i = 1; i < 3; ++i)
+		if (std::abs(components[i]) > std::abs(components[axis]))
+			axis = i;
+	const auto heightOf = [axis](const Matrix4x4& matrix) {
+		return axis == 0 ? matrix._41 : (axis == 1 ? matrix._42 : matrix._43);
+	};
+	const float offset = heightOf(restPelvis) - heightOf(startPelvis);
+	if (axis == 0) pelvis._41 += offset;
+	else if (axis == 1) pelvis._42 += offset;
+	else pelvis._43 += offset;
+	pose[m_pelvis] = pelvis;
+
+	static const std::unordered_map<std::string, Matrix4x4> noManualPose;
+	mesh.ApplyLocalPose(boneComb, pose, noManualPose);
+	return true;
+}
+
+bool CCharacterAnimator::SampleRootMotion(
+	const CAnimationMesh& mesh,
+	aiAnimation* clip,
+	float fromSeconds,
+	float toSeconds,
+	float scale,
+	float& right,
+	float& forward) const
+{
+	right = 0.0f;
+	forward = 0.0f;
+	const float length = ClipSeconds(clip);
+	if (clip == nullptr || length <= 0.0f || m_pelvis.empty() || m_clipToWorld <= 0.0f)
+		return false;
+	const auto normalized = [length](float seconds) {
+		return std::clamp(seconds / length, 0.0f, 0.9999f);
+	};
+	// ゲームの踏み込み(Update)と同じく、ゲーム内では-Zが前・右は-X。
+	const Vector3 from = mesh.SampleBonePositionOffset(clip, normalized(fromSeconds), m_pelvis);
+	const Vector3 to = mesh.SampleBonePositionOffset(clip, normalized(toSeconds), m_pelvis);
+	forward = -(to.z - from.z) * m_clipToWorld * scale;
+	right = -(to.x - from.x) * m_clipToWorld * scale;
+	return true;
 }
 
 void CCharacterAnimator::PlayDashAttackMotion()
@@ -1241,6 +1361,8 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 {
 	BeginAttackBlend();
 	m_importedAttackAnimation = animation;
+	// 技(コンボの段)として再生するときだけ、PlayImportedComboStepが設定し直す。
+	m_importedClipKeysPerSecond = 0.0f;
 	// 踏み込みはクリップの先頭から数える。前の攻撃の残りは持ち越さない。
 	m_rootMotionPreviousTime = 0.0f;
 	m_pendingRootMotionRight = 0.0f;

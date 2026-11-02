@@ -7,7 +7,11 @@
  */
 
 #include <stdexcept>
+#include <vector>
+#include <wincodec.h>
 #include "renderer.h"
+
+#pragma comment(lib, "windowscodecs.lib")
 #include "../Application.h"
 
 //------------------------------------------------------------------------------
@@ -382,6 +386,106 @@ void Renderer::Begin()
 void Renderer::End()
 {
     m_SwapChain->Present(1, 0);
+}
+
+bool Renderer::SaveBackBufferPng(const wchar_t* path)
+{
+    // 同梱のDirectXTKのライブラリには画面保存(ScreenGrab)が入っていないため、WICで直接書き出す。
+    ComPtr<ID3D11Texture2D> backBuffer;
+    if (FAILED(m_SwapChain->GetBuffer(
+            0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backBuffer.GetAddressOf()))))
+        return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    backBuffer->GetDesc(&desc);
+    const bool bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    const bool rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    if (!bgra && !rgba)
+        return false;
+
+    // CPUで読める写しを作る。マルチサンプルなら先に1枚へまとめる。
+    ComPtr<ID3D11Texture2D> source = backBuffer;
+    if (desc.SampleDesc.Count > 1)
+    {
+        D3D11_TEXTURE2D_DESC resolvedDesc = desc;
+        resolvedDesc.SampleDesc = { 1, 0 };
+        resolvedDesc.Usage = D3D11_USAGE_DEFAULT;
+        resolvedDesc.BindFlags = 0;
+        resolvedDesc.CPUAccessFlags = 0;
+        resolvedDesc.MiscFlags = 0;
+        ComPtr<ID3D11Texture2D> resolved;
+        if (FAILED(m_Device->CreateTexture2D(&resolvedDesc, nullptr, resolved.GetAddressOf())))
+            return false;
+        m_DeviceContext->ResolveSubresource(resolved.Get(), 0, backBuffer.Get(), 0, desc.Format);
+        source = resolved;
+    }
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.SampleDesc = { 1, 0 };
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_Device->CreateTexture2D(&stagingDesc, nullptr, staging.GetAddressOf())))
+        return false;
+    m_DeviceContext->CopyResource(staging.Get(), source.Get());
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(m_DeviceContext->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+    // バックバッファのアルファは0のまま残っている所があり、そのまま保存すると画像が透ける。
+    // アルファを捨てて24ビット(BGR)へ詰め直す。
+    const UINT width = desc.Width;
+    const UINT height = desc.Height;
+    const UINT stride = width * 3;
+    std::vector<BYTE> pixels(static_cast<size_t>(stride) * height);
+    for (UINT y = 0; y < height; ++y)
+    {
+        const BYTE* row = static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(mapped.RowPitch) * y;
+        BYTE* out = pixels.data() + static_cast<size_t>(stride) * y;
+        for (UINT x = 0; x < width; ++x)
+        {
+            const BYTE* p = row + x * 4;
+            out[x * 3 + 0] = bgra ? p[0] : p[2];
+            out[x * 3 + 1] = p[1];
+            out[x * 3 + 2] = bgra ? p[2] : p[0];
+        }
+    }
+    m_DeviceContext->Unmap(staging.Get(), 0);
+
+    // PNGの書き出しはWIC(COM)を使う。このスレッドで初期化済みなら何もしない呼び出しになる。
+    static const bool comReady = [] {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE || hr == S_FALSE;
+    }();
+    if (!comReady)
+        return false;
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapEncoder> encoder;
+    ComPtr<IWICBitmapFrameEncode> frame;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(factory.GetAddressOf()))) ||
+        FAILED(factory->CreateStream(stream.GetAddressOf())) ||
+        FAILED(stream->InitializeFromFilename(path, GENERIC_WRITE)) ||
+        FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.GetAddressOf())) ||
+        FAILED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) ||
+        FAILED(encoder->CreateNewFrame(frame.GetAddressOf(), nullptr)) ||
+        FAILED(frame->Initialize(nullptr)) ||
+        FAILED(frame->SetSize(width, height)))
+    {
+        return false;
+    }
+    WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
+    if (FAILED(frame->SetPixelFormat(&format)) ||
+        FAILED(frame->WritePixels(height, stride, static_cast<UINT>(pixels.size()), pixels.data())) ||
+        FAILED(frame->Commit()) ||
+        FAILED(encoder->Commit()))
+    {
+        return false;
+    }
+    return true;
 }
 
 void Renderer::BeginShadowPass()

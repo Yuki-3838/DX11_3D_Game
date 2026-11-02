@@ -128,6 +128,35 @@ public:
 		return static_cast<int>(m_attackActiveEnd * 60.0f);
 	}
 
+	// --- 攻撃のタイムライン(エディターとイベント)用 ---
+	// 技ごとの攻撃クリップ。エディターでクリップを差し替えるときに使う。
+	aiAnimation* GetAttackAnimation(Combat::PlayerAttackSlot slot) const;
+	void SetAttackAnimation(Combat::PlayerAttackSlot slot, aiAnimation* animation);
+	// 再生中の技が、クリップのどこ(秒)まで進んだか。技を再生していなければ負。
+	// タイムラインのイベント(効果音など)と剣の軌跡を、クリップの時刻で出すために使う。
+	float GetPlayingAttackClipSeconds() const;
+	// クリップの長さ(秒)。
+	static float ClipSeconds(const aiAnimation* clip);
+	// 攻撃クリップを、指定した時刻(クリップの秒)の姿勢にする(エディターのプレビュー)。
+	// 再生中の技の状態は変えない。腰の高さは referenceClipSeconds(技の始まり)の高さを立ち姿へそろえる
+	// (ゲームで技を始めた瞬間と同じ扱い)。
+	bool PoseAttackClip(
+		CAnimationMesh& mesh,
+		BoneCombMatrix& boneComb,
+		aiAnimation* clip,
+		float clipSeconds,
+		float referenceClipSeconds);
+	// クリップの腰の水平移動(踏み込み)を、fromSeconds→toSecondsの間について
+	// キャラクターから見た右・前(ゲームの単位)で返す。ゲームの踏み込みと同じ計算。
+	bool SampleRootMotion(
+		const CAnimationMesh& mesh,
+		aiAnimation* clip,
+		float fromSeconds,
+		float toSeconds,
+		float scale,
+		float& right,
+		float& forward) const;
+
 private:
 	using BoneKeys = std::vector<MotionKeyframe>;
 
@@ -294,6 +323,8 @@ private:
 	int m_importedAnimationFrame = 0;
 	float m_importedAnimationFrameAccumulator = 0.0f;
 	float m_importedAnimationFrameRate = 0.5f;
+	// 再生中の技のクリップの、1秒あたりのキー数。キーの位置をクリップの秒へ直すのに使う。
+	float m_importedClipKeysPerSecond = 0.0f;
 	int m_walkFrame = 0;
 	float m_walkFrameAccumulator = 0.0f;
 	// FBXは30fps、GameSceneは60Hzで更新される。

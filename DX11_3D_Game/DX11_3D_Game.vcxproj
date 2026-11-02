@@ -96,6 +96,10 @@
     <ClInclude Include="..\system\scenemanager.h" />
     <ClInclude Include="..\system\SoundManager.h" />
     <ClInclude Include="..\system\OneVsOneCombat.h" />
+    <ClInclude Include="..\system\AttackTimelineEditor.h" />
+    <ClInclude Include="..\system\AttackTimelineFile.h" />
+    <ClInclude Include="..\system\ArenaFloor.h" />
+    <ClInclude Include="..\system\GameInput.h" />
     <ClInclude Include="..\system\SphereDrawer.h" />
     <ClInclude Include="..\system\stb_image.h" />
     <ClInclude Include="..\system\stb_perlin.h" />
@@ -164,6 +168,7 @@
     <ClCompile Include="..\system\SoundManager.cpp" />
     <ClCompile Include="..\system\SimpleMathIdentity.cpp" />
     <ClCompile Include="..\system\OneVsOneCombat.cpp" />
+    <ClCompile Include="..\system\AttackTimelineEditor.cpp" />
     <ClCompile Include="..\system\SphereDrawer.cpp" />
     <ClCompile Include="..\system\stb.cpp" />
     <ClCompile Include="..\system\stbperlin.cpp" />

@@ -11,7 +11,10 @@
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
 #include "../system/ArenaFloor.h"
+#include "../system/AttackTimelineEditor.h"
 #include "../system/HitEffect.h"
+#include "../system/EnemyFireball.h"
+#include "../system/EnemyMotionEffects.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
 #include "../system/CAnimationData.h"
@@ -76,6 +79,59 @@ public:
 	void DrawControlGuide();
 	bool m_showControlGuide = true;
 	void UpdateCombatCameraDistance(float deltaSeconds);
+
+	// --- 攻撃のタイムライン(F6のエディターと、ゲーム中のイベント) ---
+	void OpenTimelineEditor();
+	void CloseTimelineEditor();
+	// エディターを開いている間の更新。ゲームは止め、プレイヤーを再生位置の姿勢にする。
+	void UpdateTimelineEditor(float deltaSeconds);
+	// プレイヤーを、技のクリップの指定した時刻の姿勢・位置にする(プレビュー)。
+	void PoseTimelinePreview(Combat::PlayerAttackSlot slot, float clipSeconds);
+	// プレビューで、いまの技を始める位置と向き。コンボを通して再生しているなら、前の段の踏み込みの分だけ前。
+	SRT TimelinePreviewBaseSrt() const;
+	// コンボの最初の段を始める位置と向き。「敵の前に立つ」なら、敵を向いて間合いの位置に立つ。
+	SRT TimelinePreviewStartSrt() const;
+	// クリップ全体を細かく区切って姿勢を作り、剣先の通り道・速さ・敵に当たる区間を求める。
+	void RecomputeTimelineAnalysis();
+	// エディターを開いている間の3D表示(剣先の通り道・剣の箱)。
+	void DrawTimelineEditor3D();
+	// 技のクリップ(Combat::EditablePlayerAttack(slot).clipFile)を読み込み直す。
+	bool ReloadAttackClip(Combat::PlayerAttackSlot slot);
+	// タイムラインのイベント(効果音・カメラの揺れ・火花)を起こす。
+	void FireTimelineEvent(const Combat::TimelineEvent& event);
+	// ゲーム中、再生している技のクリップの時刻を見て、イベントを起こし、剣の軌跡を出す。
+	void UpdateAttackTimelineEvents();
+	// 技を始めたときに呼ぶ。どの技のタイムラインを見るかを覚える。
+	void BeginAttackTimeline(Combat::PlayerAttackSlot slot);
+
+	AttackTimelineEditor m_timelineEditor;
+	AttackTimelineEditor::Analysis m_timelineAnalysis;
+	int m_timelineAnalysisRevision = -1;
+	Combat::PlayerAttackSlot m_timelineAnalysisSlot = Combat::PlayerAttackSlot::Weak1;
+	// 剣先と刃の根元の通り道(ワールド座標)と、それぞれのクリップの時刻。
+	std::vector<Vector3> m_timelinePathTips;
+	std::vector<Vector3> m_timelinePathBases;
+	std::vector<float> m_timelinePathTimes;
+	// エディターを開いた瞬間のプレイヤーの位置と向き。プレビューの踏み込みはここから足し、閉じたら戻す。
+	SRT m_timelineSavedPlayerSrt{};
+	float m_timelineSavedGroundOffsetY = 0.0f;
+	bool m_timelineBladeHitsEnemy = false;
+	bool m_timelineEditorWasOpen = false;
+	// 保存せずにエディターを閉じたときの注意を、画面に出しておく残り時間(秒)。
+	float m_timelineUnsavedNoticeTime = 0.0f;
+	// エディターのカメラ(右ドラッグで回り込む・ホイールで寄る)。
+	float m_timelineCameraYaw = 0.0f;
+	float m_timelineCameraPitch = 0.22f;
+	float m_timelineCameraDistance = 75.0f;
+	// エディターではカメラを直接置くので、揺れはここで作る。
+	float m_timelineShakeTime = 0.0f;
+	float m_timelineShakeDuration = 0.0f;
+	float m_timelineShakeStrength = 0.0f;
+	// ゲーム中のイベント: いま再生している技と、前のフレームに見たクリップの時刻。
+	Combat::PlayerAttackSlot m_playingAttackSlot = Combat::PlayerAttackSlot::Weak1;
+	float m_lastAttackEventClipTime = -1.0f;
+	bool m_attackTimelineActive = false;
+
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
 	void RenderShadowMap();
 	Matrix4x4 BuildLightViewProjection() const;
@@ -138,6 +194,33 @@ private:
 	// 命中点の火花。当たったワールド座標と向きだけを渡すため、
 	// 敵の攻撃や別の武器にも同じものを使える。
 	HitEffect m_hitEffect;
+	// 敵が吐く火球。飛んでいる弾・着弾の爆発・吐く前に口に溜まる火。
+	EnemyFireball m_enemyFireball;
+	// 敵の口の位置(ワールド)。火球を吐く位置と、口に溜まる火の位置に使う。
+	// アニメーションの更新で骨から求め直す(首を持ち上げる構えも含めた位置になる)。
+	Vector3 m_enemyMouthPosition{};
+	bool m_enemyMouthValid = false;
+	// 敵の体の動きに付ける演出(土煙・地面の衝撃の輪・咆哮の衝撃波)。
+	EnemyMotionEffects m_enemyMotionFx;
+	// 敵の攻撃の通り道。剣の軌跡と同じ WeaponTrail を、尾と頭に1本ずつ持たせる。
+	WeaponTrail m_enemyTailTrail;
+	WeaponTrail m_enemyHeadTrail;
+	// 足が地面を踏んだ瞬間を見つけるための、足1本ごとの記録。
+	struct EnemyFootTracker
+	{
+		const char* bone = "";
+		float previousHeight = 0.0f;   ///< 前のフレームの足の骨の高さ(床から)
+		float liftedHeight = 0.0f;     ///< 前に踏んでから一番高く上がった高さ
+		float descentSpeed = 0.0f;     ///< 下ろしている速さ(踏んだ強さに使う)
+		bool valid = false;
+	};
+	EnemyFootTracker m_enemyFeet[4];
+	enemy::MotionState m_enemyFxPreviousState = enemy::MotionState::Approach;
+	float m_enemyFxPreviousStateTime = 0.0f;
+	float m_enemyChargeDustTimer = 0.0f;
+	// 咆哮の衝撃波を出し続ける残り時間と、次の輪までの時間。
+	float m_enemyRoarFxSeconds = 0.0f;
+	float m_enemyRoarRingTimer = 0.0f;
 
 	// 命中の手応え用。残り時間で減衰させる。
 	// 敵は被弾時に発光させ、プレイヤー被弾時は画面端を赤くする。
@@ -159,6 +242,32 @@ private:
 	// 構えから「骨の名前 → 重ねる回転」を作る。見た目の計算だけで、メッシュには触らない。
 	std::unordered_map<std::string, Matrix4x4> BuildEnemyTellRotations(
 		const Combat::EnemyTellPose& tell) const;
+	// 敵の口の位置を骨から求め直す。アニメーションの姿勢を確定した直後に呼ぶ。
+	void UpdateEnemyMouthPosition();
+	// 火球を吐く。狙いは今のプレイヤーの足元で、敵の正面から曲げられる角度に収める。
+	void LaunchEnemyFireball(const enemy& source);
+	// 火球を進め、着弾したら爆発・ダメージ・吹き飛ばしを出す。口に溜まる火もここで更新する。
+	void UpdateEnemyFireballs(float deltaSeconds, bool playerInvincible);
+	// 突進が壁にぶつかった。よろめかせ、攻撃を取り消し、破片と土煙を出す(よろめきに入れたときだけ)。
+	void OnEnemyChargeHitWall(enemy& e, const Vector3& headPosition, const Vector3& forward);
+	// 敵の体(骨の位置に置いた球の集まり)が闘技場の壁にめり込んでいたら、体ごと内側へ押し戻す。
+	// アニメーションの姿勢を確定した後に呼ぶ。
+	void PushEnemyBodyOutOfWalls();
+	// このフレームで壁から押し戻した量(撮影のログ用)。
+	Vector3 m_enemyWallPush{};
+	// 敵の骨のワールド座標。モデルが読めていない・骨が無いときは false。
+	bool GetEnemyBoneWorld(const char* bone, Vector3& out) const;
+	// 敵の動きに付ける演出を出す・進める。アニメーションの姿勢を確定した後に毎フレーム呼ぶ
+	// (登場演出の間も呼ぶ)。
+	void UpdateEnemyMotionEffects(float deltaSeconds);
+	// 足が地面を踏んだ瞬間に土煙を出す。
+	void UpdateEnemyFootDust(float deltaSeconds);
+	// 攻撃の通り道(尾・爪・あご)と、叩き付けが地面を打った瞬間の土煙。
+	void UpdateEnemyAttackEffects();
+	// 咆哮の衝撃波を seconds 秒のあいだ出し続ける。
+	void StartEnemyRoarEffect(float seconds);
+	// 出ている演出と攻撃の通り道を消す(リセット・タイムラインエディターを開いたとき)。
+	void ClearEnemyMotionEffects();
 	bool m_footLockEnabled = true;
 	FootLock::Settings m_footLockSettings{};
 	FootLock::FootState m_footLockLeft{};
@@ -212,6 +321,26 @@ private:
 	// 攻撃ごとの構えを見比べるための調整用(デバッグ表示からのみ操作する)。
 	bool m_forceEnemyAttack = false;
 	int m_forcedEnemyAttackIndex = 0;
+
+	// 撮影・調整用の連続保存。dev_settings.ini の capture_dir を指定すると、
+	// 戦闘開始から capture_start 秒後から capture_interval 秒ごとに capture_count 枚、
+	// ゲームが描いた絵をPNGで保存する。capture_exit=1 なら撮り終えたらゲームを終える。
+	// 画面を撮るのと違ってウィンドウを前面へ出さなくてよいので、PCを使っている人の邪魔をしない。
+	void CaptureFrameIfRequested();
+	// 撮影中は、敵の状態・位置・向きを毎フレーム capture_dir\enemy_log.csv へ書く。
+	// 絵だけでは「いつ向き直ったか」「どの攻撃をどの距離で選んだか」が読み取れないため。
+	void WriteCaptureLog();
+	FILE* m_captureLog = nullptr;
+	std::wstring m_captureDir;
+	float m_captureStartSeconds = 0.0f;
+	float m_captureIntervalSeconds = 0.1f;
+	int m_captureCount = 0;
+	int m_capturedFrames = 0;
+	bool m_captureExit = false;
+	// capture_intro=1 のときは、戦闘ではなく登場演出(落下・着地・咆哮)の間を撮る。時刻は演出の始まりから数える。
+	bool m_captureIntro = false;
+	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
+	float m_battleSeconds = 0.0f;
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系

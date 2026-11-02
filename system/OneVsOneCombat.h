@@ -58,6 +58,14 @@ public:
 		m_playerHitGrace = 0.0f;
 	}
 	void ClearEnemyCollisionDebug();
+	// 剣と敵の当たり判定を、戦闘の状態を変えずに計算する(タイムラインエディターのプレビュー用)。
+	// 判定の作り方はゲーム中(Update)とまったく同じ。
+	static CollisionDebugState EvaluateSwordCollisionPreview(
+		const DirectX::SimpleMath::Vector3& swordBase,
+		const DirectX::SimpleMath::Vector3& swordTip,
+		const DirectX::SimpleMath::Vector3& previousSwordTip,
+		const GM31::GE::Collision::BoundingBoxOBB& playerObb,
+		const GM31::GE::Collision::BoundingBoxOBB& enemyObb);
 	void UpdatePlayerCollisionDebug(
 		const DirectX::SimpleMath::Vector3& swordBase,
 		const DirectX::SimpleMath::Vector3& swordTip,
@@ -111,6 +119,11 @@ public:
 	// 敵が怯んだときに、進行中の攻撃を取り消す。
 	// 敵AIだけ怯ませて戦闘側の攻撃を残すと、のけぞっている敵からダメージが飛んでくる。
 	void CancelEnemyAttack();
+	// 敵が撃った火球がプレイヤーに当たったときのダメージ。
+	// 火球は吐いた後も飛び続けるので、敵の攻撃の段階(予兆・判定・隙)とは関係なく当たる。
+	// そのため Update() の判定には乗せず、着弾したときにシーン側から呼ぶ。
+	// 当たりとして扱った(どちらも倒れていない)ときtrueを返す。
+	bool ApplyEnemyProjectileHit(float damage);
 	int GetPlayerAttackFrame() const;
 	bool IsPlayerAttackActive() const { return m_playerAttack.phase == Phase::Active; }
 	int GetPlayerComboStep() const { return m_playerAttack.comboStep; }

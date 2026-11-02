@@ -2,14 +2,15 @@
 <!--
   起動ボタン専用のプロジェクト(ビルドするものは無い)。
 
-  VSツールバーの構成プルダウン(Debug / Release の欄)で「ゲームループ」「デバッグ」を選んで ▶ を押すと、
+  VSツールバーの構成プルダウン(Debug / Release の欄)で「ゲームループ」「デバッグ」「攻撃タイムライン」を選んで ▶ を押すと、
   同じ DX11_3D_Game.exe(Debugビルド)をそれぞれの引数で起動する。
-    ゲームループ : タイトル → ゲーム → リザルト。デバッグ表示なし(F4で出せる)。 = 構成 GameLoop
-    デバッグ     : ゲーム本編だけを繰り返す。デバッグ表示あり。                 = 構成 DevDebug
+    ゲームループ     : タイトル → ゲーム → リザルト。デバッグ表示なし(F4で出せる)。 = 構成 GameLoop
+    デバッグ         : ゲーム本編だけを繰り返す。デバッグ表示あり。                 = 構成 DevDebug
+    攻撃タイムライン : 攻撃のタイムラインエディターを開いた状態で始める(F6で閉じればそのまま遊べる)。 = 構成 AttackTimeline
     Debug / Release : 引数なし(dev_settings.ini の設定どおり)。
 
   ソリューションのスタートアッププロジェクトをこの Run にしておく必要がある。
-  ソリューション構成「ゲームループ」「デバッグ」では DX11_3D_Game は Debug でビルドされるので、
+  ソリューション構成「ゲームループ」「デバッグ」「攻撃タイムライン」では DX11_3D_Game は Debug でビルドされるので、
   Debug と行き来しても作り直しにはならない。exe 本体はソリューションの依存関係で先にビルドされる。
 -->
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -30,6 +31,10 @@
       <Configuration>DevDebug</Configuration>
       <Platform>Win32</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="AttackTimeline|Win32">
+      <Configuration>AttackTimeline</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
       <Platform>x64</Platform>
@@ -44,6 +49,10 @@
     </ProjectConfiguration>
     <ProjectConfiguration Include="DevDebug|x64">
       <Configuration>DevDebug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="AttackTimeline|x64">
+      <Configuration>AttackTimeline</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
@@ -80,6 +89,11 @@
   <PropertyGroup Condition="'$(Configuration)'=='DevDebug'">
     <LauncherExeConfiguration>Debug</LauncherExeConfiguration>
     <LauncherArguments>--game --debug</LauncherArguments>
+  </PropertyGroup>
+  <!-- タイムラインのウィンドウが画面の下を使うので、デバッグ表示は出さない(F4で出せる) -->
+  <PropertyGroup Condition="'$(Configuration)'=='AttackTimeline'">
+    <LauncherExeConfiguration>Debug</LauncherExeConfiguration>
+    <LauncherArguments>--timeline --nodebug</LauncherArguments>
   </PropertyGroup>
   <!-- DX11_3D_Game の出力先(既定の OutDir)に合わせる -->
   <PropertyGroup Condition="'$(Platform)'=='x64'">

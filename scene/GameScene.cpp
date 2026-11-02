@@ -22,6 +22,7 @@
 #include	"../system/commontypes.h"
 #include	"../system/Inputmanager.h"
 #include	"../system/GameInput.h"
+#include	"../system/AttackTimelineFile.h"
 #include	<dinput.h>
 #include	"../system/PlaneDrawer.h"
 #include	"../system/imgui/imgui.h"
@@ -119,6 +120,41 @@ namespace {
 	// Cethiel製ドラゴンはほぼ1単位の大きさで作られているため、
 	// プレイヤーと並べたときに大型の敵として見える倍率へ拡大する。
 	constexpr float ENEMY_MODEL_SCALE = 60.0f;
+	// 口先の位置。首の先(neck3)から上あごの骨への向きに、その長さの何倍延ばすか。
+	// 上あごの骨はあごの付け根にあるので、延ばさないと火球が頭の中から出てくる。
+	constexpr float ENEMY_MOUTH_EXTEND = 0.6f;
+	// 床の上面の高さ(m_arenaFloor.Initialize に渡している値)。火球はここへ落ちたら爆発する。
+	constexpr float ARENA_FLOOR_TOP_Y = -0.29f;
+	// プレイヤーの体の中心の高さと太さ(身長約18)。火球との当たりを見るのに使う。
+	constexpr float PLAYER_BODY_CENTER_HEIGHT = 9.0f;
+	constexpr float PLAYER_BODY_RADIUS = 5.0f;
+
+	// --- 敵の動きの演出(EnemyMotionEffects・攻撃の通り道) ---
+	// 足の骨。踏んだ瞬間に土煙を出す。前脚・後脚の左右。
+	constexpr const char* ENEMY_FOOT_BONES[4] = {
+		"Armature_leg_front_foot_L", "Armature_leg_front_foot_R",
+		"Armature_leg_back_foot_L", "Armature_leg_back_foot_R" };
+	// 踏んだとみなす高さ。足の骨は足首にあるので、接地していても床から約2の高さにある
+	// (撮影のログで、立っている・構えている間の4本とも1.75〜2.1)。これより下へ下りてきたら踏んだ。
+	// (以前は歩きの後脚が畳んだまま床から9以上にあって床に着かなかった。CAnimationMesh で、クリップに無い骨を
+	// 休止姿勢へ戻すようにしてからは、歩きでも後脚が床から1.6〜5の高さで地面を踏み、土煙が出る。)
+	constexpr float ENEMY_FOOT_CONTACT_HEIGHT = 3.0f;
+	// 踏んだ後、次に踏んだとみなすまでに足を上げる高さ。小さな揺れで何度も土煙が出ないようにする。
+	// 突進の構えの足踏みは前脚が約3.5までしか上がらない(ログで確認)ので、それでも1回ずつ出る値にする。
+	constexpr float ENEMY_FOOT_LIFT_MIN = 0.4f;
+	// 尾の先端。最後の骨(tail3)は尾の途中にあるので、tail2→tail3 の向きにその長さの何倍か延ばす。
+	constexpr float ENEMY_TAIL_TIP_EXTEND = 1.0f;
+	// 頭の通り道の先端。口先から、首の先→口先の向きへその長さの何倍か延ばす。
+	// 口先までだと帯がほとんど頭の中に入ってしまい、頭に隠れて見えなかった(撮影で確認)。
+	constexpr float ENEMY_HEAD_TRAIL_EXTEND = 0.35f;
+	// 突進で走っている間・滑っている間に土煙を出す間隔。
+	constexpr float ENEMY_CHARGE_DUST_INTERVAL = 0.05f;
+	constexpr float ENEMY_SKID_DUST_INTERVAL = 0.03f;
+	// 登場演出で敵が空から落ちてきて着地するまでの時間。
+	constexpr float ENEMY_INTRO_FALL_SECONDS = 1.35f;
+	// 咆哮の衝撃波の間隔と広がり。
+	constexpr float ENEMY_ROAR_RING_INTERVAL = 0.22f;
+	constexpr float ENEMY_ROAR_RING_RADIUS = 75.0f;
 
 	// コンパクトな多角形闘技場にして戦闘を見やすくしつつ、
 	// ドラゴンの大きな当たり判定と回避一回分の空間を確保する。
@@ -739,11 +775,24 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		return;
 	}
 
-	constexpr float fallDuration = 1.35f;
+	constexpr float fallDuration = ENEMY_INTRO_FALL_SECONDS;
 	constexpr float roarDelay = 0.12f;
 	// 読み込んだ咆哮を最後まで聞かせてからプレイヤーへ操作を返す。
 	constexpr float battleStartTime = 4.55f;
+	const float previousIntroTime = m_enemyIntroTime;
 	m_enemyIntroTime += deltaSeconds;
+	// 着地の瞬間。巨体が落ちてきた重さを、土煙と地面を走る衝撃の輪で見せる。
+	if (previousIntroTime < fallDuration && m_enemyIntroTime >= fallDuration)
+	{
+		Vector3 ground = m_enemyIntroLandingPosition;
+		ground.y = ARENA_FLOOR_TOP_Y;
+		m_enemyMotionFx.SpawnGroundRing(ground, 110.0f, 0.60f, 0.55f);
+		// 濃くしすぎると体の下半分が隠れる(撮影で確認)ので、輪で重さを見せ、土煙は薄めにする。
+		m_enemyMotionFx.SpawnDust(ground, Vector3(0.0f, 0.0f, 0.0f), 26, 90.0f, 14.0f, 1.4f, 0.30f);
+		// 足の高さの記録は着地してから取り直す(落ちている間の高さを接地とみなさないように)。
+		for (EnemyFootTracker& foot : m_enemyFeet)
+			foot = EnemyFootTracker{};
+	}
 
 	SRT enemySrt = m_enemies.front()->getSRT();
 	if (m_enemyIntroTime < fallDuration)
@@ -788,10 +837,12 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 	if (!m_enemyRoarPlayed && m_enemyIntroTime >= fallDuration + roarDelay)
 	{
 		SoundManager::PlayEnemyRoar();
+		StartEnemyRoarEffect(1.8f);
 		m_enemyRoarPlayed = true;
 	}
 
 	UpdateEnemyAnimation(deltaSeconds);
+	UpdateEnemyMotionEffects(deltaSeconds);
 	if (m_enemyIntroTime >= battleStartTime)
 	{
 		SoundManager::PlayGameBgm();
@@ -817,6 +868,15 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		// ロックオン中の移動(横歩き・後ろ歩き)やカメラを、毎回Tabを押さずに確かめるため。
 		if (GetDevSetting("auto_lockon", "0") == "1")
 			m_lockOnTarget = true;
+		// 調整・撮影用: player_start_z で戦闘開始時のプレイヤーの位置を奥(+Z、壁の方)へずらす。
+		// 突進が壁にぶつかる様子を撮るには、プレイヤーの後ろに壁が来ている必要があるため。
+		const std::string playerStartZ = GetDevSetting("player_start_z", "");
+		if (!playerStartZ.empty() && m_player)
+		{
+			SRT start = m_player->getSRT();
+			start.pos = Vector3(0.0f, start.pos.y, std::stof(playerStartZ));
+			m_player->setSRT(start);
+		}
 		// 調整用: enemy_passive=1 で敵を攻撃させない(プレイヤーの攻撃モーションを落ち着いて見るため)。
 		m_enemies.front()->setPassive(GetDevSetting("enemy_passive", "0") == "1");
 		// 調整・撮影用: rage_at_start=1 で戦闘開始と同時に怒らせる。
@@ -857,18 +917,43 @@ void GameScene::update(uint64_t deltatime)
 	// そのためカーソルをゲーム画面に閉じ込めて隠す。デバッグ表示を触るときは左Altでカーソルを出す。
 	if (input.IsKeyTriggered(DIK_LMENU))
 		m_mouseLookCaptured = !m_mouseLookCaptured;
-	// 調整用: dev_settings.ini の auto_walk で自動的に歩かせる(1=前へ、2=右へ、3=左へ)。
+	if (!m_enemyIntroActive)
+		m_battleSeconds += deltaSeconds;
+	// 調整用: dev_settings.ini の auto_walk で自動的に歩かせる(1=前へ、2=右へ、3=左へ、4=後ろへ)。
 	// 撮影で動きを確認するとき、外からキー入力を送らずに済ませるため。
 	if (m_player)
 	{
 		static const std::string autoWalk = GetDevSetting("auto_walk", "0");
 		m_player->setDebugForcedMove(
-			autoWalk == "1" ? 1.0f : 0.0f,
+			autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f),
 			autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f));
 	}
-	const bool lockCursor = m_mouseLookCaptured && !m_resultRequested;
+	// F6: 攻撃のタイムラインエディターを開く・閉じる。開いている間はゲームを止める。
+	if (input.IsKeyTriggered(DIK_F6) && !ImGui::GetIO().WantTextInput && m_player)
+	{
+		if (m_timelineEditor.IsOpen())
+			CloseTimelineEditor();
+		else
+			OpenTimelineEditor();
+	}
+	// 起動引数 --timeline(VSの構成「攻撃タイムライン」)なら、最初からエディターを開いておく。
+	if (GameFlow::openAttackTimelineOnStart && m_player && !m_timelineEditor.IsOpen())
+	{
+		GameFlow::openAttackTimelineOnStart = false;
+		OpenTimelineEditor();
+	}
+	// エディターをウィンドウの×で閉じた場合も、閉じたときの後片付けをする。
+	if (m_timelineEditorWasOpen && !m_timelineEditor.IsOpen())
+		CloseTimelineEditor();
+	// エディターでは、タイムラインを触るためにカーソルを出しておく。
+	const bool lockCursor = m_mouseLookCaptured && !m_resultRequested && !m_timelineEditor.IsOpen();
 	DebugUI::SetCursorLocked(lockCursor);
 	DebugUI::SetCursorVisible(!lockCursor);
+	if (m_timelineEditor.IsOpen())
+	{
+		UpdateTimelineEditor(deltaSeconds);
+		return;
+	}
 	// ゲームの操作はGameInput(仮想コントローラー)から「行動」として受け取る。
 	// キーボード・マウスとゲームパッドのどちらで押したかは、ここでは区別しない。
 	const GameInput& gameInput = GameInput::Get();
@@ -896,6 +981,8 @@ void GameScene::update(uint64_t deltatime)
 		ApplyDebugEnemyStartHp();
 		m_playerWeaponTrail.Clear();
 		m_hitEffect.Clear();
+		m_enemyFireball.Clear();
+		ClearEnemyMotionEffects();
 		m_lockOnTarget = false;
 		m_lastPlayerComboStep = 0;
 		m_lastPlayerHeavyAttack = false;
@@ -983,12 +1070,16 @@ void GameScene::update(uint64_t deltatime)
 			m_playerAnimator.PlayDashAttackMotion();
 		else
 			m_playerAnimator.PlayAttackMotion(1);
+		BeginAttackTimeline(Combat::PlayerAttackSlotOf(
+			heavyAttackInput, 1, !heavyAttackInput && playerWasRunning));
 		m_lastPlayerComboStep = 1;
 		m_lastPlayerHeavyAttack = heavyAttackInput;
 	}
 	const bool dodgeTriggered = rawDodgeTriggered ||
 		(m_bufferedAction == BufferedAction::Dodge && !attackStarted);
-	const bool sprinting = gameInput.IsPressed(GameAction::Sprint) &&
+	// 調整・撮影用: auto_sprint=1 で走り続ける(auto_walk と組み合わせて「逃げる」動きを撮る)。
+	static const bool autoSprint = GetDevSetting("auto_sprint", "0") == "1";
+	const bool sprinting = (gameInput.IsPressed(GameAction::Sprint) || autoSprint) &&
 		!m_combat.IsPlayerAttacking() && !m_player->isDodging();
 	if (sprinting)
 		m_playerStamina = std::max(0.0f, m_playerStamina - 28.0f * deltaSeconds);
@@ -1251,6 +1342,20 @@ void GameScene::update(uint64_t deltatime)
 		}
 	}
 
+	// 攻撃の固定(調整用)を敵へ渡す。以前はデバッグ表示の「戦闘」タブの中で渡していたため、
+	// タブを開いていない・デバッグ表示を出していないときは dev_settings.ini の
+	// force_enemy_attack が効かなかった。
+	if (!m_enemies.empty())
+	{
+		const Combat::EnemyAttackKind forced =
+			m_forcedEnemyAttackIndex == 1 ? Combat::EnemyAttackKind::Bite :
+			m_forcedEnemyAttackIndex == 2 ? Combat::EnemyAttackKind::Sweep :
+			m_forcedEnemyAttackIndex == 3 ? Combat::EnemyAttackKind::TailSpin :
+			m_forcedEnemyAttackIndex == 4 ? Combat::EnemyAttackKind::Fireball :
+			m_forcedEnemyAttackIndex == 5 ? Combat::EnemyAttackKind::Charge :
+			Combat::EnemyAttackKind::Slam;
+		m_enemies.front()->setForcedAttackKind(m_forceEnemyAttack ? &forced : nullptr);
+	}
 	for (auto& e : m_enemies) {
 		SRT prevEnemySrt = e->getSRT();
 		const enemy::MotionState previousEnemyMotionState = e->getMotionState();
@@ -1267,6 +1372,8 @@ void GameScene::update(uint64_t deltatime)
 			e->getMotionState() == enemy::MotionState::Active)
 		{
 			SoundManager::PlayDragonAttack();
+			if (e->getAttackKind() == Combat::EnemyAttackKind::Fireball)
+				LaunchEnemyFireball(*e);
 		}
 		SRT nextEnemyCollisionSrt = enemySrt;
 		nextEnemyCollisionSrt.scale = Vector3::Min(
@@ -1290,11 +1397,30 @@ void GameScene::update(uint64_t deltatime)
 			appendHitWalls(m_hitWallObjects, enemyHitWalls);
 		}
 
+		// 突進が壁で止められたか。壁に浅く当たって沿って滑るぶんは止まったとみなさず、
+		// 走る向きへ進めた量が6割未満になった(壁へ約37度より正面寄りにぶつかった)ときだけよろめかせる。
+		// 壁際へ誘って突進を空振りさせると大きな隙ができる、という立ち回りを作るため。
+		// 動けた量(長さ)では判定できない。壁の処理は、ぶつかった分を壁に沿う向きへ
+		// 同じ速さで振り替えるので、正面からぶつかっても長さは減らない(撮影で確認)。
+		const float intendedMove = enemyMove.Length();
+		const float chargeYaw = prevEnemySrt.rot.y;
+		const Vector3 chargeForward(-std::sinf(chargeYaw), 0.0f, -std::cosf(chargeYaw));
+		if (e->isChargeRunning() && intendedMove > 0.01f &&
+			adjustedEnemyMove.Dot(chargeForward) < intendedMove * 0.6f)
+		{
+			OnEnemyChargeHitWall(*e, prevEnemySrt.pos + chargeForward * 26.0f, chargeForward);
+		}
+
 		enemySrt.pos = prevEnemySrt.pos + adjustedEnemyMove;
 		e->setSRT(enemySrt);
 		e->setVel(adjustedEnemyMove);
 	}
 	UpdateEnemyAnimation(deltaSeconds);
+	// 体(頭・首・胴・尾・脚)が壁にめり込んでいたら、体ごと内側へ押し戻す。
+	// 上の壁の処理は敵の位置の球1つだけで見ていて、長い体の頭や尾は壁を突き抜けていた。
+	PushEnemyBodyOutOfWalls();
+	// 敵の動きの演出は、骨の姿勢が決まった後で骨の位置から出す。
+	UpdateEnemyMotionEffects(deltaSeconds);
 
 	resolveEnemyCollisions(m_enemies, m_localbsenemy);
 	resolvePlayerEnemyCollisions(
@@ -1320,21 +1446,11 @@ void GameScene::update(uint64_t deltatime)
 		const Matrix4x4 playerWorld = m_player->getRenderSRT().GetMatrix();
 		m_playerAnimationMesh->UpdateSwordWorldTransform(playerWorld);
 
-		// 剣の軌跡。攻撃判定が出ている間だけ点を足す。
-		// 渡すのは武器ボーンから求めた刃のワールド座標だけなので、
-		// 剣やプレイヤーのモデルを差し替えても、この処理は変更しなくてよい。
-		Vector3 trailBase{};
-		Vector3 trailTip{};
-		Vector3 trailPreviousTip{};
-		// 攻撃判定が出ている間だけ軌跡を残す。
-		// 「刃が危険な時間」がそのまま光って見えるので、
+		// 剣の軌跡とタイムラインのイベント(効果音・カメラの揺れ・火花)。
+		// どちらも、再生している技のクリップの時刻で決める(タイムラインエディターで調整した区間・瞬間)。
+		// 軌跡は既定では攻撃判定と同じ区間に出る。「刃が危険な時間」がそのまま光って見えるので、
 		// 予兆と判定を読ませたいこのゲームの方針とも噛み合う。
-		if (m_combat.IsPlayerAttackActive() &&
-			m_playerAnimationMesh->GetSwordWorldSweep(
-				trailBase, trailTip, trailPreviousTip))
-		{
-			m_playerWeaponTrail.Push(trailBase, trailTip);
-		}
+		UpdateAttackTimelineEvents();
 	}
 	m_playerWeaponTrail.Update(deltaSeconds);
 	m_hitEffect.Update(deltaSeconds);
@@ -1365,6 +1481,14 @@ void GameScene::update(uint64_t deltatime)
 		// 敵AIが決めた回数をそのまま渡し、判定側も同じ計算をする。
 		m_combat.SetEnemySpinHalfTurns(m_enemies.front()->getSpinHalfTurns());
 		m_combat.SetPlayerSprinting(playerWasRunning);
+		// 吹き飛ばされている間は無敵にする。飛ばされた先で次の攻撃に拾われ続けると、
+		// 1回の読み違えで何もできないまま体力を削り切られてしまう。
+		// 火球の爆発も同じ無敵を見る(前転で爆発をくぐり抜けられる)。
+		const bool playerInvincible =
+			m_player->isKnockedBack() ||
+			(m_player->isDodging() &&
+			m_player->getDodgeFrame() >= m_dodgeInvincibleStartFrame &&
+			m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame);
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
@@ -1372,12 +1496,7 @@ void GameScene::update(uint64_t deltatime)
 			attackInput,
 			heavyAttackInput,
 			m_enemies.front()->getMotionState() == enemy::MotionState::Windup,
-			// 吹き飛ばされている間は無敵にする。飛ばされた先で次の攻撃に拾われ続けると、
-			// 1回の読み違えで何もできないまま体力を削り切られてしまう。
-			m_player->isKnockedBack() ||
-			(m_player->isDodging() &&
-			m_player->getDodgeFrame() >= m_dodgeInvincibleStartFrame &&
-			m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame),
+			playerInvincible,
 			swordBase,
 			swordTip,
 			previousSwordTip,
@@ -1417,6 +1536,7 @@ void GameScene::update(uint64_t deltatime)
 				// 咆哮の間は攻撃が来ない。戦闘側の攻撃も取り消して、構えかけを捨てさせる。
 				m_combat.CancelEnemyAttack();
 				SoundManager::PlayEnemyRoar();
+				StartEnemyRoarEffect(Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS * 0.8f);
 				// 怯みより強く長く揺らす。「相手の圧が一段上がった」ことを体で伝える。
 				m_camera.TriggerShake(3.0f, 0.55f);
 				m_playerAnimator.TriggerHitStop(0.10f);
@@ -1460,7 +1580,11 @@ void GameScene::update(uint64_t deltatime)
 			// 瀕死に入った瞬間だけ咆哮させる。モンスターハンターで弱ったモンスターが
 			// 苦しげに吠えるのと同じく、「もう少しで倒せる」ことを音でも伝える。
 			if (m_enemies.front()->getCondition() == Combat::EnemyCondition::Dying)
+			{
 				SoundManager::PlayEnemyRoar();
+				// 苦しげな短い咆哮。怒りの咆哮より短くする。
+				StartEnemyRoarEffect(0.7f);
+			}
 		}
 
 		if (m_combat.DidEnemyHitLand())
@@ -1472,12 +1596,27 @@ void GameScene::update(uint64_t deltatime)
 			// 攻撃中なら攻撃は取り消す(飛ばされながら剣を振り続けないように)。
 			const Combat::KnockbackData knockback =
 				Combat::EnemyKnockbackOf(m_enemies.front()->getAttackKind());
-			const Vector3 awayFromEnemy = m_player->getSRT().pos - enemyPosition;
+			Vector3 awayFromEnemy = m_player->getSRT().pos - enemyPosition;
+			// 突進は走る向きの横へはね飛ばす。敵から離れる向き(=走る向き)へ飛ばすと、
+			// 走り続けている敵がすぐ追いつき、飛ばされた後も体で押して運んでしまう(撮影で確認)。
+			// 横へ飛ばせば敵はそのまま通り過ぎる(モンスターハンターの突進と同じ)。
+			if (m_enemies.front()->getAttackKind() == Combat::EnemyAttackKind::Charge)
+			{
+				const float yaw = m_enemies.front()->getSRT().rot.y;
+				const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+				const Vector3 right(-forward.z, 0.0f, forward.x);
+				const float side = awayFromEnemy.x * right.x + awayFromEnemy.z * right.z;
+				awayFromEnemy = right * (side >= 0.0f ? 1.0f : -1.0f) + forward * 0.5f;
+			}
 			if (m_combat.IsPlayerAttacking())
 				m_combat.CancelPlayerAttack();
 			m_player->applyKnockback(awayFromEnemy, knockback.speed, knockback.seconds);
 			m_playerAnimator.PlayImpactMotion();
 		}
+
+		// 火球。吐いた後も敵の攻撃の段階とは関係なく飛び続けるので、ここで別に進める。
+		UpdateEnemyFireballs(deltaSeconds, playerInvincible);
+		WriteCaptureLog();
 
 		// どちらかのHPが0になったら結果を保存してリザルト画面へ遷移する。
 		if (!m_resultRequested &&
@@ -1533,6 +1672,7 @@ void GameScene::update(uint64_t deltatime)
 			m_playerAnimator.PlayHeavyAttackMotion(comboStep);
 		else
 			m_playerAnimator.PlayAttackMotion(comboStep);
+		BeginAttackTimeline(Combat::PlayerAttackSlotOf(m_combat.IsPlayerHeavyAttack(), comboStep));
 		m_lastPlayerComboStep = comboStep;
 		m_lastPlayerHeavyAttack = m_combat.IsPlayerHeavyAttack();
 	}
@@ -1541,6 +1681,564 @@ void GameScene::update(uint64_t deltatime)
 		m_lastPlayerComboStep = 0;
 		m_lastPlayerHeavyAttack = false;
 	}
+}
+
+void GameScene::BeginAttackTimeline(Combat::PlayerAttackSlot slot)
+{
+	m_playingAttackSlot = slot;
+	m_attackTimelineActive = true;
+	// 技の使い始めより前から数え始める(使い始めちょうどに置いたイベントも起こすため)。
+	m_lastAttackEventClipTime = Combat::EditablePlayerAttack(slot).clipStart - 0.0001f;
+}
+
+void GameScene::UpdateAttackTimelineEvents()
+{
+	if (!m_playerAnimationMesh)
+		return;
+	const float clipTime = m_playerAnimator.GetPlayingAttackClipSeconds();
+	// 技が終わった・回避で取り消された、などで技のクリップの再生が止まったら追うのをやめる。
+	// 戦闘側の「攻撃中か」では判断しない。技を始めたフレームでは戦闘側の更新がまだ後にあり、
+	// そこで追うのをやめると、その技の間ずっと軌跡もイベントも出なくなる(実際にそうなっていた)。
+	if (clipTime < 0.0f)
+	{
+		m_attackTimelineActive = false;
+		return;
+	}
+	if (!m_attackTimelineActive)
+		return;
+	const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(m_playingAttackSlot);
+
+	// 前のフレームから今のフレームまでに通り過ぎたイベントを起こす。
+	// ヒットストップ中はクリップが止まるので、同じイベントが2回起きることはない。
+	if (clipTime > m_lastAttackEventClipTime)
+	{
+		for (const Combat::TimelineEvent& event : step.events)
+			if (event.time > m_lastAttackEventClipTime && event.time <= clipTime)
+				FireTimelineEvent(event);
+		m_lastAttackEventClipTime = clipTime;
+	}
+
+	// 剣の軌跡。渡すのは武器ボーンから求めた刃のワールド座標だけなので、
+	// 剣やプレイヤーのモデルを差し替えても、この処理は変更しなくてよい。
+	Vector3 trailBase{};
+	Vector3 trailTip{};
+	Vector3 trailPreviousTip{};
+	if (clipTime >= step.TrailStart() && clipTime <= step.TrailEnd() &&
+		m_playerAnimationMesh->GetSwordWorldSweep(trailBase, trailTip, trailPreviousTip))
+	{
+		m_playerWeaponTrail.Push(trailBase, trailTip);
+	}
+}
+
+void GameScene::FireTimelineEvent(const Combat::TimelineEvent& event)
+{
+	switch (event.type)
+	{
+	case Combat::TimelineEventType::Sound:
+		switch (event.sound)
+		{
+		case Combat::TimelineSound::Whoosh:       SoundManager::PlayDodge(); break;
+		case Combat::TimelineSound::SwordHit:     SoundManager::PlaySwordSwing(); break;
+		case Combat::TimelineSound::DragonAttack: SoundManager::PlayDragonAttack(); break;
+		case Combat::TimelineSound::Roar:         SoundManager::PlayEnemyRoar(); break;
+		default: break;
+		}
+		break;
+	case Combat::TimelineEventType::CameraShake:
+		if (m_timelineEditor.IsOpen())
+		{
+			// エディターではカメラを直接置いているので、揺れはエディターのカメラで作る。
+			m_timelineShakeStrength = event.strength;
+			m_timelineShakeDuration = event.duration;
+			m_timelineShakeTime = event.duration;
+		}
+		else
+			m_camera.TriggerShake(event.strength, event.duration);
+		break;
+	case Combat::TimelineEventType::Sparks:
+	{
+		Vector3 base{};
+		Vector3 tip{};
+		Vector3 previousTip{};
+		if (m_playerAnimationMesh && m_playerAnimationMesh->GetSwordWorldSweep(base, tip, previousTip))
+		{
+			// 刃の進む向きへ飛ばす。止まっていれば刃の向き。
+			Vector3 direction = tip - previousTip;
+			if (direction.LengthSquared() < 0.0001f)
+				direction = tip - base;
+			m_hitEffect.Spawn(tip, direction, event.count, event.strength);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+bool GameScene::ReloadAttackClip(Combat::PlayerAttackSlot slot)
+{
+	const std::string& file = Combat::EditablePlayerAttack(slot).clipFile;
+	std::error_code error;
+	if (!std::filesystem::exists(AttackTimelineFile::PathFromUtf8(file), error))
+		return false;
+	// 名前は読み込むたびに変える。同じ名前で読み直すと、再生中の技が古いクリップを指したまま
+	// 名前の対応だけが切り替わる(古いクリップ自体はCAnimationDataが持ち続けるので壊れはしない)。
+	static int reloadCount = 0;
+	const std::string name = std::string("timeline_") + Combat::PlayerAttackSlotKey(slot) +
+		"_" + std::to_string(++reloadCount);
+	if (m_playerAnimationData.LoadAnimation(file, name) == nullptr)
+		return false;
+	aiAnimation* animation = m_playerAnimationData.GetAnimation(name.c_str(), 0);
+	if (animation == nullptr)
+		return false;
+	m_playerAnimator.SetAttackAnimation(slot, animation);
+	m_timelineAnalysisRevision = -1;
+	return true;
+}
+
+void GameScene::OpenTimelineEditor()
+{
+	// 敵の登場演出の途中なら、演出を最後まで飛ばす。
+	// エディターの間は演出が進まないので、飛ばさないと敵が空中で止まったままになり、
+	// 「敵の前に立つ」や「敵に当たる」の計算も空中の敵で行われてしまう。
+	if (m_enemyIntroActive && !m_enemies.empty())
+	{
+		m_enemyRoarPlayed = true;          // 飛ばすときは咆哮を鳴らさない
+		m_enemyIntroTime = 1000.0f;        // 演出の終わり(戦闘開始)を過ぎた時刻にして、終わりの処理だけを通す
+		UpdateEnemyIntro(0.0f);
+	}
+	// 攻撃の途中で開いても、閉じたときに続きから再生されないよう、技は取り消しておく。
+	m_combat.CancelPlayerAttack();
+	m_attackTimelineActive = false;
+	m_playerWeaponTrail.Clear();
+	// 飛んでいる火球はエディター中は止まって空中に残り、技の姿勢を隠すので消しておく。
+	m_enemyFireball.Clear();
+	ClearEnemyMotionEffects();
+	m_timelineSavedPlayerSrt = m_player->getSRT();
+	m_timelineSavedGroundOffsetY = m_playerGroundOffsetY;
+	// カメラはプレイヤーの斜め前から見る(剣の振りと体の両方が見える向き)。
+	// カメラの向きcのとき、カメラはプレイヤーから(sin c, -cos c)の方向に置かれる。
+	// 正面は(-sin y, -cos y)なので、c = -y がちょうど正面。そこから横へ約60度回す。
+	m_timelineCameraYaw = -TimelinePreviewBaseSrt().rot.y + PI * 0.35f;
+	m_timelineCameraPitch = 0.22f;
+	m_timelineCameraDistance = 75.0f;
+	m_timelineShakeTime = 0.0f;
+	m_timelineAnalysisRevision = -1;
+	m_timelineEditor.Open();
+	m_timelineEditorWasOpen = true;
+}
+
+void GameScene::CloseTimelineEditor()
+{
+	m_timelineEditor.Close();
+	m_timelineEditorWasOpen = false;
+	// プレビューで踏み込ませた位置から、開いたときの位置へ戻す。
+	m_player->setSRT(m_timelineSavedPlayerSrt);
+	m_playerGroundOffsetY = m_timelineSavedGroundOffsetY;
+	m_player->setVisualGroundOffsetY(m_playerGroundOffsetY);
+	m_playerWeaponTrail.Clear();
+	// 戦闘カメラは、閉じた後の最初の更新で追従点を取り直す。
+	m_camera.Reset(m_player->getSRT().pos, m_player->getSRT().rot.y);
+	// 変更はゲームの攻撃にすぐ効くが、保存しないと次に起動したときには消える。忘れないよう知らせる。
+	m_timelineUnsavedNoticeTime = m_timelineEditor.IsDirty() ? 6.0f : 0.0f;
+}
+
+void GameScene::PoseTimelinePreview(Combat::PlayerAttackSlot slot, float clipSeconds)
+{
+	const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(slot);
+	aiAnimation* clip = m_playerAnimator.GetAttackAnimation(slot);
+	if (clip == nullptr || !m_playerAnimationMesh)
+		return;
+	m_playerAnimator.PoseAttackClip(*m_playerAnimationMesh, m_playerBoneComb, clip, clipSeconds, step.clipStart);
+
+	// 踏み込み: 技の使い始めから今までに、クリップの腰が進んだ分だけ前へ出す(ゲームと同じ計算)。
+	SRT srt = TimelinePreviewBaseSrt();
+	float right = 0.0f;
+	float forward = 0.0f;
+	if (m_timelineEditor.ShowRootMotion() &&
+		m_playerAnimator.SampleRootMotion(*m_playerAnimationMesh, clip,
+			step.clipStart, std::max(clipSeconds, step.clipStart), step.rootMotionScale, right, forward))
+	{
+		const float yaw = srt.rot.y;
+		const float forwardX = -std::sinf(yaw);
+		const float forwardZ = -std::cosf(yaw);
+		const float rightX = forwardZ;
+		const float rightZ = -forwardX;
+		srt.pos.x += forwardX * forward + rightX * right;
+		srt.pos.z += forwardZ * forward + rightZ * right;
+	}
+	m_player->setSRT(srt);
+
+	// 接地: ゲームと同じく、足の骨の一番低い点を地面へ合わせる。
+	// 地面を離れる技(ダッシュ攻撃)は、立ち姿より下へは下げない(跳んでいる高さが見える)。
+	float lowestFootY = 0.0f;
+	bool haveFootBones = false;
+	const std::string* footBones[] = {
+		&m_leftLegChain.foot, &m_leftLegChain.toe,
+		&m_rightLegChain.foot, &m_rightLegChain.toe };
+	for (const std::string* bone : footBones)
+	{
+		Vector3 position{};
+		if (bone->empty() || !m_playerAnimationMesh->GetBoneModelPosition(*bone, position))
+			continue;
+		if (!haveFootBones || position.y < lowestFootY)
+			lowestFootY = position.y;
+		haveFootBones = true;
+	}
+	if (haveFootBones && m_playerSoleOffsetReady)
+	{
+		const float grounded = m_playerGroundY - (lowestFootY + m_playerSoleOffsetY) * srt.scale.y;
+		const float offset = slot == Combat::PlayerAttackSlot::Dash
+			? std::max(grounded, m_playerStandingGroundOffsetY)
+			: grounded;
+		m_player->setVisualGroundOffsetY(offset);
+	}
+	m_playerAnimationMesh->UpdateSwordWorldTransform(m_player->getRenderSRT().GetMatrix());
+}
+
+SRT GameScene::TimelinePreviewBaseSrt() const
+{
+	SRT srt = TimelinePreviewStartSrt();
+	// コンボを通して再生しているときは、前の段で踏み込んだ分だけ前から始める
+	// (ゲームでも、次の段は前の段が止まった位置から始まる)。
+	if (!m_timelineEditor.ShowRootMotion() || !m_playerAnimationMesh)
+		return srt;
+	for (const Combat::PlayerAttackSlot slot : m_timelineEditor.GetChainHistory())
+	{
+		const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(slot);
+		aiAnimation* clip = m_playerAnimator.GetAttackAnimation(slot);
+		float right = 0.0f;
+		float forward = 0.0f;
+		const float linkTime = std::min(step.ComboLinkClipTime(), step.clipEnd);
+		if (!m_playerAnimator.SampleRootMotion(*m_playerAnimationMesh, clip,
+			step.clipStart, linkTime, step.rootMotionScale, right, forward))
+			continue;
+		const float forwardX = -std::sinf(srt.rot.y);
+		const float forwardZ = -std::cosf(srt.rot.y);
+		srt.pos.x += forwardX * forward + forwardZ * right;
+		srt.pos.z += forwardZ * forward - forwardX * right;
+	}
+	return srt;
+}
+
+SRT GameScene::TimelinePreviewStartSrt() const
+{
+	SRT srt = m_timelineSavedPlayerSrt;
+	if (!m_timelineEditor.StandInFrontOfEnemy() || m_enemies.empty() || m_combat.IsEnemyDefeated())
+		return srt;
+
+	// 敵の体(当たり判定の箱)の表面から、間合いの距離だけ離れた位置に立つ。
+	// 立つ方向は、エディターを開いたときにプレイヤーがいた方向(敵から見て)。
+	const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+		m_localEnemyMeshBounds, m_enemies.front()->getRenderSRT());
+	const Vector3 enemyCenter = enemyObb.worldcenter;
+	Vector3 direction = srt.pos - enemyCenter;
+	direction.y = 0.0f;
+	if (direction.LengthSquared() < 0.0001f)
+		direction = Vector3(0.0f, 0.0f, 1.0f);
+	direction.Normalize();
+	// 箱の表面までの水平な距離(箱の中なら0)。
+	const auto distanceToBody = [&enemyObb](const Vector3& point) {
+		const Vector3 offset(point.x - enemyObb.worldcenter.x, 0.0f, point.z - enemyObb.worldcenter.z);
+		const Vector3 axes[3] = { enemyObb.axisX, enemyObb.axisY, enemyObb.axisZ };
+		const float halves[3] = { enemyObb.lengthx * 0.5f, enemyObb.lengthy * 0.5f, enemyObb.lengthz * 0.5f };
+		Vector3 closest = enemyObb.worldcenter;
+		for (int i = 0; i < 3; ++i)
+		{
+			const float projected = std::clamp(offset.Dot(axes[i]), -halves[i], halves[i]);
+			closest += axes[i] * projected;
+		}
+		const Vector3 gap(point.x - closest.x, 0.0f, point.z - closest.z);
+		return gap.Length();
+	};
+	// 表面までの距離が間合いになる位置を、中心からの距離で二分探索する。
+	float nearDistance = 0.0f;
+	float farDistance = 600.0f;
+	for (int i = 0; i < 40; ++i)
+	{
+		const float middle = (nearDistance + farDistance) * 0.5f;
+		if (distanceToBody(enemyCenter + direction * middle) < m_timelineEditor.EnemyGap())
+			nearDistance = middle;
+		else
+			farDistance = middle;
+	}
+	srt.pos.x = enemyCenter.x + direction.x * farDistance;
+	srt.pos.z = enemyCenter.z + direction.z * farDistance;
+	// 敵の方を向く(正面は(-sin, -cos))。
+	srt.rot.y = std::atan2(direction.x, direction.z);
+	return srt;
+}
+
+void GameScene::RecomputeTimelineAnalysis()
+{
+	const Combat::PlayerAttackSlot slot = m_timelineEditor.GetSlot();
+	const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(slot);
+	aiAnimation* clip = m_playerAnimator.GetAttackAnimation(slot);
+	m_timelineAnalysis = {};
+	m_timelineAnalysis.slot = slot;
+	m_timelineAnalysis.clipFile = step.clipFile;
+	m_timelinePathTips.clear();
+	m_timelinePathBases.clear();
+	m_timelinePathTimes.clear();
+	m_timelineAnalysisSlot = slot;
+	m_timelineAnalysisRevision = m_timelineEditor.GetAnalysisRevision();
+	const float length = CCharacterAnimator::ClipSeconds(clip);
+	if (clip == nullptr || length <= 0.0f)
+		return;
+	m_timelineAnalysis.clipLoaded = true;
+	m_timelineAnalysis.clipLength = length;
+	m_timelineAnalysis.hasEnemy = !m_enemies.empty() && !m_combat.IsEnemyDefeated();
+	const auto enemyObb = m_timelineAnalysis.hasEnemy
+		? GM31::GE::Collision::BuildWorldOBBFromLocalAABB(m_localEnemyMeshBounds, m_enemies.front()->getRenderSRT())
+		: GM31::GE::Collision::BoundingBoxOBB{};
+
+	// クリップ全体を、ゲームの2フレーム(再生速度込み)ごとに区切って姿勢を作る。
+	// ゲームで実際に剣が通る位置と同じになるよう、プレビューと同じ処理(PoseTimelinePreview)を使う。
+	// 1フレームごとにすると、Debugビルドで弱1(1.37秒)に64msかかり、技を切り替えるたびに画面が止まった。
+	// 敵に当たるかは前の区切りの剣先からの掃過でも見ているので、2フレームごとでも当たりを見落とさない。
+	const float sampleStep = std::max(step.playbackRate / 30.0f, 0.008f);
+	const int sampleCount = std::min(600, static_cast<int>(std::ceil(length / sampleStep)) + 1);
+	bool previousValid = false;
+	Vector3 previousTip{};
+	bool inHit = false;
+	float hitFrom = 0.0f;
+	for (int i = 0; i < sampleCount; ++i)
+	{
+		const float t = std::min(static_cast<float>(i) * sampleStep, length);
+		PoseTimelinePreview(slot, t);
+		Vector3 base{};
+		Vector3 tip{};
+		Vector3 unusedPrevious{};
+		if (!m_playerAnimationMesh->GetSwordWorldSweep(base, tip, unusedPrevious))
+			continue;
+		m_timelinePathTimes.push_back(t);
+		m_timelinePathTips.push_back(tip);
+		m_timelinePathBases.push_back(base);
+		// 剣先の速さ(ゲーム内の単位/ゲームの秒)。クリップの秒を再生速度でゲームの秒へ直す。
+		const float speed = previousValid
+			? (tip - previousTip).Length() / (sampleStep / step.playbackRate)
+			: 0.0f;
+		m_timelineAnalysis.sampleTimes.push_back(t);
+		m_timelineAnalysis.tipSpeeds.push_back(speed);
+		// 敵に当たるか(ゲームと同じ判定。前のフレームの剣先から今の剣先までの掃過も含む)。
+		if (m_timelineAnalysis.hasEnemy)
+		{
+			const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+				m_localPlayerMeshBounds, m_player->getRenderSRT());
+			const bool hit = OneVsOneCombat::EvaluateSwordCollisionPreview(
+				base, tip, previousValid ? previousTip : tip, playerObb, enemyObb).narrowPhaseHit;
+			if (hit && !inHit)
+			{
+				inHit = true;
+				hitFrom = t;
+			}
+			else if (!hit && inHit)
+			{
+				inHit = false;
+				m_timelineAnalysis.enemyHitRanges.emplace_back(hitFrom, t);
+			}
+		}
+		previousTip = tip;
+		previousValid = true;
+	}
+	if (inHit)
+		m_timelineAnalysis.enemyHitRanges.emplace_back(hitFrom, length);
+}
+
+void GameScene::UpdateTimelineEditor(float deltaSeconds)
+{
+	m_timelineEditor.Update(deltaSeconds);
+
+	// 技・クリップ・踏み込みなど、剣の通り道が変わる値を触ったら解析をやり直す。
+	// 帯をドラッグしている途中は重いので待つ(離したときにやり直す)。
+	if ((m_timelineAnalysisRevision != m_timelineEditor.GetAnalysisRevision() ||
+		 m_timelineAnalysisSlot != m_timelineEditor.GetSlot()) &&
+		!m_timelineEditor.IsDragging())
+	{
+		RecomputeTimelineAnalysis();
+	}
+
+	// 再生位置の姿勢にする。
+	PoseTimelinePreview(m_timelineEditor.GetSlot(), m_timelineEditor.GetTime());
+
+	// いまの剣が敵に当たっているか(ゲームと同じ判定)。前のフレームの剣先からの掃過も含む。
+	m_timelineBladeHitsEnemy = false;
+	Vector3 base{};
+	Vector3 tip{};
+	Vector3 previousTip{};
+	if (!m_enemies.empty() && !m_combat.IsEnemyDefeated() &&
+		m_playerAnimationMesh->GetSwordWorldSweep(base, tip, previousTip))
+	{
+		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+			m_localPlayerMeshBounds, m_player->getRenderSRT());
+		const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+			m_localEnemyMeshBounds, m_enemies.front()->getRenderSRT());
+		m_timelineBladeHitsEnemy = OneVsOneCombat::EvaluateSwordCollisionPreview(
+			base, tip, previousTip, playerObb, enemyObb).narrowPhaseHit;
+	}
+
+	// 再生中は、ゲームと同じく軌跡の区間で剣の軌跡を出す。
+	const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(m_timelineEditor.GetSlot());
+	const float t = m_timelineEditor.GetTime();
+	if (m_timelineEditor.IsPlaying() && t >= step.TrailStart() && t <= step.TrailEnd() &&
+		m_playerAnimationMesh->GetSwordWorldSweep(base, tip, previousTip))
+		m_playerWeaponTrail.Push(base, tip);
+	else if (!m_timelineEditor.IsPlaying())
+		m_playerWeaponTrail.Clear();
+	// 軌跡と火花の消え方も、プレビューの速さ(スロー)に合わせる。
+	const float effectDelta = m_timelineEditor.IsPlaying()
+		? deltaSeconds * m_timelineEditor.GetPlaybackSpeed()
+		: deltaSeconds;
+	m_playerWeaponTrail.Update(effectDelta);
+	m_hitEffect.Update(effectDelta);
+
+	// --- カメラ: 右ドラッグで回り込む、ホイールで寄る・引く ---
+	ImGuiIO& io = ImGui::GetIO();
+	if (!io.WantCaptureMouse)
+	{
+		if (ImGui::IsMouseDown(ImGuiMouseButton_Right))
+		{
+			m_timelineCameraYaw -= io.MouseDelta.x * 0.008f;
+			m_timelineCameraPitch = std::clamp(m_timelineCameraPitch + io.MouseDelta.y * 0.006f, -0.35f, 1.30f);
+		}
+		if (io.MouseWheel != 0.0f)
+			m_timelineCameraDistance = std::clamp(
+				m_timelineCameraDistance * (io.MouseWheel > 0.0f ? 0.88f : 1.14f), 25.0f, 260.0f);
+	}
+	// 注視点は足元より下にする。画面の下側はタイムラインのウィンドウで隠れるので、
+	// キャラクターが画面の上半分に収まるようにするため。
+	// 注視点は技を始める位置に固定し、踏み込みで動くキャラクターを追わない
+	// (床のマス目に対してどれだけ前へ出たかが見えるように)。
+	// コンボを通して再生しているときも、最初の段を始めた位置に固定する(段ごとにカメラが飛ばないように)。
+	const Vector3 anchor = TimelinePreviewStartSrt().pos;
+	Vector3 lookAt = anchor + Vector3(0.0f, -8.0f, 0.0f);
+	const float horizontal = std::cos(m_timelineCameraPitch) * m_timelineCameraDistance;
+	Vector3 cameraPosition = lookAt + Vector3(
+		std::sinf(m_timelineCameraYaw) * horizontal,
+		std::sin(m_timelineCameraPitch) * m_timelineCameraDistance,
+		-std::cosf(m_timelineCameraYaw) * horizontal);
+	if (m_timelineShakeTime > 0.0f)
+	{
+		m_timelineShakeTime = std::max(0.0f, m_timelineShakeTime - effectDelta);
+		const float fade = m_timelineShakeTime / std::max(m_timelineShakeDuration, 0.001f);
+		const float phase = m_timelineShakeTime * 70.0f;
+		const Vector3 shake(std::sin(phase * 1.3f), std::sin(phase * 1.7f + 1.0f), std::sin(phase * 1.1f + 2.0f));
+		cameraPosition += shake * (m_timelineShakeStrength * fade);
+		lookAt += shake * (m_timelineShakeStrength * fade * 0.5f);
+	}
+	m_camera.SetCinematicView(cameraPosition, lookAt);
+}
+
+void GameScene::DrawTimelineEditor3D()
+{
+	if (!m_timelineEditor.IsOpen())
+		return;
+	const Combat::PlayerComboStep& step = Combat::EditablePlayerAttack(m_timelineEditor.GetSlot());
+	const float t = m_timelineEditor.GetTime();
+
+	// 体や敵に隠れても見えるよう、深度を見ずに上から描く。
+	Renderer::SetDepthEnable(false);
+	// 剣先の通り道。予兆(青)・判定(赤)・硬直(灰)で色を分け、使わない範囲は薄くする。
+	// エディターのタイムラインの帯と同じ色にそろえている。
+	if (m_timelineEditor.ShowSwordPath() && m_timelinePathTips.size() >= 2 &&
+		m_timelineAnalysisSlot == m_timelineEditor.GetSlot())
+	{
+		const auto colorAt = [&step](float time) {
+			if (time < step.clipStart || time > step.clipEnd) return Color(0.6f, 0.6f, 0.65f, 0.25f);
+			if (time < step.hitStart) return Color(0.30f, 0.55f, 1.0f, 0.9f);
+			if (time <= step.hitEnd) return Color(1.0f, 0.25f, 0.18f, 1.0f);
+			return Color(0.55f, 0.57f, 0.62f, 0.8f);
+		};
+		SetLineWidth(0.0035f);
+		for (std::size_t i = 1; i < m_timelinePathTips.size(); ++i)
+		{
+			const Vector3 direction = m_timelinePathTips[i] - m_timelinePathTips[i - 1];
+			const float length = direction.Length();
+			if (length > 0.0001f)
+				LineDrawerDraw(length, m_timelinePathTips[i - 1], direction, colorAt(m_timelinePathTimes[i]));
+		}
+		// 軌跡を判定と別の区間にしているときは、軌跡が出る所を金色の扇で見せる
+		// (軌跡は刃の35%の位置から剣先まで張られる。WeaponTrail と同じ)。
+		SetLineWidth(0.0018f);
+		if (step.trailStart >= 0.0f || step.trailEnd >= 0.0f)
+		{
+			for (std::size_t i = 0; i < m_timelinePathTips.size(); i += 2)
+			{
+				const float time = m_timelinePathTimes[i];
+				if (time < step.TrailStart() || time > step.TrailEnd())
+					continue;
+				const Vector3 ribbonBase = m_timelinePathBases[i] + (m_timelinePathTips[i] - m_timelinePathBases[i]) * 0.35f;
+				const Vector3 direction = m_timelinePathTips[i] - ribbonBase;
+				const float length = direction.Length();
+				if (length > 0.0001f)
+					LineDrawerDraw(length, ribbonBase, direction, Color(1.0f, 0.80f, 0.30f, 0.45f));
+			}
+		}
+		// 判定の区間は、刃が通る面(根元から剣先)を扇のように描き、当たる範囲の広さを見せる。
+		for (std::size_t i = 0; i < m_timelinePathTips.size(); i += 2)
+		{
+			const float time = m_timelinePathTimes[i];
+			if (time < step.hitStart || time > step.hitEnd)
+				continue;
+			const Vector3 direction = m_timelinePathTips[i] - m_timelinePathBases[i];
+			const float length = direction.Length();
+			if (length > 0.0001f)
+				LineDrawerDraw(length, m_timelinePathBases[i], direction, Color(1.0f, 0.35f, 0.25f, 0.45f));
+		}
+
+		// 時刻にいちばん近い区切りの姿勢(剣の根元・剣先)を引く。
+		const auto nearestSample = [this](float time) {
+			std::size_t best = 0;
+			for (std::size_t i = 1; i < m_timelinePathTimes.size(); ++i)
+				if (std::fabs(m_timelinePathTimes[i] - time) < std::fabs(m_timelinePathTimes[best] - time))
+					best = i;
+			return best;
+		};
+		// 判定の始まりと終わりの刃を白く太く描く。帯の端をドラッグすると、刃がどこで当たり始めて
+		// どこで当たり終わるかが3Dで分かる。
+		SetLineWidth(0.0045f);
+		for (const float boundary : { step.hitStart, step.hitEnd })
+		{
+			const std::size_t i = nearestSample(boundary);
+			const Vector3 direction = m_timelinePathTips[i] - m_timelinePathBases[i];
+			const float length = direction.Length();
+			if (length > 0.0001f)
+				LineDrawerDraw(length, m_timelinePathBases[i], direction, Color(1.0f, 1.0f, 1.0f, 0.95f));
+		}
+		// イベントを置いた瞬間の剣先に、イベントの色で小さな十字を出す(火花がどこから出るかなど)。
+		SetLineWidth(0.004f);
+		for (const Combat::TimelineEvent& event : step.events)
+		{
+			const Vector3 point = m_timelinePathTips[nearestSample(event.time)];
+			const Color color = event.type == Combat::TimelineEventType::Sound ? Color(0.75f, 0.5f, 1.0f, 1.0f)
+				: event.type == Combat::TimelineEventType::CameraShake ? Color(1.0f, 0.6f, 0.25f, 1.0f)
+				: Color(1.0f, 0.9f, 0.3f, 1.0f);
+			const float size = 1.6f;
+			LineDrawerDraw(size * 2.0f, point - Vector3(size, 0.0f, 0.0f), Vector3(1.0f, 0.0f, 0.0f), color);
+			LineDrawerDraw(size * 2.0f, point - Vector3(0.0f, size, 0.0f), Vector3(0.0f, 1.0f, 0.0f), color);
+			LineDrawerDraw(size * 2.0f, point - Vector3(0.0f, 0.0f, size), Vector3(0.0f, 0.0f, 1.0f), color);
+		}
+	}
+
+	// いまの剣の箱。判定の区間の中だけ出す(ゲームで判定が出ているときと同じ)。
+	// 敵に当たっていれば緑、当たっていなければ赤。区間の外は、選んだときだけ灰色で出す。
+	Vector3 base{};
+	Vector3 tip{};
+	Vector3 previousTip{};
+	const bool inHitWindow = t >= step.hitStart && t <= step.hitEnd;
+	if ((inHitWindow || m_timelineEditor.ShowHitboxOutsideWindow()) &&
+		m_playerAnimationMesh->GetSwordWorldSweep(base, tip, previousTip))
+	{
+		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
+			m_localPlayerMeshBounds, m_player->getRenderSRT());
+		const auto preview = OneVsOneCombat::EvaluateSwordCollisionPreview(
+			base, tip, previousTip, playerObb, playerObb);
+		const Color color = !inHitWindow ? Color(0.6f, 0.6f, 0.65f, 0.8f)
+			: m_timelineBladeHitsEnemy ? Color(0.25f, 1.0f, 0.35f, 1.0f)
+			: Color(1.0f, 0.25f, 0.15f, 1.0f);
+		DrawBoxEdges(GetObbCorners(preview.bladeObb), color);
+	}
+	Renderer::SetDepthEnable(true);
 }
 
 void GameScene::AimPlayerAttack()
@@ -1628,19 +2326,23 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	// 尾回転は体ごと回る攻撃で、頭を振り下ろす攻撃クリップとは形が合わない。
 	// 溜めと隙は立ち姿勢のまま(尾と首だけを構えで動かす)、回っている間は
 	// 歩きのクリップで脚を動かして「その場で回っている」ように見せる。
-	const bool tailSpinAttack =
-		m_enemies.front()->getAttackKind() == Combat::EnemyAttackKind::TailSpin &&
-		(state == enemy::MotionState::Windup ||
-		 state == enemy::MotionState::Active ||
-		 state == enemy::MotionState::Recovery);
-	const bool clipDrivenAttack = m_enemyAttackAnimation != nullptr && !tailSpinAttack &&
+	const bool inAttack =
+		state == enemy::MotionState::Windup ||
+		state == enemy::MotionState::Active ||
+		state == enemy::MotionState::Recovery;
+	const Combat::EnemyAttackKind attackKind = m_enemies.front()->getAttackKind();
+	const bool tailSpinAttack = inAttack && attackKind == Combat::EnemyAttackKind::TailSpin;
+	// 攻撃クリップを使わない攻撃(尾回転・火球・突進)。立ち姿勢か歩きに、首や尾の構えを重ねて見せる。
+	// 火球は上を向いて吐き、突進は走るので、頭を地面へ振り下ろす攻撃クリップとは形が合わない。
+	const bool nonClipAttack = inAttack && !Combat::EnemyAttackUsesAttackClip(attackKind);
+	const bool clipDrivenAttack = m_enemyAttackAnimation != nullptr && !nonClipAttack &&
 		(state == enemy::MotionState::Windup ||
 		 state == enemy::MotionState::Active ||
 		 state == enemy::MotionState::Recovery);
 	constexpr float recoveryPoseHoldSeconds = 0.4f;
 	// 尾回転はここに入れない。攻撃クリップ(頭の振り下ろし)の最後の姿勢で止まってしまい、
 	// 回り終わった直後だけ別の攻撃の形になる。
-	const bool holdRecoveryPose = !clipDrivenAttack && !tailSpinAttack &&
+	const bool holdRecoveryPose = !clipDrivenAttack && !nonClipAttack &&
 		state == enemy::MotionState::Recovery &&
 		m_enemies.front()->getStateTime() < recoveryPoseHoldSeconds;
 	int recoveryPoseFrame = 0;
@@ -1681,7 +2383,8 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAttackBlendFromAnimation =
 				m_previousEnemyMotionState == enemy::MotionState::Approach ||
 				m_previousEnemyMotionState == enemy::MotionState::Circle ||
-				m_previousEnemyMotionState == enemy::MotionState::Retreat
+				m_previousEnemyMotionState == enemy::MotionState::Retreat ||
+				m_previousEnemyMotionState == enemy::MotionState::Turn
 					? m_enemyWalkAnimation
 					// 怯み・練習台などの後は立ち姿勢(待機の最初のコマ)から入る。
 					: (m_enemyIdleAnimation != nullptr ? m_enemyIdleAnimation : m_enemyWalkAnimation);
@@ -1703,6 +2406,14 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	// 歩きの速さのままだと、脚が止まったまま体だけが回って滑って見える。
 	if (m_enemies.front()->isTailSpinning())
 		framesPerKey = 4;
+	// 突進は走るので、歩きのクリップを歩きの3倍以上の速さで回す(走る速さ185は歩き84の約2.2倍。
+	// 歩幅も広がって見えるよう、脚の回転はそれより速くしている)。滑って止まる間は半分の速さへ落とす。
+	if (state == enemy::MotionState::Turn)
+		framesPerKey = std::max(framesPerKey, 13);
+	if (m_enemies.front()->isChargeRunning())
+		framesPerKey = 3;
+	else if (m_enemies.front()->isChargeSkidding())
+		framesPerKey = 6;
 	if (clipDrivenAttack)
 	{
 		// 攻撃クリップの再生位置を「攻撃を始めてからの時間」から直接求める。
@@ -1751,31 +2462,41 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		case enemy::MotionState::Approach:
 		case enemy::MotionState::Circle:
 		case enemy::MotionState::Retreat:
+		// その場で向き直る間も脚を踏み替える(遅めに回す)。止めたまま体だけ回ると滑って見える。
+		case enemy::MotionState::Turn:
 			// 練習台(動かない敵)は歩かないので立ち姿勢のまま。歩きを再生すると足踏みして見える。
 			holdStandingPose = m_enemies.front()->isPassive();
 			if (!holdStandingPose)
 				animation = m_enemyWalkAnimation;
 			break;
 		case enemy::MotionState::Windup:
-			if (tailSpinAttack)
-				break; // 溜めは立ち姿勢のまま。尾を寄せる動きは構え(EnemyTellPose)で見せる。
+			if (nonClipAttack)
+				break; // 溜めは立ち姿勢のまま。尾を寄せる・首を上げる・地面を掻く動きは構え(EnemyTellPose)で見せる。
 			holdStandingPose = false;
 			animation = m_enemyAttackAnimation;
 			break;
 		case enemy::MotionState::Active:
-			if (tailSpinAttack)
+			if (tailSpinAttack || m_enemies.front()->isChargeRunning())
 			{
-				// 回っている間だけ脚を動かす。専用のモーションが無いので歩きを使う。
+				// 回っている間・走っている間だけ脚を動かす。専用のモーションが無いので歩きを使う。
 				holdStandingPose = false;
 				animation = m_enemyWalkAnimation;
 				break;
 			}
+			if (nonClipAttack)
+				break; // 火球は立ったまま首を突き出して吐く。
 			holdStandingPose = false;
 			animation = m_enemyAttackAnimation;
 			break;
 		case enemy::MotionState::Recovery:
+			// 突進の後、滑って止まる間は脚を動かし続ける(歩きを遅く回す)。
+			if (m_enemies.front()->isChargeSkidding())
+			{
+				holdStandingPose = false;
+				animation = m_enemyWalkAnimation;
+			}
 			// 隙の間も攻撃クリップの続き(頭を戻す動き)をそのまま見せる。
-			if (clipDrivenAttack)
+			else if (clipDrivenAttack)
 			{
 				holdStandingPose = false;
 				animation = m_enemyAttackAnimation;
@@ -1895,6 +2616,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		}
 	}
 	m_enemyBoneComb.Update();
+	UpdateEnemyMouthPosition();
 	if (blendedIntroThisUpdate)
 	{
 		// ブレンド中はWalkの先頭姿勢を維持し、完了後に通常のキー送りへ戻す。
@@ -2028,11 +2750,24 @@ void GameScene::draw(uint64_t deltatime)
 	}
 
 	// 剣の軌跡は半透明なので、キャラクターを描いた後に重ねる。
-	m_playerWeaponTrail.Draw(Color(1.0f, 0.94f, 0.72f, 0.9f));
+	// 色は金色寄りにする。以前の白に近い色(1.0, 0.94, 0.72)は、床を明るい灰色のマス目にしてから
+	// 床に溶けてほとんど見えなくなった(2026-10-26に画面で確認)。
+	m_playerWeaponTrail.Draw(Color(1.0f, 0.78f, 0.30f, 1.0f));
 	// 命中の火花と閃光。カメラへ正対させるためビュー行列を渡す。
 	// 色は火花側が寿命に応じて白熱→橙→赤と変えるので、ここでは指定しない。
 	m_hitEffect.Draw(m_camera.GetViewMatrix());
-	if (m_drawAttackCollisionDebug && !m_enemyIntroActive)
+	// 敵の攻撃の通り道。剣の軌跡(金色)と見分けられ、明るい灰色の床にも溶けない赤寄りの色にする
+	// (白っぽい色は、剣の軌跡で床に溶けて見えなかったことがある)。
+	const Color enemyTrailColor(0.95f, 0.30f, 0.18f, 0.65f);
+	m_enemyTailTrail.Draw(enemyTrailColor);
+	m_enemyHeadTrail.Draw(enemyTrailColor);
+	// 土煙・地面の衝撃の輪・咆哮の衝撃波。半透明なので、加算合成の炎より先に描く。
+	m_enemyMotionFx.Draw(m_camera.GetViewMatrix());
+	// 敵の火球と、吐く前に口に溜まる火。火花と同じく加算合成で、キャラクターの後に重ねる。
+	m_enemyFireball.Draw(m_camera.GetViewMatrix());
+	// タイムラインエディターを開いている間は、エディターの3D表示(剣先の通り道・剣の箱)だけを出す。
+	DrawTimelineEditor3D();
+	if (m_drawAttackCollisionDebug && !m_enemyIntroActive && !m_timelineEditor.IsOpen())
 	{
 		const auto& collision = m_combat.GetCollisionDebugState();
 		const bool showSwordSweep = collision.swordTransformValid &&
@@ -2063,7 +2798,10 @@ void GameScene::draw(uint64_t deltatime)
 			}
 		}
 
-		if (collision.swordTransformValid)
+		// 剣の箱と攻撃の粗い判定は、攻撃判定が出ている間だけ描く。
+		// 以前は剣の位置が取れていれば常に描いていたので、歩いているだけでも判定が出ているように見えた
+		// (ユーザー指摘 2026-10-26「剣の当たり判定とか常に出てる」)。実際の判定は前から判定中だけだった。
+		if (collision.swordTransformValid && m_combat.IsPlayerAttackActive())
 		{
 			if (m_drawAttackAabb)
 			{
@@ -2130,8 +2868,81 @@ void GameScene::draw(uint64_t deltatime)
 		}
 		Renderer::DisableCulling(true);
 	}
+	if (m_timelineEditor.IsOpen())
+	{
+		// エディターの間は戦闘のHUD(体力・操作説明)を出さない。タイムラインのウィンドウだけにする。
+		m_timelineEditor.Draw(m_timelineAnalysis, m_timelineBladeHitsEnemy);
+		return;
+	}
 	DrawGameplayHud();
 	DrawEnemyIntroOverlay();
+	CaptureFrameIfRequested();
+}
+
+void GameScene::WriteCaptureLog()
+{
+	if (m_captureDir.empty() || m_enemies.empty() || !m_player ||
+		m_capturedFrames >= m_captureCount)
+		return;
+	if (!m_captureLog)
+	{
+		_wfopen_s(&m_captureLog, (m_captureDir + L"\\enemy_log.csv").c_str(), L"w");
+		if (!m_captureLog)
+			return;
+		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push\n");
+	}
+	const enemy& e = *m_enemies.front();
+	const Vector3 enemyPos = e.getSRT().pos;
+	const Vector3 playerPos = m_player->getSRT().pos;
+	const float dx = playerPos.x - enemyPos.x;
+	const float dz = playerPos.z - enemyPos.z;
+	float facingError = std::atan2(-dx, -dz) - e.getSRT().rot.y;
+	while (facingError > PI) facingError -= PI * 2.0f;
+	while (facingError < -PI) facingError += PI * 2.0f;
+	constexpr float TO_DEG = 180.0f / PI;
+	// 状態名は日本語なので、表計算で読めるよう番号で書く(enemy::MotionState の並び)。
+	// 足の骨の床からの高さ(踏んだ瞬間の土煙を合わせるのに使う)。
+	float footHeight[4] = {};
+	for (int i = 0; i < 4; ++i)
+	{
+		Vector3 foot{};
+		if (GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
+			footHeight[i] = foot.y - ARENA_FLOOR_TOP_Y;
+	}
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.0f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f\n",
+		m_battleSeconds,
+		static_cast<int>(e.getMotionState()),
+		static_cast<int>(e.getAttackKind()),
+		enemyPos.x, enemyPos.z,
+		e.getSRT().rot.y * TO_DEG,
+		std::abs(facingError) * TO_DEG,
+		std::sqrt(dx * dx + dz * dz),
+		playerPos.x, playerPos.z,
+		m_combat.GetPlayerHp(),
+		footHeight[0], footHeight[1], footHeight[2], footHeight[3],
+		m_enemyMotionFx.GetPuffCount(), m_enemyMotionFx.GetRingCount(),
+		m_enemyWallPush.Length());
+	fflush(m_captureLog);
+}
+
+void GameScene::CaptureFrameIfRequested()
+{
+	// 撮るのは、登場演出の間(capture_intro=1)か、戦闘の間のどちらか一方だけ。
+	if (m_captureDir.empty() || m_capturedFrames >= m_captureCount ||
+		m_enemyIntroActive != m_captureIntro)
+		return;
+	const float clock = m_captureIntro ? m_enemyIntroTime : m_battleSeconds;
+	const float nextTime =
+		m_captureStartSeconds + m_captureIntervalSeconds * static_cast<float>(m_capturedFrames);
+	if (clock < nextTime)
+		return;
+	// ファイル名に戦闘開始(登場演出を撮るときは演出の始まり)からの秒を入れて、どの瞬間の絵か分かるようにする。
+	wchar_t name[64];
+	swprintf_s(name, L"\\f%03d_%06.2f.png", m_capturedFrames, clock);
+	Renderer::SaveBackBufferPng((m_captureDir + name).c_str());
+	++m_capturedFrames;
+	if (m_captureExit && m_capturedFrames >= m_captureCount)
+		PostQuitMessage(0);
 }
 
 void GameScene::DrawGameplayHud()
@@ -2173,6 +2984,20 @@ void GameScene::DrawGameplayHud()
 
 	if (m_showControlGuide)
 		DrawControlGuide();
+
+	// タイムラインエディターを保存せずに閉じたときの注意(画面の上の中央、数秒で消える)。
+	if (m_timelineUnsavedNoticeTime > 0.0f)
+	{
+		m_timelineUnsavedNoticeTime = std::max(0.0f, m_timelineUnsavedNoticeTime - ImGui::GetIO().DeltaTime);
+		const float alpha = std::clamp(m_timelineUnsavedNoticeTime, 0.0f, 1.0f);
+		const char* text = "攻撃のタイムラインに保存していない変更があります(F6で開いて Ctrl+S)";
+		const ImVec2 size = ImGui::CalcTextSize(text);
+		const ImVec2 position(viewport->Pos.x + (viewport->WorkSize.x - size.x) * 0.5f, viewport->Pos.y + 70.0f);
+		drawList->AddRectFilled(ImVec2(position.x - 12.0f, position.y - 7.0f),
+			ImVec2(position.x + size.x + 12.0f, position.y + size.y + 7.0f),
+			IM_COL32(60, 20, 15, static_cast<int>(210.0f * alpha)), 6.0f);
+		drawList->AddText(position, IM_COL32(255, 220, 200, static_cast<int>(255.0f * alpha)), text);
+	}
 
 	if (!m_lockOnTarget || m_enemyIntroActive || m_enemies.empty())
 		return;
@@ -2317,6 +3142,11 @@ void GameScene::init()
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
 	m_playerWeaponTrail.Initialize();
 	m_hitEffect.Initialize();
+	m_enemyFireball.Initialize();
+	m_enemyMotionFx.Initialize();
+	// 尾は回転で大きく弧を描くので、剣より長く残して通り道を読ませる。
+	m_enemyTailTrail.Initialize(32, 0.24f);
+	m_enemyHeadTrail.Initialize(24, 0.22f);
 	// 床。以前の床(厚さ0.6の箱を-0.59に置いたもの)と上面の高さをそろえる(-0.29)。
 	// 色は試遊での指摘(距離感が分かりにくい)を受けて、まずはトレーニングステージ風にする。
 	// デバッグ表示の「撮影・調整用」から石の色合いへ切り替えられる。
@@ -2393,59 +3223,58 @@ void GameScene::init()
 	// 待機モーション。idleクリップは4種類あるので、これもiniで差し替えられるようにする。
 	m_playerAnimationData.LoadAnimation(
 		GetDevSetting("idle", "assets/motion/sword and shield idle.fbx"), "idle");
-	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep)。
+	// 撮影・調整用の連続保存(dev_settings.ini の capture_dir / capture_start / capture_interval /
+	// capture_count / capture_exit)。詳しくは GameScene.h の CaptureFrameIfRequested を参照。
+	{
+		const std::string dir = GetDevSetting("capture_dir", "");
+		if (!dir.empty())
+		{
+			m_captureDir.assign(dir.begin(), dir.end()); // 英数字のパスだけを想定している
+			m_captureStartSeconds = std::stof(GetDevSetting("capture_start", "0"));
+			m_captureIntervalSeconds = std::stof(GetDevSetting("capture_interval", "0.1"));
+			m_captureCount = std::stoi(GetDevSetting("capture_count", "30"));
+			m_captureExit = GetDevSetting("capture_exit", "0") == "1";
+			m_captureIntro = GetDevSetting("capture_intro", "0") == "1";
+		}
+	}
+	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep|spin|fireball|charge)。
 	// 3種類の構えを見比べるとき、通常の選択では狙った攻撃が出るまで待つことになるため。
 	// 未指定なら通常どおり敵AIが選ぶ。デバッグ表示のチェックボックスからも切り替えられる。
 	{
 		const std::string forced = GetDevSetting("force_enemy_attack", "");
-		if (forced == "slam" || forced == "bite" || forced == "sweep" || forced == "spin")
+		if (forced == "slam" || forced == "bite" || forced == "sweep" || forced == "spin" ||
+			forced == "fireball" || forced == "charge")
 		{
 			m_forceEnemyAttack = true;
 			m_forcedEnemyAttackIndex =
-				forced == "bite" ? 1 : forced == "sweep" ? 2 : forced == "spin" ? 3 : 0;
+				forced == "bite" ? 1 : forced == "sweep" ? 2 : forced == "spin" ? 3 :
+				forced == "fireball" ? 4 : forced == "charge" ? 5 : 0;
 		}
 	}
-	// コンボの各段には別々のクリップを割り当てる。
-	// 以前は3段とも同じファイルを指定していたため、連続入力しても
-	// 同じ振りが3回繰り返されるだけで「繋がっている」感が出なかった。
-	// 1段目は従来から使っていて動作が確認できているクリップを維持し、
-	// 2段目以降に別の振りを割り当てている。
-	// 差し替えたい場合はモーションエディタ(F3)の
-	// 「Preview Combo (Weak/Heavy)」で3段続けて再生して確認できる。
-	// どのクリップを使うかは dev_settings.ini から差し替えられる。
-	// assets/motion には攻撃系だけで9本あり、どれが良いかは実際に見ないと判断できない。
-	// ビルドし直さずに比較できるようにしておくことで、選定の反復を速くする。
-	// 例:
-	//   weak1=assets/motion/sword and shield slash.fbx
-	//   heavy2=assets/motion/sword and shield attack.fbx
-	// 指定が無ければ既定のクリップを使う。
-	const std::array<std::string, 3> weakAttackFiles = {
-		// 既定のクリップと振りの位置は Combat::PlayerComboStepOf() が持つ。
-		// iniで差し替えると振りの位置の値と合わなくなるので、差し替えたら表の値も見直すこと。
-		GetDevSetting("weak1", Combat::PlayerComboStepOf(false, 1).clipFile),
-		GetDevSetting("weak2", Combat::PlayerComboStepOf(false, 2).clipFile),
-		GetDevSetting("weak3", Combat::PlayerComboStepOf(false, 3).clipFile),
-	};
-	const std::array<std::string, 3> heavyAttackFiles = {
-		GetDevSetting("heavy1", Combat::PlayerComboStepOf(true, 1).clipFile),
-		GetDevSetting("heavy2", Combat::PlayerComboStepOf(true, 2).clipFile),
-		GetDevSetting("heavy3", Combat::PlayerComboStepOf(true, 3).clipFile),
-	};
-	for (size_t index = 0; index < weakAttackFiles.size(); ++index)
+	// 技(コンボの各段・ダッシュ攻撃)のクリップと時間は、攻撃のタイムラインのファイルから読む
+	// (assets/data/attack_timeline.txt。ゲーム内のタイムラインエディター(F6)で編集・保存する)。
+	// ファイルが無ければ Combat::DefaultPlayerAttack() の既定値を使う。
+	// 以前は dev_settings.ini の weak1〜3・heavy1〜3・dash_attack でクリップを差し替えていたが、
+	// クリップを替えると判定の位置も見直す必要があり、iniでは時間を直せなかった。
+	// クリップの選択はエディターへ移した(クリップを替えて、その場で判定を合わせ直せる)。
+	// 読むのは起動して最初の1回だけ。リトライでこのシーンを作り直すたびに読み直すと、
+	// エディターで調整して保存していない値が、ファイルの値で上書きされて消えてしまう。
+	static bool attackTimelineLoaded = false;
+	if (!attackTimelineLoaded)
 	{
-		m_playerAnimationData.LoadAnimation(
-			weakAttackFiles[index], "weak_attack_" + std::to_string(index + 1));
-		m_playerAnimationData.LoadAnimation(
-			heavyAttackFiles[index], "heavy_attack_" + std::to_string(index + 1));
+		AttackTimelineFile::Load();
+		attackTimelineLoaded = true;
 	}
 	m_playerWalkAnimation = m_playerAnimationData.GetAnimation("walk", 0);
 	aiAnimation* playerRunAnimation = m_playerAnimationData.GetAnimation("run", 0);
 	std::array<aiAnimation*, 3> weakAttackAnimations{};
 	std::array<aiAnimation*, 3> heavyAttackAnimations{};
-	for (size_t index = 0; index < weakAttackAnimations.size(); ++index)
+	for (int index = 0; index < 3; ++index)
 	{
 		const std::string weakName = "weak_attack_" + std::to_string(index + 1);
 		const std::string heavyName = "heavy_attack_" + std::to_string(index + 1);
+		m_playerAnimationData.LoadAnimation(Combat::PlayerComboStepOf(false, index + 1).clipFile, weakName);
+		m_playerAnimationData.LoadAnimation(Combat::PlayerComboStepOf(true, index + 1).clipFile, heavyName);
 		weakAttackAnimations[index] = m_playerAnimationData.GetAnimation(weakName.c_str(), 0);
 		heavyAttackAnimations[index] = m_playerAnimationData.GetAnimation(heavyName.c_str(), 0);
 	}
@@ -2493,9 +3322,14 @@ void GameScene::init()
 		GetDevSetting("impact", "assets/motion/sword and shield impact.fbx"), "impact");
 	m_playerAnimator.SetImpactAnimation(m_playerAnimationData.GetAnimation("impact", 0));
 	// ダッシュ攻撃(走りながら弱攻撃)。モンハンの片手剣の突進斬りの役。
-	m_playerAnimationData.LoadAnimation(
-		GetDevSetting("dash_attack", Combat::PlayerDashAttackStep().clipFile), "dash_attack");
+	m_playerAnimationData.LoadAnimation(Combat::PlayerDashAttackStep().clipFile, "dash_attack");
 	m_playerAnimator.SetDashAttackAnimation(m_playerAnimationData.GetAnimation("dash_attack", 0));
+
+	// 攻撃のタイムラインエディター(F6)。クリップの読み込みとイベントの再生はこのシーンが受け持つ。
+	m_timelineEditor.Initialize({
+		[this](Combat::PlayerAttackSlot slot) { return ReloadAttackClip(slot); },
+		[this](const Combat::TimelineEvent& event) { FireTimelineEvent(event); },
+	});
 	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
 	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting("attack_hips_rotation", "1")));
 	if (playerIdleAnimation == nullptr)
@@ -2708,6 +3542,11 @@ void GameScene::DrawDebugWindow()
 void GameScene::dispose()
 {
 	m_playerAnimationMesh.reset();
+	if (m_captureLog)
+	{
+		fclose(m_captureLog);
+		m_captureLog = nullptr;
+	}
 }
 
 
@@ -2851,6 +3690,435 @@ void GameScene::ApplyEnemyTellPose(const Combat::EnemyTellPose& tell)
 	// 回転が残り続け、次に重ねたときに積み上がってしまう。
 	if (m_enemyAnimationMesh->AddBoneLocalRotations(BuildEnemyTellRotations(tell)))
 		m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
+}
+
+void GameScene::UpdateEnemyMouthPosition()
+{
+	m_enemyMouthValid = false;
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front())
+		return;
+	// 上あごの骨は口の付け根(あごの蝶番)にあり、鼻先はそれより前にある。
+	// 首の先(neck3)から上あごへの向きを頭の向きとみなし、その先へ延ばした点を口先とする。
+	// 骨から求めるので、首を持ち上げる構え(EnemyTellPose)を重ねた後の位置になる。
+	Vector3 jaw{};
+	if (!m_enemyAnimationMesh->GetBoneModelPosition("Armature_jaw_upper", jaw))
+		return;
+	Vector3 mouthModel = jaw;
+	Vector3 neck{};
+	if (m_enemyAnimationMesh->GetBoneModelPosition("Armature_neck3", neck))
+		mouthModel = jaw + (jaw - neck) * ENEMY_MOUTH_EXTEND;
+	const Matrix4x4 world = m_enemies.front()->getRenderSRT().GetMatrix();
+	m_enemyMouthPosition = Vector3::Transform(mouthModel, world);
+	m_enemyMouthValid = true;
+}
+
+void GameScene::LaunchEnemyFireball(const enemy& source)
+{
+	if (!m_player)
+		return;
+	const SRT srt = source.getSRT();
+	const float yaw = srt.rot.y;
+	const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+	// 口の位置が取れないとき(モデルが読めていない)は、体の前の高いところから吐く。
+	const Vector3 mouth = m_enemyMouthValid
+		? m_enemyMouthPosition
+		: srt.pos + forward * 28.0f + Vector3(0.0f, 30.0f, 0.0f);
+
+	// 狙いは吐いた瞬間のプレイヤーの足元。飛んでいる間は追いかけない。
+	// ただし敵の正面から曲げられる角度には限りがある(首より外へ曲がると口と関係ない向きへ飛んで見える)。
+	// 予兆の終わり際で向き直りを止めているので、そこから横へ動いた分だけ狙いが逸れる。
+	Vector3 flat = m_player->getSRT().pos - mouth;
+	flat.y = 0.0f;
+	const float distance = std::max(flat.Length(), 10.0f);
+	float aimYaw = std::atan2(-flat.x, -flat.z); // enemy::angleToTarget と同じ向きの取り方
+	float diff = aimYaw - yaw;
+	while (diff > PI) diff -= PI * 2.0f;
+	while (diff < -PI) diff += PI * 2.0f;
+	diff = std::clamp(
+		diff,
+		-Combat::Tuning::ENEMY_FIREBALL_MAX_AIM_ANGLE,
+		Combat::Tuning::ENEMY_FIREBALL_MAX_AIM_ANGLE);
+	aimYaw = yaw + diff;
+	const Vector3 target(
+		mouth.x - std::sinf(aimYaw) * distance,
+		ARENA_FLOOR_TOP_Y,
+		mouth.z - std::cosf(aimYaw) * distance);
+	m_enemyFireball.Launch(mouth, target);
+}
+
+void GameScene::UpdateEnemyFireballs(float deltaSeconds, bool playerInvincible)
+{
+	if (!m_player)
+		return;
+	// 口に溜まる火。予兆の進み具合で大きくなり、吐いたら消える。
+	float charge = 0.0f;
+	if (!m_enemies.empty() && m_enemies.front() && m_enemyMouthValid)
+	{
+		const enemy& source = *m_enemies.front();
+		if (source.getMotionState() == enemy::MotionState::Windup &&
+			source.getAttackKind() == Combat::EnemyAttackKind::Fireball)
+		{
+			charge = source.getStateTime() / Combat::Tuning::ENEMY_FIREBALL_ANTICIPATION;
+		}
+	}
+	m_enemyFireball.SetMouthCharge(m_enemyMouthPosition, charge);
+
+	std::vector<EnemyFireball::Impact> impacts;
+	const Vector3 playerFeet = m_player->getSRT().pos;
+	m_enemyFireball.Update(
+		deltaSeconds,
+		playerFeet + Vector3(0.0f, PLAYER_BODY_CENTER_HEIGHT, 0.0f),
+		PLAYER_BODY_RADIUS,
+		playerInvincible,
+		ARENA_FLOOR_TOP_Y,
+		impacts);
+
+	for (const EnemyFireball::Impact& impact : impacts)
+	{
+		// 爆発の火花。上へ向けて大きく散らす。
+		m_hitEffect.Spawn(impact.position + Vector3(0.0f, 2.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f), 24, 1.7f);
+		// 地面で爆発したときは、爆風で土煙が輪になって広がる。
+		if (impact.position.y < ARENA_FLOOR_TOP_Y + 6.0f)
+		{
+			const Vector3 ground(impact.position.x, ARENA_FLOOR_TOP_Y, impact.position.z);
+			m_enemyMotionFx.SpawnGroundRing(ground, 26.0f, 0.40f, 0.40f);
+			m_enemyMotionFx.SpawnDust(ground, Vector3(0.0f, 0.0f, 0.0f), 10, 38.0f, 9.0f, 1.0f, 0.35f);
+		}
+		// 近くで爆発したほど強く揺らす。外れても「すぐそばに落ちた」ことが伝わるように。
+		const float closeness =
+			std::clamp(1.0f - (impact.position - playerFeet).Length() / 120.0f, 0.0f, 1.0f);
+		if (closeness > 0.0f)
+			m_camera.TriggerShake(0.6f + 1.4f * closeness, 0.25f);
+
+		if (!impact.hitPlayer ||
+			!m_combat.ApplyEnemyProjectileHit(static_cast<float>(Combat::Tuning::ENEMY_FIREBALL_DAMAGE)))
+		{
+			continue;
+		}
+		// 被弾の手応えは近接攻撃と同じものを出す。飛ばす向きは爆発の中心から離れる向き。
+		m_camera.TriggerShake(2.6f, 0.35f);
+		m_playerDamageFlashTime = 0.45f;
+		Vector3 away = playerFeet - impact.position;
+		away.y = 0.0f;
+		if (away.LengthSquared() < 1.0f)
+			away = impact.direction;
+		if (m_combat.IsPlayerAttacking())
+			m_combat.CancelPlayerAttack();
+		const Combat::KnockbackData knockback =
+			Combat::EnemyKnockbackOf(Combat::EnemyAttackKind::Fireball);
+		m_player->applyKnockback(away, knockback.speed, knockback.seconds);
+		m_playerAnimator.PlayImpactMotion();
+	}
+}
+
+void GameScene::OnEnemyChargeHitWall(enemy& e, const Vector3& headPosition, const Vector3& forward)
+{
+	if (!e.notifyChargeBlocked())
+		return;
+	// 走りを打ち切ったので、戦闘側の攻撃も取り消す(よろめいている敵から当たらないように)。
+	m_combat.CancelEnemyAttack();
+	m_camera.TriggerShake(2.4f, 0.40f);
+	// 頭が壁にぶつかった場所から破片を飛ばす。
+	m_hitEffect.Spawn(
+		headPosition + Vector3(0.0f, 14.0f, 0.0f),
+		-forward + Vector3(0.0f, 0.6f, 0.0f),
+		30,
+		1.8f);
+	// 壁の根元から土煙が噴き上がる。
+	Vector3 wallFoot = headPosition;
+	wallFoot.y = ARENA_FLOOR_TOP_Y;
+	m_enemyMotionFx.SpawnDust(wallFoot, -forward * 30.0f + Vector3(0.0f, 20.0f, 0.0f),
+		22, 40.0f, 13.0f, 1.4f, 0.45f);
+}
+
+void GameScene::PushEnemyBodyOutOfWalls()
+{
+	m_enemyWallPush = Vector3(0.0f, 0.0f, 0.0f);
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front() || m_walls.empty())
+		return;
+	enemy& e = *m_enemies.front();
+
+	// 体の形を、骨の位置を中心にした球の集まりで表す。半径は体の太さ(胴は横幅約23の半分)。
+	// 骨から取るので、首を伸ばす・尾を振る・体を回すといった姿勢の変化にもそのまま付いてくる。
+	struct BodyPart { const char* bone; float radius; };
+	static constexpr BodyPart PARTS[] = {
+		{ "Armature_jaw_upper", 6.0f },
+		{ "Armature_neck3", 7.0f },
+		{ "Armature_neck2", 7.0f },
+		{ "Armature_neck1", 8.0f },
+		{ "Armature_back1", 11.0f },
+		{ "Armature_back2", 11.0f },
+		{ "Armature_tail1", 7.0f },
+		{ "Armature_tail2", 5.0f },
+		{ "Armature_tail3", 4.0f },
+		{ "Armature_leg_front_foot_L", 4.0f },
+		{ "Armature_leg_front_foot_R", 4.0f },
+		{ "Armature_leg_back_foot_L", 4.0f },
+		{ "Armature_leg_back_foot_R", 4.0f },
+	};
+	std::vector<std::pair<Vector3, float>> spheres;
+	spheres.reserve(std::size(PARTS) + 2);
+	for (const BodyPart& part : PARTS)
+	{
+		Vector3 position{};
+		if (GetEnemyBoneWorld(part.bone, position))
+			spheres.emplace_back(position, part.radius);
+	}
+	// 骨の無い先端(口先・尾の先)も足す。尾の先は最後の骨よりさらに先にある。
+	if (m_enemyMouthValid)
+		spheres.emplace_back(m_enemyMouthPosition, 4.0f);
+	Vector3 tail2{}, tail3{};
+	if (GetEnemyBoneWorld("Armature_tail2", tail2) && GetEnemyBoneWorld("Armature_tail3", tail3))
+		spheres.emplace_back(tail3 + (tail3 - tail2) * ENEMY_TAIL_TIP_EXTEND, 3.0f);
+	if (spheres.empty())
+		return;
+
+	// 闘技場は凸の多角形なので、壁ごとに「一番深くめり込んだ部分」の分だけ内側へ押せば外に出せる。
+	// 角では2枚の壁に同時にめり込むので、押した後の位置でもう一度見る。
+	// 壁の当たり面は見た目の厚み(ARENA_WALL_DEPTH)の内側の面に合わせる。
+	Vector3 push(0.0f, 0.0f, 0.0f);
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		for (const auto& wallObject : m_walls)
+		{
+			const PLANEINFO pi = wallObject->getEquation().GetPlaneInfo();
+			Vector3 normal(pi.plane.a, 0.0f, pi.plane.c);
+			const float length = normal.Length();
+			if (length <= 0.0001f)
+				continue;
+			normal /= length;
+			const float planeD = pi.plane.d / length;
+			// 闘技場の中心(原点)がある側を内側とする。法線の向きに頼らない。
+			const float inside = planeD >= 0.0f ? 1.0f : -1.0f;
+			float deepest = 0.0f;
+			for (const auto& [center, radius] : spheres)
+			{
+				const float distance = (normal.Dot(center + push) + planeD) * inside -
+					ARENA_WALL_DEPTH * 0.5f;
+				deepest = std::max(deepest, radius - distance);
+			}
+			if (deepest > 0.0f)
+				push += normal * (inside * deepest);
+		}
+	}
+	push.y = 0.0f;
+	if (push.LengthSquared() < 0.0001f)
+		return;
+
+	SRT srt = e.getSRT();
+	srt.pos += push;
+	e.setSRT(srt);
+	if (m_enemyMouthValid)
+		m_enemyMouthPosition += push;
+	m_enemyWallPush = push;
+
+	// 突進の頭が壁に当たって押し戻されたら、壁にぶつかったよろめきに入る。
+	// 体で押し戻すようになると、位置の球はもう壁に届かず、球だけの判定ではよろめかなくなるため。
+	// 走る向きへ進んだ量の4割以上を押し返されたときだけにして、壁沿いにかすっただけでは止めない。
+	if (e.isChargeRunning())
+	{
+		const float yaw = srt.rot.y;
+		const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+		const Vector3 velocity = e.getVel();
+		const float advanced = std::max(0.0f, velocity.Dot(forward));
+		if (advanced > 0.01f && -push.Dot(forward) > advanced * 0.4f)
+		{
+			const Vector3 head = m_enemyMouthValid ? m_enemyMouthPosition : srt.pos + forward * 26.0f;
+			OnEnemyChargeHitWall(e, head, forward);
+		}
+	}
+}
+
+bool GameScene::GetEnemyBoneWorld(const char* bone, Vector3& out) const
+{
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front())
+		return false;
+	Vector3 model{};
+	if (!m_enemyAnimationMesh->GetBoneModelPosition(bone, model))
+		return false;
+	out = Vector3::Transform(model, m_enemies.front()->getRenderSRT().GetMatrix());
+	return true;
+}
+
+void GameScene::ClearEnemyMotionEffects()
+{
+	m_enemyMotionFx.Clear();
+	m_enemyTailTrail.Clear();
+	m_enemyHeadTrail.Clear();
+	m_enemyRoarFxSeconds = 0.0f;
+}
+
+void GameScene::StartEnemyRoarEffect(float seconds)
+{
+	m_enemyRoarFxSeconds = std::max(m_enemyRoarFxSeconds, seconds);
+	m_enemyRoarRingTimer = 0.0f;
+	// 吠えた瞬間の声の圧で、足元の土が輪になって吹き飛ぶ。
+	if (!m_enemies.empty() && m_enemies.front())
+	{
+		Vector3 ground = m_enemies.front()->getSRT().pos;
+		ground.y = ARENA_FLOOR_TOP_Y;
+		m_enemyMotionFx.SpawnGroundRing(ground, 95.0f, 0.75f, 0.35f);
+		m_enemyMotionFx.SpawnDust(ground, Vector3(0.0f, 0.0f, 0.0f), 10, 70.0f, 11.0f, 1.1f, 0.20f);
+	}
+}
+
+void GameScene::UpdateEnemyMotionEffects(float deltaSeconds)
+{
+	if (!m_enemies.empty() && m_enemies.front())
+	{
+		UpdateEnemyFootDust(deltaSeconds);
+		UpdateEnemyAttackEffects();
+
+		const enemy& e = *m_enemies.front();
+		const float yaw = e.getSRT().rot.y;
+		const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+
+		// 突進。走っている間は後脚から土煙を後ろへ蹴り上げ、通った跡に煙の帯を残す。
+		// 滑って止まる間は前脚が地面を削り、前と横へ土を押し出す。
+		const bool running = e.isChargeRunning();
+		const bool skidding = e.isChargeSkidding();
+		if (running || skidding)
+		{
+			m_enemyChargeDustTimer -= deltaSeconds;
+			if (m_enemyChargeDustTimer <= 0.0f)
+			{
+				m_enemyChargeDustTimer += running ? ENEMY_CHARGE_DUST_INTERVAL : ENEMY_SKID_DUST_INTERVAL;
+				const int first = running ? 2 : 0;   // 走る間は後脚、滑る間は前脚
+				for (int i = first; i < first + 2; ++i)
+				{
+					Vector3 foot{};
+					if (!GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
+						continue;
+					foot.y = ARENA_FLOOR_TOP_Y;
+					if (running)
+						m_enemyMotionFx.SpawnDust(foot, -forward * 35.0f, 1, 14.0f, 9.0f, 0.9f, 0.30f);
+					else
+						m_enemyMotionFx.SpawnDust(foot, forward * 30.0f, 2, 22.0f, 8.0f, 0.8f, 0.34f);
+				}
+			}
+		}
+		else
+		{
+			m_enemyChargeDustTimer = 0.0f;
+		}
+
+		// 咆哮の衝撃波。口元から一定の間隔で輪を出し続ける。
+		if (m_enemyRoarFxSeconds > 0.0f)
+		{
+			m_enemyRoarFxSeconds -= deltaSeconds;
+			m_enemyRoarRingTimer -= deltaSeconds;
+			if (m_enemyRoarRingTimer <= 0.0f && m_enemyMouthValid)
+			{
+				m_enemyRoarRingTimer += ENEMY_ROAR_RING_INTERVAL;
+				m_enemyMotionFx.SpawnRoarRing(m_enemyMouthPosition, ENEMY_ROAR_RING_RADIUS, 0.55f, 0.30f);
+			}
+		}
+	}
+
+	m_enemyMotionFx.Update(deltaSeconds);
+	m_enemyTailTrail.Update(deltaSeconds);
+	m_enemyHeadTrail.Update(deltaSeconds);
+}
+
+void GameScene::UpdateEnemyFootDust(float deltaSeconds)
+{
+	// 落ちてくる間は足が地面から遠く、高さの記録が意味を持たないので見ない。
+	// 着地した後で記録し直す(UpdateEnemyIntro で着地の瞬間に記録を消している)。
+	if (m_enemyIntroActive && m_enemyIntroTime < ENEMY_INTRO_FALL_SECONDS)
+		return;
+	if (deltaSeconds <= 0.0f)
+		return;
+	const enemy& e = *m_enemies.front();
+	const float yaw = e.getSRT().rot.y;
+	const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+	for (int i = 0; i < 4; ++i)
+	{
+		EnemyFootTracker& foot = m_enemyFeet[i];
+		foot.bone = ENEMY_FOOT_BONES[i];
+		Vector3 position{};
+		if (!GetEnemyBoneWorld(foot.bone, position))
+			continue;
+		const float height = position.y - ARENA_FLOOR_TOP_Y;
+		if (!foot.valid)
+		{
+			foot.previousHeight = height;
+			foot.liftedHeight = height;
+			foot.valid = true;
+			continue;
+		}
+		foot.liftedHeight = std::max(foot.liftedHeight, height);
+		const float descent = (foot.previousHeight - height) / deltaSeconds;
+		if (descent > 0.0f)
+			foot.descentSpeed = std::max(foot.descentSpeed * 0.8f, descent);
+
+		if (foot.liftedHeight >= ENEMY_FOOT_CONTACT_HEIGHT + ENEMY_FOOT_LIFT_MIN &&
+			foot.previousHeight > ENEMY_FOOT_CONTACT_HEIGHT && height <= ENEMY_FOOT_CONTACT_HEIGHT)
+		{
+			// 強く踏み下ろしたほど、多く・速く散らす。歩きは控えめ、突進や叩き付けは大きく。
+			const float strength = std::clamp(foot.descentSpeed / 60.0f, 0.0f, 1.0f);
+			Vector3 ground = position;
+			ground.y = ARENA_FLOOR_TOP_Y;
+			// 前脚の足踏み(突進の構え)は土を後ろへ蹴る。
+			const bool pawing = i < 2 && e.getMotionState() == enemy::MotionState::Windup &&
+				e.getAttackKind() == Combat::EnemyAttackKind::Charge;
+			const Vector3 push = pawing ? -forward * 25.0f : Vector3(0.0f, 0.0f, 0.0f);
+			m_enemyMotionFx.SpawnDust(ground, push,
+				3 + static_cast<int>(5.0f * strength),
+				8.0f + 18.0f * strength,
+				6.0f + 4.0f * strength,
+				0.8f + 0.4f * strength,
+				0.22f + 0.14f * strength);
+			foot.liftedHeight = height;
+			foot.descentSpeed = 0.0f;
+		}
+		foot.previousHeight = height;
+	}
+}
+
+void GameScene::UpdateEnemyAttackEffects()
+{
+	const enemy& e = *m_enemies.front();
+	const enemy::MotionState state = e.getMotionState();
+	const Combat::EnemyAttackKind kind = e.getAttackKind();
+	const float stateTime = e.getStateTime();
+	const bool active = state == enemy::MotionState::Active;
+
+	// 攻撃の通り道。判定が出ている間だけ描く(剣の軌跡と同じく「危ない時間」がそのまま見える)。
+	if (active && kind == Combat::EnemyAttackKind::TailSpin && e.isTailSpinning())
+	{
+		Vector3 tail1{}, tail2{}, tail3{};
+		if (GetEnemyBoneWorld("Armature_tail1", tail1) &&
+			GetEnemyBoneWorld("Armature_tail2", tail2) &&
+			GetEnemyBoneWorld("Armature_tail3", tail3))
+		{
+			m_enemyTailTrail.Push(tail1, tail3 + (tail3 - tail2) * ENEMY_TAIL_TIP_EXTEND);
+		}
+	}
+	// 叩き付け・噛みつき・薙ぎ払いは、どれも同じクリップ(頭を振り下ろす動き)を速さと構えを変えて使っている。
+	// 当てているのは頭なので、首の先から口先までを通り道として描く(前脚は振り下ろしの間むしろ上がっている。ログで確認)。
+	if (active && Combat::EnemyAttackUsesAttackClip(kind) && m_enemyMouthValid)
+	{
+		Vector3 neck{};
+		if (GetEnemyBoneWorld("Armature_neck3", neck))
+			m_enemyHeadTrail.Push(neck,
+				m_enemyMouthPosition + (m_enemyMouthPosition - neck) * ENEMY_HEAD_TRAIL_EXTEND);
+	}
+
+	// 叩き付けが地面を打った瞬間(判定が出る瞬間)。頭が打ちつけた地面から土煙と衝撃の輪を出す。
+	const float slamHitTime = Combat::EnemyFirstHitTimeOf(Combat::EnemyAttackKind::Slam);
+	const bool sameActive = m_enemyFxPreviousState == enemy::MotionState::Active;
+	const float previousTime = sameActive ? m_enemyFxPreviousStateTime : -1.0f;
+	if (active && kind == Combat::EnemyAttackKind::Slam &&
+		previousTime < slamHitTime && stateTime >= slamHitTime)
+	{
+		Vector3 center = m_enemyMouthValid ? m_enemyMouthPosition : e.getSRT().pos;
+		center.y = ARENA_FLOOR_TOP_Y;
+		m_enemyMotionFx.SpawnGroundRing(center, 48.0f, 0.45f, 0.50f);
+		m_enemyMotionFx.SpawnDust(center, Vector3(0.0f, 0.0f, 0.0f), 18, 48.0f, 11.0f, 1.2f, 0.42f);
+	}
+
+	m_enemyFxPreviousState = state;
+	m_enemyFxPreviousStateTime = stateTime;
 }
 
 std::unordered_map<std::string, Matrix4x4> GameScene::BuildEnemyTellRotations(
@@ -3487,6 +4755,11 @@ void GameScene::DebugCombat()
 				m_enemies.front()->getSpinSign() >= 0.0f ? "左" : "右",
 				100.0f * m_enemies.front()->getSpinProgress());
 		}
+		else if (m_enemies.front()->isChargeStunned())
+		{
+			ImGui::Text("敵の攻撃: %s (壁にぶつかってよろめき中)",
+				Combat::EnemyAttackDebugName(m_enemies.front()->getAttackKind()));
+		}
 		else
 		{
 			ImGui::Text("敵の攻撃: %s",
@@ -3527,14 +4800,11 @@ void GameScene::DebugCombat()
 			ImGui::RadioButton("噛みつき", &m_forcedEnemyAttackIndex, 1);
 			ImGui::RadioButton("薙ぎ払い", &m_forcedEnemyAttackIndex, 2);
 			ImGui::RadioButton("尾回転", &m_forcedEnemyAttackIndex, 3);
+			ImGui::RadioButton("火球", &m_forcedEnemyAttackIndex, 4);
+			ImGui::RadioButton("突進", &m_forcedEnemyAttackIndex, 5);
 			ImGui::Unindent();
 		}
-		const Combat::EnemyAttackKind forced =
-			m_forcedEnemyAttackIndex == 1 ? Combat::EnemyAttackKind::Bite :
-			m_forcedEnemyAttackIndex == 2 ? Combat::EnemyAttackKind::Sweep :
-			m_forcedEnemyAttackIndex == 3 ? Combat::EnemyAttackKind::TailSpin :
-			Combat::EnemyAttackKind::Slam;
-		m_enemies.front()->setForcedAttackKind(m_forceEnemyAttack ? &forced : nullptr);
+		// 敵への反映は update() で毎フレーム行う(ここはタブを開いているときしか通らない)。
 	}
 
 	// 撮影・調整用。動画を撮るときに、倒れない的を置いたり、自分が倒れないようにしたりする。

@@ -171,7 +171,8 @@ public:
 			tipColor.w = color.w * lifeAlpha;
 			Color baseColor = color;
 			// 刃の根元側は薄くして、リボンの内側を自然に消す。
-			baseColor.w = color.w * lifeAlpha * 0.15f;
+			// リボンを刃の途中から張るようにしたので、根元側を消しすぎると帯が細く見える。
+			baseColor.w = color.w * lifeAlpha * 0.30f;
 
 			m_vertices[i * 2 + 0].Position = node.base;
 			m_vertices[i * 2 + 0].Diffuse = baseColor;
