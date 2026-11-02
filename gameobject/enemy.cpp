@@ -53,6 +53,8 @@ void enemy::resetEncounter()
 	m_flinchCount = 0;
 	m_condition = Combat::EnemyCondition::Healthy;
 	m_conditionTime = 0.0f;
+	m_rangedCooldown = 0.0f;
+	m_chargeStunned = false;
 }
 
 bool enemy::isInRecovery() const
@@ -108,6 +110,37 @@ bool enemy::isTailSpinPausing() const
 	return Combat::EnemySpinPhaseAt(m_stateTime, m_spinHalfTurns).pausing;
 }
 
+bool enemy::isChargeRunning() const
+{
+	return m_motionState == MotionState::Active &&
+		m_attackKind == Combat::EnemyAttackKind::Charge;
+}
+
+bool enemy::isChargeSkidding() const
+{
+	return m_motionState == MotionState::Recovery &&
+		m_attackKind == Combat::EnemyAttackKind::Charge &&
+		!m_chargeStunned &&
+		m_stateTime < Combat::Tuning::ENEMY_CHARGE_SKID_SECONDS;
+}
+
+bool enemy::isChargeStunned() const
+{
+	return m_motionState == MotionState::Recovery && m_chargeStunned;
+}
+
+bool enemy::notifyChargeBlocked()
+{
+	if (!isChargeRunning())
+		return false;
+	// 走りを打ち切って隙へ移る。よろめきの分だけ隙が長くなる(recoverySeconds)。
+	changeState(MotionState::Recovery);
+	m_chargeStunned = true;
+	// よろめきは怯みと同じ動きを使う。顔を背ける向きは毎回入れ替える。
+	m_flinchYawSign = -m_flinchYawSign;
+	return true;
+}
+
 Combat::EnemySpinState enemy::getSpinState() const
 {
 	Combat::EnemySpinState state;
@@ -154,7 +187,61 @@ float enemy::recoverySeconds() const
 		m_condition == Combat::EnemyCondition::Dying ? Combat::Tuning::ENEMY_DYING_RECOVERY_SCALE :
 		m_condition == Combat::EnemyCondition::Tired ? Combat::Tuning::ENEMY_TIRED_RECOVERY_SCALE :
 		1.0f;
-	return getAttackData().frames.recoverySeconds * scale;
+	// 突進で壁にぶつかったときは、よろめいている分だけ長く動けない。
+	const float stun = m_chargeStunned ? Combat::Tuning::ENEMY_CHARGE_WALL_STUN_SECONDS : 0.0f;
+	return getAttackData().frames.recoverySeconds * scale + stun;
+}
+
+float enemy::windupTurnRate() const
+{
+	const float windupRatio = m_stateTime / std::max(0.01f, windupSeconds());
+	switch (m_attackKind)
+	{
+	// 尾回転は「その場で踏ん張って回る準備をする」攻撃なので、向き直りを遅くする。
+	case Combat::EnemyAttackKind::TailSpin:
+		return 2.2f;
+	// 火球と突進は、予兆の終わり際で向き直りを止める(狙いを決める)。
+	// 最後まで追いかけると、吐いた/走り出した瞬間の向きが常にプレイヤーの方になり、
+	// 「溜めを見て横へずれる」避け方が成立しない。止めた後に動いた分だけ外れる。
+	case Combat::EnemyAttackKind::Fireball:
+		return windupRatio >= Combat::Tuning::ENEMY_FIREBALL_AIM_LOCK_RATIO ? 0.0f : 3.5f;
+	case Combat::EnemyAttackKind::Charge:
+		return windupRatio >= Combat::Tuning::ENEMY_CHARGE_AIM_LOCK_RATIO ? 0.0f : 3.0f;
+	default:
+		return 3.5f;
+	}
+}
+
+bool enemy::canUseRangedAttack() const
+{
+	return m_rangedCooldown <= 0.0f;
+}
+
+void enemy::requestAttack(float distance, const Vector3& targetPosition)
+{
+	const float facingError = facingErrorTo(targetPosition);
+	// 背後の近くにいる相手には、2回に1回は向き直らずに尾回転で応じる。
+	// 毎回向き直るだけだと「背後に回れば安全な時間がある」が確定してしまうため。
+	if (!m_forceAttackKind &&
+		facingError >= BEHIND_ANGLE &&
+		distance <= Combat::Tuning::ENEMY_SPIN_HIT_RANGE)
+	{
+		m_behindDecisionCounter = (m_behindDecisionCounter + 1) % 2;
+		if (m_behindDecisionCounter == 0)
+		{
+			selectNextAttack(distance, true);
+			changeState(MotionState::Windup);
+			return;
+		}
+	}
+	// 正面が向いていなければ、まずその場で向き直る。攻撃はそろってから選ぶ(Turnの処理)。
+	if (facingError > ATTACK_ALIGN_ANGLE)
+	{
+		changeState(MotionState::Turn);
+		return;
+	}
+	selectNextAttack(distance);
+	changeState(MotionState::Windup);
 }
 
 float enemy::moveSpeedScale() const
@@ -204,7 +291,7 @@ void enemy::setForcedAttackKind(const Combat::EnemyAttackKind* kind)
 		m_forcedAttackKind = *kind;
 }
 
-void enemy::selectNextAttack(float distance)
+void enemy::selectNextAttack(float distance, bool playerBehind)
 {
 	// 単純な巡回に位置ずらしを加えることで、外部の乱数生成器に依存せず
 	// 「毎回同じ順番」にもならないようにする。
@@ -215,6 +302,29 @@ void enemy::selectNextAttack(float distance)
 	{
 		m_previousAttackKind = m_attackKind;
 		m_attackKind = m_forcedAttackKind;
+	}
+	else if (distance >= Combat::Tuning::ENEMY_RANGED_MIN_DISTANCE)
+	{
+		// 離れた相手には火球か突進。近接の4種類は届かないので候補に入れない。
+		// 基本は交互に出し、3回に1回だけ同じものを続ける(交互だけだと次が読めてしまう)。
+		m_rangedSelectCounter = (m_rangedSelectCounter + 1) % 3;
+		const bool repeat = m_rangedSelectCounter == 0;
+		const Combat::EnemyAttackKind other =
+			m_previousRangedKind == Combat::EnemyAttackKind::Fireball
+				? Combat::EnemyAttackKind::Charge
+				: Combat::EnemyAttackKind::Fireball;
+		m_previousAttackKind = m_attackKind;
+		m_attackKind = repeat ? m_previousRangedKind : other;
+		// 突進が届かない遠さなら火球にする。
+		if (distance > Combat::Tuning::ENEMY_CHARGE_MAX_DISTANCE)
+			m_attackKind = Combat::EnemyAttackKind::Fireball;
+		m_previousRangedKind = m_attackKind;
+	}
+	else if (playerBehind)
+	{
+		// 背後の相手には向き直らずに尾回転。正面の攻撃は向き直らないと届かない。
+		m_previousAttackKind = m_attackKind;
+		m_attackKind = Combat::EnemyAttackKind::TailSpin;
 	}
 	else
 	{
@@ -255,6 +365,15 @@ void enemy::selectNextAttack(float distance)
 		m_spinHalfTurns = (isEnraged() || m_attackSelectCounter % 2 != 0)
 			? Combat::Tuning::ENEMY_SPIN_MAX_HALF_TURNS
 			: 1;
+	}
+
+	// 離れた相手への攻撃を出したら、しばらくは出さない(歩いて近づいてくる)。
+	// 怒っている間は間隔が短い。
+	if (m_attackKind == Combat::EnemyAttackKind::Fireball ||
+		m_attackKind == Combat::EnemyAttackKind::Charge)
+	{
+		m_rangedCooldown = RANGED_ATTACK_INTERVAL_SECONDS *
+			(isEnraged() ? Combat::Tuning::ENEMY_RAGE_CIRCLE_SCALE : 1.0f);
 	}
 }
 
@@ -313,6 +432,7 @@ void enemy::update(uint64_t dt)
 	m_conditionTime += deltaSec;
 	// 怒っている時間を減らす。切れたら普通の動きへ戻る。
 	m_rageSeconds = std::max(0.0f, m_rageSeconds - deltaSec);
+	m_rangedCooldown = std::max(0.0f, m_rangedCooldown - deltaSec);
 	// 攻撃を当てない時間が続くと怯み値は抜けていく。
 	m_posture = std::max(
 		0.0f, m_posture - Combat::Tuning::ENEMY_POSTURE_RECOVERY_PER_SECOND * deltaSec);
@@ -323,7 +443,7 @@ void enemy::update(uint64_t dt)
 	{
 		if (m_motionState != MotionState::Circle)
 			changeState(MotionState::Circle);
-		faceTarget(targetPosition, deltaSec, 4.0f);
+		faceTarget(targetPosition, deltaSec, 4.0f, APPROACH_TURN_SPEED);
 		return;
 	}
 
@@ -348,51 +468,94 @@ void enemy::update(uint64_t dt)
 	{
 		// 大型の敵は衝突分離によって希望距離の少し外側で止まることがあるため、
 		// 敵の中心が希望距離へ完全に入ることは遷移条件にしない。
-		selectNextAttack(distance);
-		changeState(MotionState::Windup);
+		requestAttack(distance, targetPosition);
 	}
 	// 怒っている間は様子見が短く、次の攻撃がすぐ来る。
 	const float circleScale =
 		isEnraged() ? Combat::Tuning::ENEMY_RAGE_CIRCLE_SCALE : 1.0f;
-	if (m_motionState == MotionState::Circle &&
-		m_stateTime >= MIN_CIRCLE_SECONDS * circleScale &&
-		(distance <= ATTACK_DISTANCE ||
-		 (m_stateTime >= MAX_CIRCLE_SECONDS * circleScale &&
-		  distance <= ATTACK_DISTANCE + 32.0f)))
+	const bool rangedReady =
+		canUseRangedAttack() && distance >= Combat::Tuning::ENEMY_RANGED_MIN_DISTANCE;
+	// 離れた相手へ近づいている最中。しばらく近づけなければ火球か突進に切り替える。
+	// (以前は追いかけ続けるしかなく、離れて待つプレイヤーは常に安全だった)
+	if (m_motionState == MotionState::Approach && rangedReady &&
+		m_stateTime >= Combat::Tuning::ENEMY_RANGED_APPROACH_SECONDS * circleScale)
 	{
-		selectNextAttack(distance);
-		changeState(MotionState::Windup);
+		requestAttack(distance, targetPosition);
+	}
+	if (m_motionState == MotionState::Circle &&
+		m_stateTime >= MIN_CIRCLE_SECONDS * circleScale)
+	{
+		if (distance <= ATTACK_DISTANCE)
+		{
+			requestAttack(distance, targetPosition);
+		}
+		// 大きく離れた(逃げた)相手には、様子見を待たずに火球か突進を出す。
+		else if (rangedReady && distance >= Combat::Tuning::ENEMY_RANGED_FAR_DISTANCE)
+		{
+			requestAttack(distance, targetPosition);
+		}
+		// 大きく離れているのに離れた相手への攻撃が出せない(出した直後)ときは、歩いて詰める。
+		// 周回のままだと前へ出る速さが遅く、いつまでも近づけない。
+		else if (!rangedReady && distance >= Combat::Tuning::ENEMY_RANGED_FAR_DISTANCE)
+		{
+			changeState(MotionState::Approach);
+		}
+		else if (m_stateTime >= MAX_CIRCLE_SECONDS * circleScale)
+		{
+			// 様子見を終える。近接が届かない距離なら火球か突進、そうでなければ近接。
+			if (rangedReady || distance <= ATTACK_DISTANCE + 32.0f)
+				requestAttack(distance, targetPosition);
+		}
 	}
 
+	// 回る速さの上限にも、移動の速さの倍率(怒りで速く、弱ると遅く)を掛ける。
+	const float turnScale = moveSpeedScale();
 	switch (m_motionState)
 	{
 	case MotionState::Approach:
-		faceTarget(targetPosition, deltaSec, 8.0f);
+		// 向きは上限つきで回すので、真横や後ろの相手へは弧を描きながら近づく。
+		faceTarget(targetPosition, deltaSec, 8.0f, APPROACH_TURN_SPEED * turnScale);
 		moveInFacingDirection(APPROACH_SPEED * moveSpeedScale() * deltaSec);
 		break;
 	case MotionState::Circle:
 	{
-		faceTarget(targetPosition, deltaSec, 7.0f);
-		const float distanceError = distance - PREFERRED_DISTANCE;
-		// 周回しながら、プレイヤーが離れた場合は距離方向にも近づける。
-		// 接近量に小さすぎる上限を設けると、後退後に攻撃距離へ戻れず
-		// 敵が延々と周回し続けるためである。
-		const float forwardSpeed = std::clamp(
-			distanceError * 3.0f,
-			-CIRCLE_SPEED * 0.75f,
-			CIRCLE_SPEED * 0.75f);
-		const float side = m_circleDirection * CIRCLE_SPEED * moveSpeedScale() * deltaSec;
-		const Vector3 forwardDir(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y));
-		const Vector3 sideDir(-forwardDir.z, 0.0f, forwardDir.x);
-		m_move = forwardDir * (forwardSpeed * moveSpeedScale() * deltaSec) + sideDir * side;
+		// 周回は「プレイヤーを向いたまま真横へ滑る」のではなく、前へ歩きながら弧を描く。
+		// 以前はプレイヤーを見続けたまま横へ動いていたので、前歩きのモーションのまま横へ滑り
+		// (カニ歩き)、常にこちらを見ている不自然な敵になっていた。
+		// 歩く向きは「プレイヤーの方向から横へずらした向き」で、ずらす量は距離で変える。
+		//   遠い     : 15度ずらす(ほぼ近づく)
+		//   好む距離 : 75度ずらす(横腹を見せながら回る)
+		//   近すぎる : 115度ずらす(少し離れながら回る)
+		const float t = std::clamp((distance - PREFERRED_DISTANCE) / 40.0f, -1.0f, 1.0f);
+		const float offset = t >= 0.0f
+			? 1.31f + (0.26f - 1.31f) * t
+			: 1.31f + (2.00f - 1.31f) * -t;
+		const float desiredYaw = angleToTarget(targetPosition) + m_circleDirection * offset;
+		turnTowardYaw(desiredYaw, deltaSec, 4.0f, CIRCLE_TURN_SPEED * turnScale);
+		moveInFacingDirection(CIRCLE_SPEED * moveSpeedScale() * deltaSec);
+		break;
+	}
+	case MotionState::Turn:
+	{
+		// その場で足を踏み替えて向き直る。動かないので、この間が側面・背後を殴る機会になる。
+		// そろったら、その時の距離で攻撃を選ぶ(向き直っている間に離れられたら火球・突進になる)。
+		faceTarget(targetPosition, deltaSec, 6.0f, TURN_IN_PLACE_SPEED * turnScale);
+		if (facingErrorTo(targetPosition) <= ATTACK_ALIGN_ANGLE)
+		{
+			selectNextAttack(distance);
+			changeState(MotionState::Windup);
+		}
+		else if (m_stateTime >= TURN_TIMEOUT_SECONDS)
+		{
+			changeState(MotionState::Circle);
+		}
 		break;
 	}
 	case MotionState::Windup:
-		// 尾回転は「その場で踏ん張って回る準備をする」攻撃なので、向き直りを遅くする。
-		faceTarget(
-			targetPosition,
-			deltaSec,
-			m_attackKind == Combat::EnemyAttackKind::TailSpin ? 2.2f : 3.5f);
+	{
+		const float turnRate = windupTurnRate();
+		if (turnRate > 0.0f)
+			faceTarget(targetPosition, deltaSec, turnRate, WINDUP_TURN_SPEED);
 		if (m_stateTime >= windupSeconds())
 		{
 			if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
@@ -400,6 +563,7 @@ void enemy::update(uint64_t dt)
 			changeState(MotionState::Active);
 		}
 		break;
+	}
 	case MotionState::Active:
 		if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
 		{
@@ -417,6 +581,16 @@ void enemy::update(uint64_t dt)
 			if (!spin.pausing)
 				moveInFacingDirection(Combat::Tuning::ENEMY_SPIN_LUNGE_SPEED * deltaSec);
 		}
+		else if (m_attackKind == Combat::EnemyAttackKind::Charge)
+		{
+			// 予兆の終わりで決めた向きのまま、一直線に走る。向き直りはしない
+			// (プレイヤーが横へ避けたら、そのまま通り過ぎる)。
+			// 走り出しは少しずつ速くする。いきなり最高速だと溜めから瞬間移動したように見える。
+			const float accel = std::clamp(
+				m_stateTime / Combat::Tuning::ENEMY_CHARGE_ACCEL_SECONDS, 0.0f, 1.0f);
+			moveInFacingDirection(
+				Combat::Tuning::ENEMY_CHARGE_SPEED * accel * (2.0f - accel) * deltaSec);
+		}
 		else
 		{
 			// 攻撃判定中は踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
@@ -427,14 +601,28 @@ void enemy::update(uint64_t dt)
 		if (m_stateTime >= activeSeconds()) changeState(MotionState::Recovery);
 		break;
 	case MotionState::Recovery:
+		// 突進のあとは、走った勢いのまま滑って止まる(速さは二乗で落ちる。約28進む)。
+		// 走りの最高速から始めるので、走りから隙へ移る瞬間に速さが途切れない。
+		if (isChargeSkidding())
+		{
+			const float remain =
+				1.0f - m_stateTime / Combat::Tuning::ENEMY_CHARGE_SKID_SECONDS;
+			moveInFacingDirection(
+				Combat::Tuning::ENEMY_CHARGE_SPEED * remain * remain * deltaSec);
+		}
 		if (m_stateTime >= recoverySeconds())
 		{
 			// 尾回転のあとは後退させない。半回転1回なら背中を向けたまま止まっているので、
 			// そこから下がると「プレイヤーの方へ突っ込む」動きになってしまう
 			// (後退は自分の正面の反対へ動く処理なので、向きが逆のときは前へ出る)。
+			// 突進のあとも同じ(相手を通り過ぎて背中を向けている)。火球のあとはもともと離れている。
 			// 怒っている間は下がらずに次の攻撃へ移る(押し続ける)。
+			const bool keepDistance =
+				m_attackKind == Combat::EnemyAttackKind::TailSpin ||
+				m_attackKind == Combat::EnemyAttackKind::Charge ||
+				m_attackKind == Combat::EnemyAttackKind::Fireball;
 			changeState(
-				(isEnraged() || m_attackKind == Combat::EnemyAttackKind::TailSpin)
+				(isEnraged() || keepDistance)
 					? MotionState::Circle
 					: MotionState::Retreat);
 		}
@@ -448,7 +636,7 @@ void enemy::update(uint64_t dt)
 			changeState(MotionState::Circle);
 		break;
 	case MotionState::Retreat:
-		faceTarget(targetPosition, deltaSec, 6.0f);
+		faceTarget(targetPosition, deltaSec, 6.0f, APPROACH_TURN_SPEED * turnScale);
 		moveInFacingDirection(-RETREAT_SPEED * moveSpeedScale() * deltaSec);
 		if (m_stateTime >= RETREAT_SECONDS || distance >= RETREAT_DISTANCE)
 		{
@@ -480,6 +668,9 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 		return Combat::EnemyFlinchPose(
 			m_stateTime, Combat::Tuning::ENEMY_FLINCH_SECONDS, m_flinchYawSign);
 	}
+	// 突進で壁にぶつかったよろめき。怯みと同じ動きを、隙の長さいっぱいに引き伸ばして使う。
+	if (isChargeStunned())
+		return Combat::EnemyFlinchPose(m_stateTime, recoverySeconds(), m_flinchYawSign);
 	// 尾回転は回る向きで構えが左右反転し、一拍の位置も回転数で変わるので、状態ごと渡す。
 	Combat::EnemyPoseOffset pose = Combat::EnemyAttackPose(
 		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
@@ -493,7 +684,8 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 		const bool moving =
 			m_motionState == MotionState::Approach ||
 			m_motionState == MotionState::Circle ||
-			m_motionState == MotionState::Retreat;
+			m_motionState == MotionState::Retreat ||
+			m_motionState == MotionState::Turn;
 		const Combat::EnemyPoseOffset condition =
 			Combat::EnemyConditionPose(m_condition, moving, m_conditionTime);
 		pose.pitch += condition.pitch;
@@ -511,7 +703,7 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarTellPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
 	// 怯んでいる間は攻撃の構えを捨てる(全身の傾きと同じ扱い)。
-	if (m_motionState == MotionState::Flinch)
+	if (m_motionState == MotionState::Flinch || isChargeStunned())
 		return Combat::EnemyTellPose{};
 	return Combat::EnemyAttackTellPose(
 		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
@@ -621,6 +813,8 @@ void enemy::changeState(MotionState nextState)
 	// 攻撃の始まり(予兆)でだけ、攻撃の経過時間を数え直す。
 	if (nextState == MotionState::Windup)
 		m_attackElapsed = 0.0f;
+	// よろめきは突進で壁にぶつかった隙の間だけ。ほかの状態へ移ったら解く。
+	m_chargeStunned = false;
 	m_motionState = nextState;
 	m_stateTime = 0.0f;
 }
@@ -637,11 +831,25 @@ float enemy::angleToTarget(const Vector3& targetPosition) const
 	return std::atan2(-(targetPosition.x - m_srt.pos.x), -(targetPosition.z - m_srt.pos.z));
 }
 
-void enemy::faceTarget(const Vector3& targetPosition, float deltaSec, float turnRate)
+void enemy::turnTowardYaw(float targetYaw, float deltaSec, float turnRate, float maxTurnSpeed)
 {
-	m_destrot.y = angleToTarget(targetPosition);
+	m_destrot.y = WrapAngle(targetYaw);
 	const float diffrot = WrapAngle(m_destrot.y - m_srt.rot.y);
-	m_srt.rot.y = WrapAngle(m_srt.rot.y + diffrot * std::min(1.0f, turnRate * deltaSec));
+	// 差が小さいときは割合で滑らかに寄せ、大きいときは上限の速さで回る。
+	const float maxStep = maxTurnSpeed * deltaSec;
+	const float step = std::clamp(diffrot * std::min(1.0f, turnRate * deltaSec), -maxStep, maxStep);
+	m_srt.rot.y = WrapAngle(m_srt.rot.y + step);
+}
+
+void enemy::faceTarget(
+	const Vector3& targetPosition, float deltaSec, float turnRate, float maxTurnSpeed)
+{
+	turnTowardYaw(angleToTarget(targetPosition), deltaSec, turnRate, maxTurnSpeed);
+}
+
+float enemy::facingErrorTo(const Vector3& targetPosition) const
+{
+	return std::abs(WrapAngle(angleToTarget(targetPosition) - m_srt.rot.y));
 }
 
 void enemy::moveInFacingDirection(float distance)
@@ -661,6 +869,7 @@ const char* enemy::getMotionStateName() const
 	case MotionState::Retreat: return "後退";
 	case MotionState::Flinch: return "怯み";
 	case MotionState::Roar: return "咆哮(怒り)";
+	case MotionState::Turn: return "向き直り";
 	default: return "不明";
 	}
 }

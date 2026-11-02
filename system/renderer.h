@@ -174,6 +174,10 @@ public:
     static void Dispose();
     static void Begin();
     static void End();
+    // 撮影・調整用。いまのバックバッファをPNGで保存する(Presentの前に呼ぶ)。
+    // 画面を撮るのではなくゲーム自身が描いた絵を書き出すので、ウィンドウが
+    // 他のウィンドウの後ろにあっても撮れる(前面へ出してフォーカスを奪わずに済む)。
+    static bool SaveBackBufferPng(const wchar_t* path);
     static void RestoreMainRenderTarget();
     static void SetDepthEnable(bool Enable);
     static void SetDepthAllwaysWrite();

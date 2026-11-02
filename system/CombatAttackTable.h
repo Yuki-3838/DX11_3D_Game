@@ -182,6 +182,76 @@ inline constexpr float ENEMY_SPIN_LUNGE_SPEED = 18.0f;
 inline constexpr float ENEMY_SPIN_KNOCKBACK_SPEED = 360.0f;
 inline constexpr float ENEMY_SPIN_KNOCKBACK_SECONDS = 0.48f;
 
+// --- 離れた相手への攻撃 ---
+// 以前の4種類はどれも「近くの相手を殴る」攻撃で、敵はプレイヤーを追いかけて向き直り続けるしかなかった。
+// 距離を取ったプレイヤーは安全で、敵の側にも「離れた相手をどうするか」の答えが無い。
+// モンスターハンターの大型モンスターと同じく、離れた相手には火球と突進で応じる。
+// どちらも**撃った/走り出した瞬間に向きが決まり、それ以上は追いかけない**のが要点で、
+// 敵が常にプレイヤーの方を向き続ける作りから抜け出す(横へ避ければ外れ、突進は相手を通り過ぎる)。
+// この距離より離れていたら、近接ではなくこの2種類から選ぶ。
+inline constexpr float ENEMY_RANGED_MIN_DISTANCE = 55.0f;
+// 様子見を待たずに、すぐ離れた相手への攻撃を選ぶ距離(逃げ回る相手への答え)。
+inline constexpr float ENEMY_RANGED_FAR_DISTANCE = 85.0f;
+// 接近中、これだけ近づけずにいたら離れた相手への攻撃へ切り替える。
+inline constexpr float ENEMY_RANGED_APPROACH_SECONDS = 0.9f;
+
+// --- 敵の攻撃(火球): 首を持ち上げ口に火を溜め、プレイヤーが**いた場所**へ吐く ---
+// リオレウスの火球ブレスを参考にした。狙うのは吐いた瞬間のプレイヤーの位置で、追いかけない。
+// 予兆の間に口の火が大きくなるので、吐く直前に横へずれれば外れる(前転で避けてもよい)。
+// 予兆の最後の一部は向き直りを止める(狙いを決めた)ので、溜めの終わり際に動いた分だけ逸れる。
+inline constexpr float ENEMY_FIREBALL_ANTICIPATION = 0.95f;
+inline constexpr float ENEMY_FIREBALL_ACTIVE = 0.18f;
+inline constexpr float ENEMY_FIREBALL_RECOVERY = 0.85f;
+inline constexpr float ENEMY_FIREBALL_COOLDOWN = 1.20f;
+inline constexpr int ENEMY_FIREBALL_DAMAGE = 14;
+// 予兆のうち、向き直りを止める割合(最後の25%)。ここから先に動けば狙いが外れる。
+inline constexpr float ENEMY_FIREBALL_AIM_LOCK_RATIO = 0.75f;
+// 火球の速さ(単位/秒)。距離80なら約0.5秒で着弾する。見てから横へ1歩ずれれば避けられる速さ。
+inline constexpr float ENEMY_FIREBALL_SPEED = 170.0f;
+// 火球の大きさ(当たり判定の半径)と、着弾したときの爆発の半径。
+// 爆発の半径は前転(34)1回で外へ出られる大きさに留める。
+inline constexpr float ENEMY_FIREBALL_RADIUS = 4.0f;
+inline constexpr float ENEMY_FIREBALL_EXPLOSION_RADIUS = 14.0f;
+// 正面から左右へ曲げて吐ける角度(片側)。真横のプレイヤーへは吐けない。
+// 首より外へ曲がると、口とは関係ない向きへ火球が飛んで見える。
+inline constexpr float ENEMY_FIREBALL_MAX_AIM_ANGLE = 0.61f; // 約35度
+// 飛んでいられる最長の時間。外れて壁の外へ飛んでいった火球を消すため。
+inline constexpr float ENEMY_FIREBALL_LIFETIME = 2.5f;
+inline constexpr float ENEMY_FIREBALL_KNOCKBACK_SPEED = 260.0f;
+inline constexpr float ENEMY_FIREBALL_KNOCKBACK_SECONDS = 0.40f;
+
+// --- 敵の攻撃(突進): 頭を下げて地面を掻き、向きを決めて一直線に走る ---
+// ティガレックスやディアブロスの突進を参考にした。走り出したら曲がらず、相手を通り過ぎて止まる。
+// 止まったときは背中を向けているので、そこが反撃の機会になる。
+// 壁へぶつかると、その場で長くよろめく(大きな隙)。壁際へ誘って避けるのが上手な避け方になる。
+inline constexpr float ENEMY_CHARGE_ANTICIPATION = 1.00f;
+inline constexpr float ENEMY_CHARGE_ACTIVE = 0.95f;
+inline constexpr float ENEMY_CHARGE_RECOVERY = 1.10f;
+inline constexpr float ENEMY_CHARGE_COOLDOWN = 1.40f;
+inline constexpr int ENEMY_CHARGE_DAMAGE = 20;
+// 予兆のうち、向き直りを止める割合(最後の20%)。走り出す向きはここで決まる。
+inline constexpr float ENEMY_CHARGE_AIM_LOCK_RATIO = 0.80f;
+// 走る速さ(単位/秒)。接近(84)の2倍強。0.95秒で約175進む(闘技場の半径は300)。
+inline constexpr float ENEMY_CHARGE_SPEED = 185.0f;
+// 走り出しで最高速へ達するまでの時間。いきなり最高速だと、溜めから瞬間移動したように見える。
+inline constexpr float ENEMY_CHARGE_ACCEL_SECONDS = 0.18f;
+// 走り終わってから滑って止まるまでの時間(隙の前半)。
+inline constexpr float ENEMY_CHARGE_SKID_SECONDS = 0.45f;
+// 当たる範囲。体そのものがぶつかる攻撃なので、正面寄りの体の幅だけにする。
+// 敵とプレイヤーは体の球で押し離されるので、その距離より短いと絶対に当たらない。
+// 噛みつき(34)が当たっているので、それより少しだけ長くする。
+inline constexpr float ENEMY_CHARGE_HIT_RANGE = 36.0f;
+inline constexpr float ENEMY_CHARGE_HIT_HALF_ANGLE = 1.22f; // 約70度
+inline constexpr float ENEMY_CHARGE_KNOCKBACK_SPEED = 440.0f;
+inline constexpr float ENEMY_CHARGE_KNOCKBACK_SECONDS = 0.55f;
+// 突進を選ぶ最大の距離。走る距離は約165(走り)+約28(滑り)なので、これより遠いと届かずに手前で止まる
+// (撮影で、300離れた相手へ突進して130手前で止まるのを確認した)。それより遠い相手には火球を吐く。
+// 走って逃げる相手(走りの速さ45)は予兆と走りの約2秒で約90離れるので、それでも届く距離にしている
+// (170では、145から突進して逃げる相手の手前で止まった)。
+inline constexpr float ENEMY_CHARGE_MAX_DISTANCE = 130.0f;
+// 壁にぶつかったときに、隙へ足すよろめきの時間。
+inline constexpr float ENEMY_CHARGE_WALL_STUN_SECONDS = 1.10f;
+
 // --- 攻撃中の踏み込みの速さ(単位/秒) ---
 // 判定が出ている間だけ前へ出る。判定を短くした分だけ速くして、踏み込む距離を保つ
 // (叩き付けで約26、噛みつきで約11、薙ぎ払いで約34)。
@@ -526,6 +596,9 @@ enum class EnemyAttackKind
     // 体ごと半回転して尾で薙ぐ。危ないのは正面ではなく側面と背後。
     // ほかの3種類とは危険な方向が逆なので、「どこに立つか」の読み合いを作る。
     TailSpin,
+    // 離れた相手への攻撃。どちらも向きを決めたら追いかけない。
+    Fireball, ///< 口から火球を吐く。吐いた瞬間にプレイヤーがいた場所へ飛ぶ。
+    Charge,   ///< 向きを決めて一直線に走る。相手を通り過ぎて止まる。
 };
 
 /** 敵の攻撃(叩き付け)。 */
@@ -609,6 +682,75 @@ inline const AttackData& EnemyTailSpinAttack()
         return attack;
     }();
     return data;
+}
+
+/**
+ * @brief 敵の攻撃(火球)。当たり判定は敵の体ではなく、飛んでいく火球が持つ。
+ *
+ * 戦闘判定(OneVsOneCombat)は、この攻撃の判定時間には何も当てない(EnemyMaxHitsOf が0)。
+ * ダメージは火球が着弾したときに、シーン側が OneVsOneCombat::ApplyEnemyProjectileHit() で入れる。
+ * 火球は吐いた後も飛び続けるので、敵の攻撃の段階(隙など)とは別に当たる必要があるためである。
+ */
+inline const AttackData& EnemyFireballAttack()
+{
+    static const AttackData data = [] {
+        AttackData attack;
+        attack.attackId = "enemy_fireball";
+        attack.animationName = "idle"; // 立ち姿勢に首・あごの構えを重ねる(専用モーションが無い)
+        attack.frames.anticipationSeconds = Tuning::ENEMY_FIREBALL_ANTICIPATION;
+        attack.frames.activeSeconds = Tuning::ENEMY_FIREBALL_ACTIVE;
+        attack.frames.recoverySeconds = Tuning::ENEMY_FIREBALL_RECOVERY;
+        attack.frames.cooldownSeconds = Tuning::ENEMY_FIREBALL_COOLDOWN;
+        attack.broadPhaseFilter.maxDistance = 0.0f;
+        attack.damage = Tuning::ENEMY_FIREBALL_DAMAGE;
+        attack.sfx = "dragon_attack";
+        return attack;
+    }();
+    return data;
+}
+
+/** 敵の攻撃(突進)。向きを決めて一直線に走り、体でぶつかる。 */
+inline const AttackData& EnemyChargeAttack()
+{
+    static const AttackData data = [] {
+        AttackData attack;
+        attack.attackId = "enemy_charge";
+        attack.animationName = "walk"; // 走っている間は歩きのクリップを速く回す(専用モーションが無い)
+        attack.frames.anticipationSeconds = Tuning::ENEMY_CHARGE_ANTICIPATION;
+        attack.frames.activeSeconds = Tuning::ENEMY_CHARGE_ACTIVE;
+        attack.frames.recoverySeconds = Tuning::ENEMY_CHARGE_RECOVERY;
+        attack.frames.cooldownSeconds = Tuning::ENEMY_CHARGE_COOLDOWN;
+        attack.broadPhaseFilter.maxDistance = Tuning::ENEMY_CHARGE_HIT_RANGE;
+        attack.damage = Tuning::ENEMY_CHARGE_DAMAGE;
+        attack.sfx = "dragon_attack";
+        return attack;
+    }();
+    return data;
+}
+
+/**
+ * @brief 攻撃クリップ(dragon_attack.dae)で動かす攻撃か。
+ *
+ * 攻撃クリップは「頭を持ち上げて地面へ振り下ろす」1本だけで、体ごと回る尾回転・
+ * 上を向いて火を吐く火球・走る突進とは形が合わない。それらは立ち姿勢(または歩き)に
+ * 首・あご・尾の構え(EnemyTellPose)を重ねて見せる。
+ */
+inline bool EnemyAttackUsesAttackClip(EnemyAttackKind kind)
+{
+    return kind == EnemyAttackKind::Slam ||
+        kind == EnemyAttackKind::Bite ||
+        kind == EnemyAttackKind::Sweep;
+}
+
+/**
+ * @brief 判定時間の間、毎フレーム当たりを見る攻撃か。
+ *
+ * ほかの攻撃は「当たる瞬間」に1回だけ見る。尾回転は危険な向きが回転につれて動き、
+ * 突進は体ごと走って危険な場所そのものが動くので、どちらも判定時間の間ずっと見る。
+ */
+inline bool EnemyAttackHitsContinuously(EnemyAttackKind kind)
+{
+    return kind == EnemyAttackKind::TailSpin || kind == EnemyAttackKind::Charge;
 }
 
 /**
@@ -696,6 +838,9 @@ inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
  */
 inline int EnemyMaxHitsOf(EnemyAttackKind kind, int spinHalfTurns)
 {
+    // 火球は敵の体では当てない(当たり判定は飛んでいく火球が持つ)。
+    if (kind == EnemyAttackKind::Fireball)
+        return 0;
     if (kind != EnemyAttackKind::TailSpin)
         return 1;
     return std::clamp(spinHalfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
@@ -713,6 +858,8 @@ inline const AttackData& EnemyAttackOf(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return EnemyTailSpinAttack();
+    case EnemyAttackKind::Fireball: return EnemyFireballAttack();
+    case EnemyAttackKind::Charge:   return EnemyChargeAttack();
     case EnemyAttackKind::Bite:  return EnemyBiteAttack();
     case EnemyAttackKind::Sweep: return EnemySweepAttack();
     case EnemyAttackKind::Slam:
@@ -732,9 +879,11 @@ inline const Tuning::EnemyAttackClip& EnemyAttackClipOf(EnemyAttackKind kind)
     {
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_CLIP;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_CLIP;
-    // 尾回転は攻撃クリップを使わない(回転は体の向きで作り、脚は歩きのクリップで動かす)。
+    // 尾回転・火球・突進は攻撃クリップを使わない(EnemyAttackUsesAttackClip)。
     // 呼ばれても困らないように叩き付けの区間を返すだけにしておく。
     case EnemyAttackKind::TailSpin:
+    case EnemyAttackKind::Fireball:
+    case EnemyAttackKind::Charge:
     case EnemyAttackKind::Slam:
     default:                     return Tuning::ENEMY_SLAM_CLIP;
     }
@@ -746,6 +895,9 @@ inline float EnemyLungeSpeedOf(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_LUNGE_SPEED;
+    // 火球はその場で吐く。突進の走りは敵AIが加速・減速を付けて動かすので、ここは最高速を返す。
+    case EnemyAttackKind::Fireball: return 0.0f;
+    case EnemyAttackKind::Charge:   return Tuning::ENEMY_CHARGE_SPEED;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_LUNGE_SPEED;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_LUNGE_SPEED;
     case EnemyAttackKind::Slam:
@@ -759,6 +911,8 @@ inline float EnemyFirstHitTimeOf(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_FIRST_HIT_TIME;
+    case EnemyAttackKind::Fireball:
+    case EnemyAttackKind::Charge:   return 0.0f;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_FIRST_HIT_TIME;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_FIRST_HIT_TIME;
     case EnemyAttackKind::Slam:
@@ -778,6 +932,8 @@ inline float EnemyHitHalfAngleOf(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return Tuning::ENEMY_SPIN_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Charge:   return Tuning::ENEMY_CHARGE_HIT_HALF_ANGLE;
+    case EnemyAttackKind::Fireball: return 0.0f;
     case EnemyAttackKind::Bite:  return Tuning::ENEMY_BITE_HIT_HALF_ANGLE;
     case EnemyAttackKind::Sweep: return Tuning::ENEMY_SWEEP_HIT_HALF_ANGLE;
     case EnemyAttackKind::Slam:
@@ -799,6 +955,10 @@ inline KnockbackData EnemyKnockbackOf(EnemyAttackKind kind)
     {
     case EnemyAttackKind::TailSpin:
         return { Tuning::ENEMY_SPIN_KNOCKBACK_SPEED, Tuning::ENEMY_SPIN_KNOCKBACK_SECONDS };
+    case EnemyAttackKind::Fireball:
+        return { Tuning::ENEMY_FIREBALL_KNOCKBACK_SPEED, Tuning::ENEMY_FIREBALL_KNOCKBACK_SECONDS };
+    case EnemyAttackKind::Charge:
+        return { Tuning::ENEMY_CHARGE_KNOCKBACK_SPEED, Tuning::ENEMY_CHARGE_KNOCKBACK_SECONDS };
     case EnemyAttackKind::Bite:
         return { Tuning::ENEMY_BITE_KNOCKBACK_SPEED, Tuning::ENEMY_BITE_KNOCKBACK_SECONDS };
     case EnemyAttackKind::Sweep:
@@ -820,6 +980,8 @@ inline const char* EnemyAttackDebugName(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return "尾回転";
+    case EnemyAttackKind::Fireball: return "火球";
+    case EnemyAttackKind::Charge:   return "突進";
     case EnemyAttackKind::Bite:  return "噛みつき";
     case EnemyAttackKind::Sweep: return "薙ぎ払い";
     case EnemyAttackKind::Slam:
@@ -833,6 +995,8 @@ inline const char* EnemyAttackDisplayName(EnemyAttackKind kind)
     switch (kind)
     {
     case EnemyAttackKind::TailSpin: return "TAIL SPIN";
+    case EnemyAttackKind::Fireball: return "FIREBALL";
+    case EnemyAttackKind::Charge:   return "CHARGE";
     case EnemyAttackKind::Bite:  return "QUICK BITE";
     case EnemyAttackKind::Sweep: return "WIDE SWEEP";
     case EnemyAttackKind::Slam:

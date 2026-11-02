@@ -13,7 +13,9 @@ public:
 	// 攻撃前に止まり、攻撃後に長く止まることで、プレイヤーが差し込める隙を作る。
 	// Flinchは攻撃を受けて怯んでいる状態。行動が止まり、攻撃の予兆も中断される。
 	// Roarは怒りに入る合図の咆哮。攻撃はせず、当たり判定も出ない。
-	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar };
+	// Turnは攻撃の前に、その場で足を踏み替えてプレイヤーの方へ向き直っている状態。
+	// 大型の敵は一瞬では振り向けない。向き直っている間が側面・背後を殴る機会になる。
+	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn };
 
 	explicit enemy(IScene* scene);
 
@@ -89,6 +91,17 @@ public:
 	float getSpinSign() const { return m_spinSign; }
 	// 回っている間(Active)か。回転中は脚を動かすため、アニメーション側が見る。
 	bool isTailSpinning() const;
+
+	// --- 突進 ---
+	// 走っている最中(Active)か。走っている間は歩きのクリップを速く回す。
+	bool isChargeRunning() const;
+	// 走り終えて滑りながら止まっている最中か。脚は走りより遅く動かす。
+	bool isChargeSkidding() const;
+	// 壁にぶつかってよろめいている最中か。
+	bool isChargeStunned() const;
+	// 走っている最中に壁で止められたことをシーンから知らせる(壁との衝突はシーン側が解いている)。
+	// 走るのをやめ、その場で長くよろめく(大きな隙)。止めたときはtrueを返す。
+	bool notifyChargeBlocked();
 	// 半回転と半回転の間で止まっている(一拍おいている)最中か。
 	// 止まっている間は脚も止める。動かすと、回っていないのに足踏みして見える。
 	bool isTailSpinPausing() const;
@@ -119,10 +132,24 @@ private:
 	void changeState(MotionState nextState);
 	// 描画用の構え(EnemyAttackPose.h)へ渡すため、AIの状態を攻撃の段階へ変換する。
 	Combat::EnemyAttackPhase currentAttackPhase() const;
-	void selectNextAttack(float distance);
+	// playerBehind=true なら、近接の候補から尾回転を選ぶ(背後の相手へ向き直らずに応じる)。
+	void selectNextAttack(float distance, bool playerBehind = false);
+	// 攻撃すると決めたときに呼ぶ。正面がプレイヤーへ向いていれば攻撃を選んで予兆へ入り、
+	// 向いていなければ、まずその場で向き直る(Turn)。背後の相手には尾回転で応じることもある。
+	void requestAttack(float distance, const Vector3& targetPosition);
+	// 離れた相手への攻撃を続けて出せる状態か(一度出したら少し間を空ける)。
+	bool canUseRangedAttack() const;
+	// 予兆の間、どれだけの速さでプレイヤーの方へ向き直るか。
+	// 火球と突進は予兆の終わり際に向き直りを止める(狙いを決める)ので0を返す。
+	float windupTurnRate() const;
 	float distanceToTarget(const Vector3& targetPosition) const;
 	float angleToTarget(const Vector3& targetPosition) const;
-	void faceTarget(const Vector3& targetPosition, float deltaSec, float turnRate);
+	// 目標の向きへ回る。turnRate は差の何割を1秒で詰めるか(近いほどゆっくり)、
+	// maxTurnSpeed は回る速さの上限(ラジアン/秒)。大型の敵は一瞬では振り向けない。
+	void turnTowardYaw(float targetYaw, float deltaSec, float turnRate, float maxTurnSpeed);
+	void faceTarget(const Vector3& targetPosition, float deltaSec, float turnRate, float maxTurnSpeed);
+	// 正面とプレイヤーへの向きの差(0〜π)。
+	float facingErrorTo(const Vector3& targetPosition) const;
 	void moveInFacingDirection(float distance);
 	// 尾回転に入る瞬間に、回る向きと基準の向きを決める。
 	void beginTailSpin(const Vector3& targetPosition);
@@ -131,8 +158,26 @@ private:
 	static constexpr float ATTACK_DISTANCE = 32.0f;
 	static constexpr float RETREAT_DISTANCE = 38.0f;
 	static constexpr float APPROACH_SPEED = 84.0f;
-	static constexpr float CIRCLE_SPEED = 56.0f;
+	// 周回は横歩き(プレイヤーを向いたまま真横へ滑る)をやめ、前へ歩きながら弧を描く。
+	// 回る速さの上限(CIRCLE_TURN_SPEED)と合わせて、半径 = 速さ / 回る速さ ≒ 29 の弧になる。
+	// 以前の56のままだと弧が大きく(約37)、攻撃を決める距離(32)へ入りにくい。
+	static constexpr float CIRCLE_SPEED = 44.0f;
 	static constexpr float RETREAT_SPEED = 98.0f;
+	// 回る速さの上限(ラジアン/秒)。以前は差の割合で回すだけで上限が無く、
+	// 真後ろへ回り込まれても1秒足らずで向き直っていた(毎秒1000度以上)。
+	// モンスターハンターの大型モンスターのように、大きく回り込まれたら向き直るのに時間がかかるようにする。
+	// どれも移動の速さの倍率(怒り・弱り具合)を掛けて使う。
+	static constexpr float APPROACH_TURN_SPEED = 1.75f;      // 約100度/秒
+	static constexpr float CIRCLE_TURN_SPEED = 1.50f;        // 約86度/秒
+	static constexpr float TURN_IN_PLACE_SPEED = 2.00f;      // 約115度/秒。止まって向き直るときは歩きながらより速い
+	static constexpr float WINDUP_TURN_SPEED = 1.40f;        // 約80度/秒。予兆の間の追いかけ
+	// 攻撃へ入ってよい正面のずれ(約35度)。これより外れていたら、まずその場で向き直る。
+	// 向き直らずに攻撃すると、横にいる相手へ噛みつきが空振りする(当たり判定は正面寄りだけ)。
+	static constexpr float ATTACK_ALIGN_ANGLE = 0.61f;
+	// 背後にいるとみなす角度(約100度)。背後の相手へは、向き直らずに尾回転で応じることがある。
+	static constexpr float BEHIND_ANGLE = 1.75f;
+	// 向き直りがこれだけかかったら諦めて周回へ戻る(プレイヤーが回り続けて追いつけないとき)。
+	static constexpr float TURN_TIMEOUT_SECONDS = 2.2f;
 	// 攻撃の時間は system/CombatAttackTable.h が定義元。
 	// 攻撃の種類ごとに長さが変わるため、固定値ではなく
 	// 選択中の攻撃データ(m_attackKind)から都度取得する。
@@ -149,6 +194,9 @@ private:
 	static constexpr float MIN_CIRCLE_SECONDS = 0.55f;
 	static constexpr float MAX_CIRCLE_SECONDS = 1.40f;
 	static constexpr float MAX_DELTA_SECONDS = 0.1f;
+	// 離れた相手への攻撃を出してから、次に出せるまでの時間。
+	// 間を空けないと、突進で離れる → また遠いので突進、を繰り返して近づいてこなくなる。
+	static constexpr float RANGED_ATTACK_INTERVAL_SECONDS = 3.2f;
 
 	Vector3 m_move{0, 0, 0};
 	Vector3 m_destrot{0, 0, 0};
@@ -181,4 +229,12 @@ private:
 	int m_spinHalfTurns = 1;
 	float m_spinSign = 1.0f;
 	float m_spinStartYaw = 0.0f;
+	// 離れた相手への攻撃。次に出せるまでの残り時間と、直前に出した種類(交互に出すため)。
+	float m_rangedCooldown = 0.0f;
+	Combat::EnemyAttackKind m_previousRangedKind = Combat::EnemyAttackKind::Charge;
+	int m_rangedSelectCounter = 0;
+	// 背後の相手へ尾回転で応じるか、向き直るかを交互に決めるための数。
+	int m_behindDecisionCounter = 0;
+	// 突進が壁で止められ、よろめいている。隙を長くし、構えの代わりによろめきの姿勢を出す。
+	bool m_chargeStunned = false;
 };
