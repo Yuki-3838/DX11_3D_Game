@@ -837,14 +837,20 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 	if (!m_enemyRoarPlayed && m_enemyIntroTime >= fallDuration + roarDelay)
 	{
 		SoundManager::PlayEnemyRoar();
-		StartEnemyRoarEffect(1.8f);
+		// 衝撃波は、声が大きい間(音の0.15〜2.3秒)だけ出す。
+		StartEnemyRoarEffect(Combat::PoseTuning::INTRO_ROAR_HOLD_END - 0.1f);
 		m_enemyRoarPlayed = true;
 	}
+	// 咆哮の動き(首を上げ、口を開けたまま吠え、閉じる)。音を鳴らしてからの秒を渡す。
+	// 以前は待機のクリップのまま声だけが鳴り、口を閉じたまま吠えていた。
+	m_enemies.front()->setIntroRoarTime(
+		m_enemyRoarPlayed ? m_enemyIntroTime - (fallDuration + roarDelay) : -1.0f);
 
 	UpdateEnemyAnimation(deltaSeconds);
 	UpdateEnemyMotionEffects(deltaSeconds);
 	if (m_enemyIntroTime >= battleStartTime)
 	{
+		m_enemies.front()->setIntroRoarTime(-1.0f);
 		SoundManager::PlayGameBgm();
 		// 戦闘開始時のWalk先頭へ、直前に表示したIdle姿勢からつなぐ。
 		// 位置は補間せず、回転だけを短時間ブレンドする。
