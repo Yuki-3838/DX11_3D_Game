@@ -214,6 +214,12 @@ public:
 	static float DominantAxisComponent(const Matrix4x4& localMatrix);
 	// 休止姿勢のボーンのローカル行列(見つからなければ単位行列)。
 	Matrix4x4 GetRestLocalMatrix(const std::string& boneName) const;
+	// 骨格のローカル行列を休止姿勢へ戻す。クリップを当てる前に呼び、
+	// クリップにキーが無いボーンを「前に再生したクリップの姿勢のまま」にしない。
+	// pose(と otherPose)は、これから当てるクリップの骨ごとの姿勢。骨格の一番上を見つけるのに使う。
+	void ResetBonesToRestPose(
+		const std::unordered_map<std::string, SRTQ>& pose,
+		const std::unordered_map<std::string, SRTQ>* otherPose = nullptr);
 	// 休止姿勢でのボーンのモデル空間の高さ(Y)。
 	// クリップの腰の高さと比べて、クリップの単位をモデルの単位へ換算するのに使う。
 	float GetRestBoneModelHeight(const std::string& boneName) const;

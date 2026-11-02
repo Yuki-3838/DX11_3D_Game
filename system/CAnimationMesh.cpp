@@ -832,6 +832,11 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame,
 		CurrentFrame,
 		localpose, frameFraction, loopAnimation);
 
+	// クリップにキーが無いボーンは休止姿勢にする。以前は書き換えずに残していたため、
+	// ドラゴンの歩き・待機クリップに無い back1(後脚と尾の親)が、攻撃クリップの最後の姿勢のまま
+	// 残り、攻撃の後に後脚が上がったままになっていた(読み込み直後は単位行列で、最初から崩れていた)。
+	ResetBonesToRestPose(localpose);
+
 	// localpose の中身を 1 件ずつ取り出す
 	for (auto& pair : localpose) {
 		// map の「キー（ボーン名）」と「値（SRTQデータ）」を明示的に取り出す
@@ -909,12 +914,8 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 		blendedPose.emplace(boneName, blended);
 	}
 
-	// to側にキーが無いボーンはfrom側を保持し、姿勢が欠けて原点へ戻らないようにする。
-	for (const auto& [boneName, fromSrtq] : fromPose)
-	{
-		if (blendedPose.find(boneName) == blendedPose.end())
-			blendedPose.emplace(boneName, fromSrtq);
-	}
+	// どちらのクリップにもキーが無いボーンは休止姿勢にする(Update() と同じ理由)。
+	ResetBonesToRestPose(toPose, &fromPose);
 
 	for (const auto& [boneName, srtq] : blendedPose)
 	{
@@ -926,6 +927,24 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 		Matrix4x4 rotmtx = Matrix4x4::CreateFromQuaternion(srtq.quat);
 		Matrix4x4 transmtx = Matrix4x4::CreateTranslation(srtq.pos);
 		boneIt->second.AnimationMatrix = scalemtx * rotmtx * transmtx;
+	}
+
+	// to側にキーが無いボーンは、from側の姿勢から休止姿勢へ混ぜる。
+	// 以前はfrom側をそのまま保持していたため、攻撃→歩きでは攻撃の back1 が残り続けた。
+	// (保持していたのは単位行列=原点へ潰れるのを避けるためで、休止姿勢へ向かえばその心配も無い)
+	for (const auto& [boneName, fromSrtq] : fromPose)
+	{
+		if (blendedPose.find(boneName) != blendedPose.end())
+			continue;
+		auto boneIt = m_BoneDictionary.find(boneName);
+		if (boneIt == m_BoneDictionary.end())
+			continue;
+		const Matrix4x4 fromMatrix =
+			Matrix4x4::CreateScale(fromSrtq.scale) *
+			Matrix4x4::CreateFromQuaternion(fromSrtq.quat) *
+			Matrix4x4::CreateTranslation(fromSrtq.pos);
+		boneIt->second.AnimationMatrix =
+			BlendLocalSrt(fromMatrix, boneIt->second.AnimationMatrix, rate);
 	}
 
 	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);
@@ -1369,8 +1388,8 @@ bool CAnimationMesh::AddBoneLocalRotations(
 
 	bool changed = false;
 	// 1) 前回ここで足した分を取り消す。
-	//    Update()はクリップにキーがある骨しかAnimationMatrixを書き換えない。
-	//    キーが無い骨は前フレームの姿勢(=前回足した結果)が残っているので、
+	//    Update()がこのフレームで呼ばれなかった骨・更新の仕方(UpdateManualPose など)によっては、
+	//    前フレームの姿勢(=前回足した結果)が残っているので、
 	//    そこへさらに足すと回転が積み重なって骨が折れ曲がる。
 	//    クリップが書き換えていれば(行列が変わっていれば)、その姿勢が正しいので取り消さない。
 	for (const auto& [boneName, layer] : m_LayeredBoneRotations)
@@ -1784,6 +1803,35 @@ Matrix4x4 CAnimationMesh::GetRestLocalMatrix(const std::string& boneName) const
 {
 	const auto rest = m_RestLocalMatrices.find(boneName);
 	return rest != m_RestLocalMatrices.end() ? rest->second : Matrix4x4::Identity;
+}
+
+void CAnimationMesh::ResetBonesToRestPose(
+	const std::unordered_map<std::string, SRTQ>& pose,
+	const std::unordered_map<std::string, SRTQ>* otherPose)
+{
+	// 骨格(クリップが動かす一番上の骨と、その下にある骨)だけを戻す。
+	// 辞書には、ボーンの木をたどるときに作られたシーンの根やアーマチュアの節点も入っている。
+	// それらはこれまで単位行列のまま使われ、描画側の向きや接地の補正もその前提で合わせてあるので、
+	// 休止姿勢(Z上向き→Y上向きの変換などを含む)にすると体全体が回って宙に浮く(撮影で確認)。
+	// 木を上からたどり、クリップにキーのある骨が最初に出てきたところ(ドラゴンでは base)から下を骨格とみなす。
+	// 「ウェイトを持つ骨」で見分けると、ドラゴンの back1 のような中継の骨が漏れて戻らなかった(撮影で確認)。
+	const auto animated = [&pose, otherPose](const std::string& name)
+	{
+		return pose.count(name) > 0 || (otherPose != nullptr && otherPose->count(name) > 0);
+	};
+	const auto reset = [&](auto&& self, const CTreeNode<std::string>* node, bool inSkeleton) -> void
+	{
+		const bool skeleton = inSkeleton || animated(node->m_nodedata);
+		if (skeleton)
+		{
+			auto bone = m_BoneDictionary.find(node->m_nodedata);
+			if (bone != m_BoneDictionary.end())
+				bone->second.AnimationMatrix = GetRestLocalMatrix(node->m_nodedata);
+		}
+		for (const auto& child : node->m_children)
+			self(self, child.get(), skeleton);
+	};
+	reset(reset, &m_AssimpNodeNameTree, false);
 }
 
 float CAnimationMesh::GetRestBoneModelHeight(const std::string& boneName) const
