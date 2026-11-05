@@ -373,10 +373,17 @@ namespace myAssimp{
 		Assimp::Importer importer;
 
 		// 繧ｷ繝ｼ繝ｳ諠・ｱ繧呈ｧ狗ｯ・
-		unsigned int importFlags =
-			aiProcessPreset_TargetRealtime_MaxQuality |
-			aiProcess_ConvertToLeftHanded |
-			aiProcess_PopulateArmatureData;
+		// Fallen Paladinの原本は未リギングの高ポリゴン静的FBXなので、
+		// 最高品質プリセット(多数の最適化・結合処理)を通すと起動時の
+		// メモリ使用量と待ち時間が大きくなる。必要な三角形化とDX向け座標変換だけに絞る。
+		const bool isFallenPaladinSource =
+			srcUtf8.find("FallenPaladin/source/") != std::string::npos ||
+			srcUtf8.find("FallenPaladin\\source\\") != std::string::npos;
+		unsigned int importFlags = isFallenPaladinSource
+			? (aiProcess_Triangulate | aiProcess_ConvertToLeftHanded)
+			: (aiProcessPreset_TargetRealtime_MaxQuality |
+				aiProcess_ConvertToLeftHanded |
+				aiProcess_PopulateArmatureData);
 		if (pretransformVertices)
 		{
 			importFlags |= aiProcess_PreTransformVertices;

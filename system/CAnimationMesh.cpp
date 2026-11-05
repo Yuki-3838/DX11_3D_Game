@@ -233,6 +233,24 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 	Vector3& base,
 	Vector3& tip) const
 {
+	// Fallen Paladinは剣と本体が同じマテリアル／メッシュへ結合されて
+	// いるため、GLBのsubset名だけでは剣頂点を分離できない。表示は元メッシュ
+	// のまま維持し、当たり判定だけは右手から剣の長さ分を推定する。
+	if (m_embeddedSwordVertexIndices.size() < 2 &&
+		m_swordAssetPath == "embedded:fallen_paladin")
+	{
+		const auto rightHandIt = m_DebugBoneMatrices.find("mixamorig:RightHand");
+		if (rightHandIt == m_DebugBoneMatrices.end())
+			return false;
+		const Matrix4x4 handWorld = rightHandIt->second * parentWorld;
+		base = Vector3::Transform(Vector3(0.0f, 0.0f, 0.0f), handWorld);
+		Vector3 bladeVector = Vector3::TransformNormal(
+			Vector3(0.0f, -m_swordProxyLength * 0.82f, 0.0f), handWorld);
+		if (bladeVector.LengthSquared() <= 0.0001f)
+			return false;
+		tip = base + bladeVector;
+		return true;
+	}
 	if (m_embeddedSwordVertexIndices.size() < 2)
 		return false;
 	const auto swordBoneIt = m_BoneDictionary.find("mixamorig:Sword_joint");
@@ -576,7 +594,16 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 		}																				// 20240714 DX化
 
 		m_BoneDictionary[asimpbone.first] = dxbone;										// 20240714 DX化
-	}																	
+	}
+
+	// 未リギングのFBXもプレビュー用の静的メッシュとして扱えるようにする。
+	// 外部モーションは後段で読み込まれるため、ボーンがないモデルへ
+	// モーションのチャンネル名を辞書へ追加しない。
+	if (m_BoneDictionary.empty())
+	{
+		m_swordEnabled = false;
+		m_swordWorldSegmentValid = false;
+	}
 
 	// ボーン名ツリー取得
 	m_AssimpNodeNameTree = GM31::GE::myAssimp::GetBoneNameTree();
@@ -633,6 +660,17 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 			std::cout << "[Player] shield subset not found" << std::endl;
 	}
 
+	if (m_BoneDictionary.empty())
+	{
+		// 原本の未リギングモデルには、別FBXの剣もデバッグ用プロキシ剣も追加しない。
+		// 同じ原本メッシュに含まれる剣だけを、そのまま一緒に描画する。
+		m_swordEnabled = false;
+		m_swordUseGuaranteedProxy = false;
+		m_swordProxyMesh.reset();
+		m_swordWorldSegmentValid = false;
+		return;
+	}
+
 	float playerExtent = 100.0f;
 	if (!m_vertices.empty())
 	{
@@ -661,7 +699,8 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 
 	// プレイヤー武器の追加接続処理。Fallen Paladinの元FBXには分離した剣が含まれるため、
 	// 汎用デバッグ剣ではなく、抽出済みでテクスチャ付きのモデルを使う。
-	const bool usesEmbeddedSword = filename.find("SwordShieldPack_Player") != std::string::npos;
+	const bool usesEmbeddedSword = filename.find("SwordShieldPack_Player") != std::string::npos ||
+		filename.find("fallen_paladin_rigged") != std::string::npos;
 	m_swordUsesPlayerAsset = filename.find("FallenPaladin_Player") != std::string::npos;
 	if (usesEmbeddedSword)
 	{
@@ -671,7 +710,9 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 		m_swordEmbeddedInPlayerAsset = true;
 		m_swordEnabled = false;
 		m_swordUsesPlayerAsset = false;
-		m_swordAssetPath = "embedded:mixamorig:Sword_joint";
+		m_swordAssetPath = filename.find("fallen_paladin_rigged") != std::string::npos
+			? "embedded:fallen_paladin"
+			: "embedded:mixamorig:Sword_joint";
 		m_swordBoneName = "mixamorig:Sword_joint";
 		m_embeddedSwordVertexIndices.clear();
 		for (const SUBSET& subset : GetSubsets())
@@ -950,6 +991,11 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame,
 	float frameFraction, bool loopAnimation)
 {
 	m_DebugBoneMatrices.clear();
+	if (m_BoneDictionary.empty())
+	{
+		// ウェイトを持たないモデルは、元頂点をそのまま描画する。
+		return;
+	}
 	// アニメーションデータ取得
 	aiAnimation* animation = m_CurrentAnimation;
 
@@ -1127,6 +1173,53 @@ float CAnimationMesh::GetAnimatedLowestLocalHeight(float extraPitchRadians) cons
 	return hasVertex ? lowestHeight : 0.0f;
 }
 
+std::vector<Vector3> CAnimationMesh::GetAnimatedVertexPositions() const
+{
+	std::vector<Vector3> positions;
+	positions.reserve(m_vertices.size());
+
+	std::array<const BONE*, MAX_BONE> bonesByIndex{};
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		(void)name;
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonesByIndex[bone.idx] = &bone;
+	}
+
+	for (const VERTEX_3D& vertex : m_vertices)
+	{
+		Vector3 skinned{};
+		float weightSum = 0.0f;
+		for (int slot = 0; slot < 4; ++slot)
+		{
+			const int boneIndex = vertex.BoneIndex[slot];
+			const float weight = vertex.BoneWeight[slot];
+			if (boneIndex < 0 || boneIndex >= MAX_BONE || weight <= 0.0f)
+				continue;
+
+			const BONE* bone = bonesByIndex[boneIndex];
+			if (bone == nullptr)
+				continue;
+
+			skinned += Vector3::Transform(vertex.Position, bone->Matrix) * weight;
+			weightSum += weight;
+		}
+
+		if (weightSum > 0.0001f)
+		{
+			if (weightSum < 1.0f)
+				skinned += vertex.Position * (1.0f - weightSum);
+		}
+		else
+		{
+			skinned = vertex.Position;
+		}
+		positions.push_back(skinned);
+	}
+
+	return positions;
+}
+
 void CAnimationMesh::ApplyAnimationToBones(
 	aiAnimation* animationdata,
 	int currentFrame,
@@ -1274,8 +1367,23 @@ void CAnimationMesh::ApplyAnimationToBones(
 				}
 				else
 				{
-					boneIt->second.AnimationMatrix = rotationMatrix *
-						Matrix4x4::CreateTranslation(restPosition);
+					if (m_importedAnimationRotationIsRestRelative)
+					{
+						// Fallen Paladin uses the same Mixamo rest rig as these FBX clips.
+						// Their keyed rotations are offsets from each bone's rest orientation;
+						// dropping that orientation makes the forearm rotate in the wrong local
+						// frame, so the elbow no longer follows the upper-arm hinge correctly.
+						Matrix4x4 restPose = rest->second;
+						restPose._41 = restPosition.x;
+						restPose._42 = restPosition.y;
+						restPose._43 = restPosition.z;
+						boneIt->second.AnimationMatrix = rotationMatrix * restPose;
+					}
+					else
+					{
+						boneIt->second.AnimationMatrix = rotationMatrix *
+							Matrix4x4::CreateTranslation(restPosition);
+					}
 				}
 			}
 			else
@@ -1483,6 +1591,8 @@ void CAnimationMesh::UpdateManualPose(
 
 void CAnimationMesh::ApplyModelProfile(const CharacterModelProfile& profile)
 {
+	m_importedAnimationRotationIsRestRelative =
+		profile.importedAnimationRotationIsRestRelative;
 	if (!profile.weaponBone.empty())
 		m_swordBoneName = profile.weaponBone;
 	m_swordRotationDegrees = profile.weaponRotationDegrees;

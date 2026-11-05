@@ -24,11 +24,15 @@ struct CharacterModelProfile
 	const char* meshPath = "";
 	const char* textureDirectory = "";
 	Vector3 modelScale{1.0f, 1.0f, 1.0f};
+	Vector3 modelRotationRadians{0.0f, 0.0f, 0.0f};
 	float groundY = -0.3f;
 	std::string weaponBone;
 	Vector3 weaponRotationDegrees{0.0f, 0.0f, 0.0f};
 	Vector3 weaponHandOffset{0.0f, 0.0f, 0.0f};
 	float weaponScale = 1.0f;
+	// This model shares the exact Mixamo rest rig with the imported FBX clips.
+	// Their rotation keys are local deltas and must be composed with rest rotation.
+	bool importedAnimationRotationIsRestRelative = false;
 	std::array<std::vector<std::string>, static_cast<size_t>(CanonicalJoint::Count)> canonicalAliases;
 };
 
@@ -36,12 +40,18 @@ inline const CharacterModelProfile& GetPlayerModelProfile()
 {
 	static const CharacterModelProfile profile = [] {
 		CharacterModelProfile value;
-		value.id = "sword_shield_player";
-		value.meshPath = "assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb";
-		value.textureDirectory = "assets/model/SwordShieldPack/runtime/";
+		value.id = "fallen_paladin_rigged_player";
+		value.meshPath = "assets/model/FallenPaladin/runtime/fallen_paladin_rigged.glb";
+		// GLBへ埋め込み済み。開発時に元テクスチャを参照できるよう、
+		// パス自体は残すがランタイムの読み込みはGLB内の画像を使う。
+		value.textureDirectory = "assets/model/FallenPaladin/source/";
 		value.modelScale = Vector3(10.0f, 10.0f, 10.0f);
+		// ゲームのプレイヤー正面(-Z)へ合わせるため、GLB側の向きをY軸で反転する。
+		value.modelRotationRadians = Vector3(0.0f, 3.14159265358979323846f, 0.0f);
 		value.groundY = -0.3f;
-		value.weaponBone = "mixamorig:Sword_joint";
+		value.importedAnimationRotationIsRestRelative = true;
+		// 剣はGLBに含まれる原本メッシュをそのまま使う。外部の簡易剣は追加しない。
+		value.weaponBone.clear();
 		value.canonicalAliases[static_cast<size_t>(CanonicalJoint::Root)] = { "root", "Root" };
 		value.canonicalAliases[static_cast<size_t>(CanonicalJoint::Hips)] = { "mixamorig:Hips", "Hips", "pelvis" };
 		value.canonicalAliases[static_cast<size_t>(CanonicalJoint::Spine)] = { "mixamorig:Spine", "Spine", "spine" };

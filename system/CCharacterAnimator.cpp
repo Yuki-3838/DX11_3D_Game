@@ -244,9 +244,8 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh)
 		// 攻撃モーションは体幹(背骨・首・頭)と腕へ適用する。
 		// 以前は腕のチェーンだけに絞っていたが、それは当時のプレイヤーモデルが
 		// MMD系リグで、Mixamo製クリップとの不一致により胴体キーで全身が折れたためである。
-		// 現在のプレイヤーは同じSword and Shield Pack由来のMixamoリグ
-		// (assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb)なので、
-		// 骨格が一致しており、背骨を取り込んでも破綻しない。
+		// リギング済みのプレイヤーを使う場合は、既存のMixamo系クリップと
+		// 骨格が一致していることを前提に、背骨を含む上半身を取り込む。
 		// 腕だけでは体の捻りが出ず「棒立ちで腕を振る」動きになるため、体幹まで広げる。
 		//
 		// 除外するのは次の4種類:
@@ -846,6 +845,12 @@ void CCharacterAnimator::Update(
 	BoneCombMatrix& boneComb,
 	const CharacterAnimationState& state)
 {
+	// 未リギングのモデルは静的メッシュとして描画する。
+	// 外部モーションのチャンネル名をボーン辞書へ追加したり、
+	// 空のノードツリーへ姿勢を書き込んだりしない。
+	if (!mesh.HasBones())
+		return;
+
 	const float deltaSeconds = std::clamp(state.deltaSeconds, 0.0f, 0.1f);
 	const float frameScale = deltaSeconds * 60.0f;
 	// モーション専用シーンではUIのPlayを使い、GameSceneでは左クリックで

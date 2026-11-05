@@ -9,6 +9,7 @@
 #include	<unordered_map>
 #include	<initializer_list>
 #include	<cmath>
+#include	<limits>
 #include	<iostream>
 #include	"GameScene.h"
 #include	"../system/LineDrawer.h"
@@ -50,6 +51,16 @@ player* GameScene::getplayer()
 
 // 無名名前空間
 namespace {
+
+	SRT GetPlayerVisualSrt(const player& playerObject)
+	{
+		SRT srt = playerObject.getRenderSRT();
+		const Vector3& modelRotation = GetPlayerModelProfile().modelRotationRadians;
+		srt.rot.x += modelRotation.x;
+		srt.rot.y += modelRotation.y;
+		srt.rot.z += modelRotation.z;
+		return srt;
+	}
 
 	// dev_settings.ini から設定値を読む(ローカル専用・未コミットのファイル)。
 	// モーションの選定は実際に動かして見比べないと判断できないため、
@@ -100,9 +111,9 @@ namespace {
 	std::array<Load3DInfo, 3> g_loadmodel =
 	{
 			Load3DInfo(
-				"warrior_player",
-				"assets/model/FallenPaladin/runtime/FallenPaladin_Player_clean.glb", // CC BY 4.0 / Pigcraft: 軽量化・リギング済み
-				"assets/model/FallenPaladin/runtime/"),
+				"fallen_paladin_rigged_player",
+				"assets/model/FallenPaladin/runtime/fallen_paladin_rigged.glb", // Blenderでリグ・ウェイト付けした実行用GLB
+				"assets/model/FallenPaladin/source/"),
 
 			Load3DInfo(
 				"car001.x",
@@ -1000,7 +1011,7 @@ void GameScene::update(uint64_t deltatime)
 	{
 		// 移動と衝突補正が終わった後に剣の位置を一度だけ確定する。
 		// 描画と攻撃判定が同じワールド行列を使うようにする。
-		const Matrix4x4 playerWorld = m_player->getRenderSRT().GetMatrix();
+		const Matrix4x4 playerWorld = GetPlayerVisualSrt(*m_player).GetMatrix();
 		m_playerAnimationMesh->UpdateSwordWorldTransform(playerWorld);
 
 		// 剣の軌跡。攻撃判定が出ている間だけ点を足す。
@@ -1034,7 +1045,7 @@ void GameScene::update(uint64_t deltatime)
 		// 表示モデルとOBBの位置がずれない。
 		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localPlayerMeshBounds,
-			m_player->getRenderSRT());
+			GetPlayerVisualSrt(*m_player));
 		const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localEnemyMeshBounds,
 			m_enemies.front()->getRenderSRT());
@@ -1188,7 +1199,7 @@ void GameScene::update(uint64_t deltatime)
 				swordBase, swordTip, previousSwordTip);
 		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localPlayerMeshBounds,
-			m_player->getRenderSRT());
+			GetPlayerVisualSrt(*m_player));
 		m_combat.UpdatePlayerCollisionDebug(
 			swordBase,
 			swordTip,
@@ -1459,7 +1470,7 @@ void GameScene::draw(uint64_t deltatime)
 		// 視認性は残しつつ、周囲の明るさから浮きすぎないようにする。
 		Renderer::SetCharacterVisualParams(Vector4(0.16f, 0.55f, 0.0f, 0.26f));
 		Renderer::SetCharacterAlbedoParams(Vector4(1.14f, 1.09f, 1.03f, 0.28f));
-		SRT srt = m_player->getRenderSRT();
+		SRT srt = GetPlayerVisualSrt(*m_player);
 		Matrix4x4 worldmtx{};
 		worldmtx = srt.GetMatrix();
 		Renderer::SetWorldMatrix(&worldmtx);
@@ -1745,8 +1756,8 @@ void GameScene::init()
 	DebugUI::SetCursorVisible(false);
 	m_resultRequested = false;
 	SoundManager::StopBgm();
-	// Sword and Shield Pack のモデルとモーションは同じ Mixamo リグを
-	// 使用するため、別キャラクターへのリターゲットを行わない。
+	// プレイヤーのモデル設定はここで一元的に切り替える。
+	// Blenderでリグ・ウェイト付けしたFallen Paladinをプレイヤーへ接続する。
 	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
 	g_loadmodel[0].filename = playerProfile.meshPath;
 	g_loadmodel[0].texdirectoryname = playerProfile.textureDirectory;
@@ -1806,8 +1817,9 @@ void GameScene::init()
 		"shader/shadowDepthSkinVS.hlsl",
 		"shader/shadowDepthPS.hlsl");
 
-	// メチEすュを生戁E
-	for (int cnt = 0; cnt < g_loadmodel.size(); cnt++) {
+	// プレイヤーは下のCAnimationMeshが描画と境界計算を兼ねるため、
+	// 同じ高ポリゴンFBXをCStaticMeshとして二重に読み込まない。
+	for (int cnt = 1; cnt < g_loadmodel.size(); cnt++) {
 		std::unique_ptr<CStaticMesh> mesh{};
 		mesh = std::make_unique<CStaticMesh>();
 		mesh->Load(g_loadmodel[cnt].filename, g_loadmodel[cnt].texdirectoryname);
@@ -1829,6 +1841,10 @@ void GameScene::init()
 	m_playerAnimationMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
+	// リグ済みGLBへ既存の歩行・走行・待機・攻撃モーションを接続する。
+	// 未リギングの入力へ戻した場合だけ、不要なFBX読み込みを自動的に省略する。
+	if (m_playerAnimationMesh->HasBones())
+	{
 	m_playerAnimationData.LoadAnimation(
 		"assets/motion/sword and shield walk.fbx", "walk");
 	m_playerAnimationData.LoadAnimation(
@@ -1903,6 +1919,7 @@ void GameScene::init()
 		std::cout << "[Player] walk animation not loaded" << std::endl;
 	if (playerRunAnimation == nullptr)
 		std::cout << "[Player] run animation not loaded" << std::endl;
+	}
 	m_playerBoneComb.Create();
 	// 最初の描画前に立ち姿を適用する。
 	// 空の姿勢のままだと、更新が止まったフレームでモデルがTポーズになるためである。
@@ -1979,18 +1996,13 @@ void GameScene::init()
 	StartEnemyIntro();
 	// プレイヤーのローカル境界球とモデル境界を作成する。
 	{
-	CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[0].meshid);
-		const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
-
-		std::vector<Vector3> vs;
-		for (auto& v : vertices) {
-			vs.push_back(v.Position);
-		}
+		const std::vector<Vector3> posedVertices =
+			m_playerAnimationMesh->GetAnimatedVertexPositions();
 
 		SRT srt{};
-		m_localbsplayer = GM31::GE::Collision::calcBSphere(vs, srt);
+		m_localbsplayer = GM31::GE::Collision::calcBSphere(posedVertices, srt);
 		m_localPlayerMeshBounds =
-			GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
+			GM31::GE::Collision::BuildLocalAABBFromVertices(posedVertices);
 
 		// フィールドの高さはy=-0.3である。読み込んだモデルの原点が足元とは
 		// 限らないため、実頂点の最小Yから描画専用の持ち上げ量を求める。
@@ -1998,8 +2010,17 @@ void GameScene::init()
 		// getRenderSRT()を使うことで、足をフィールドへ正確に接地させる。
 		const float playerGroundY = playerProfile.groundY;
 		const float playerScaleY = m_player->getSRT().scale.y;
+		const Matrix4x4 modelRotation = Matrix4x4::CreateFromYawPitchRoll(
+			playerProfile.modelRotationRadians.y,
+			playerProfile.modelRotationRadians.x,
+			playerProfile.modelRotationRadians.z);
+		float rotatedMinY = (std::numeric_limits<float>::max)();
+		for (const auto& vertex : posedVertices)
+			rotatedMinY = std::min(
+				rotatedMinY,
+				Vector3::Transform(vertex, modelRotation).y);
 		m_player->setVisualGroundOffsetY(
-			playerGroundY - m_localPlayerMeshBounds.min.y * playerScaleY);
+			playerGroundY - rotatedMinY * playerScaleY);
 	}
 
 	// 敵のローカル境界球とモデル境界を作成する。
@@ -2556,7 +2577,7 @@ void GameScene::RenderShadowMap()
 	// ここでは描かない(自分自身の影で暗くなるのを避ける)。
 	if (m_playerAnimationMesh && m_player)
 	{
-		const SRT srt = m_player->getRenderSRT();
+		const SRT srt = GetPlayerVisualSrt(*m_player);
 		Matrix4x4 worldmtx = srt.GetMatrix();
 		Renderer::SetWorldMatrix(&worldmtx);
 		m_shadowDepthSkinShader.SetGPU();

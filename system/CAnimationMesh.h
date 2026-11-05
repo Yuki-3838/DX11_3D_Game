@@ -27,6 +27,7 @@ protected:
 	std::unordered_map<std::string, Matrix4x4> m_RestLocalMatrices{};
 	std::unordered_map<std::string, Matrix4x4> m_RestGlobalMatrices{};
 	std::unordered_map<std::string, Matrix4x4> m_DebugBoneMatrices{};
+	bool m_importedAnimationRotationIsRestRelative = false;
 
 	// レンダラ
 	CStaticMeshRenderer m_StaticMeshRenderer{};
@@ -179,6 +180,7 @@ public:
 		const std::unordered_map<std::string, Matrix4x4>& localRotations);
 
 	std::vector<std::string> GetBoneNames() const;
+	bool HasBones() const { return !m_BoneDictionary.empty(); }
 	std::unordered_map<std::string, std::string> GetDebugBoneParentNames() const;
 	const std::unordered_map<std::string, Matrix4x4>& GetDebugBoneMatrices() const
 	{
@@ -195,6 +197,8 @@ public:
 	// 「Z最大値=最下点」という前提が崩れて敵が地面へ埋まる。
 	// extraPitchRadians=0のとき、戻り値は -GetAnimatedLocalMaxZ() に一致する。
 	float GetAnimatedLowestLocalHeight(float extraPitchRadians) const;
+	// 現在のスキニング姿勢を反映した頂点位置。初期表示時の当たり判定と接地補正に使う。
+	std::vector<Vector3> GetAnimatedVertexPositions() const;
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
