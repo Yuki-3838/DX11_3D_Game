@@ -2895,7 +2895,7 @@ void GameScene::WriteCaptureLog()
 		_wfopen_s(&m_captureLog, (m_captureDir + L"\\enemy_log.csv").c_str(), L"w");
 		if (!m_captureLog)
 			return;
-		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push\n");
+		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail\n");
 	}
 	const enemy& e = *m_enemies.front();
 	const Vector3 enemyPos = e.getSRT().pos;
@@ -2915,7 +2915,7 @@ void GameScene::WriteCaptureLog()
 		if (GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
 			footHeight[i] = foot.y - ARENA_FLOOR_TOP_Y;
 	}
-	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.0f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f\n",
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f\n",
 		m_battleSeconds,
 		static_cast<int>(e.getMotionState()),
 		static_cast<int>(e.getAttackKind()),
@@ -2927,7 +2927,8 @@ void GameScene::WriteCaptureLog()
 		m_combat.GetPlayerHp(),
 		footHeight[0], footHeight[1], footHeight[2], footHeight[3],
 		m_enemyMotionFx.GetPuffCount(), m_enemyMotionFx.GetRingCount(),
-		m_enemyWallPush.Length());
+		m_enemyWallPush.Length(),
+		m_playerHpTrail);
 	fflush(m_captureLog);
 }
 
@@ -2945,7 +2946,10 @@ void GameScene::CaptureFrameIfRequested()
 	// ファイル名に戦闘開始(登場演出を撮るときは演出の始まり)からの秒を入れて、どの瞬間の絵か分かるようにする。
 	wchar_t name[64];
 	swprintf_s(name, L"\\f%03d_%06.2f.png", m_capturedFrames, clock);
-	Renderer::SaveBackBufferPng((m_captureDir + name).c_str());
+	if (m_captureUi)
+		Renderer::SaveBackBufferPngAtFrameEnd((m_captureDir + name).c_str());
+	else
+		Renderer::SaveBackBufferPng((m_captureDir + name).c_str());
 	++m_capturedFrames;
 	if (m_captureExit && m_capturedFrames >= m_captureCount)
 		PostQuitMessage(0);
@@ -2985,7 +2989,32 @@ void GameScene::DrawGameplayHud()
 			ImVec2(min.x, max.y - bandHeight), max, clear, clear, edge, edge);
 	}
 
-	drawBar(top, m_combat.GetPlayerHp() / m_combat.GetPlayerMaxHp(), IM_COL32(75, 205, 75, 255));
+	// 体力バーの赤い部分を進める。ヒットストップ中も止めずに実時間で減らす。
+	// 減った瞬間は前のフレームとの差で見るので、近接・火球のどちらの被弾でも同じように動く。
+	const float playerHp = m_combat.GetPlayerHp();
+	const float playerMaxHp = m_combat.GetPlayerMaxHp();
+	if (playerHp < m_playerHpLastFrame)
+		m_playerHpTrailHoldSeconds = m_playerHpTrailHoldTime;
+	m_playerHpLastFrame = playerHp;
+	if (playerHp >= m_playerHpTrail)
+	{
+		// やり直しで増えたときは赤を残さない。
+		m_playerHpTrail = playerHp;
+	}
+	else if (m_playerHpTrailHoldSeconds > 0.0f)
+	{
+		m_playerHpTrailHoldSeconds -= ImGui::GetIO().DeltaTime;
+	}
+	else
+	{
+		m_playerHpTrail = std::max(playerHp,
+			m_playerHpTrail - m_playerHpTrailDrainPerSecond * ImGui::GetIO().DeltaTime);
+	}
+	// 赤(減った分)を先に描き、その上に今の体力の緑を重ねる。
+	drawBar(top, m_playerHpTrail / playerMaxHp, IM_COL32(200, 45, 40, 255));
+	drawList->AddRectFilled(ImVec2(left + 2.0f, top + 2.0f),
+		ImVec2(left + 2.0f + (width - 4.0f) * std::clamp(playerHp / playerMaxHp, 0.0f, 1.0f), top + height - 2.0f),
+		IM_COL32(75, 205, 75, 255), 3.0f);
 	drawBar(top + 24.0f, m_playerStamina / PLAYER_MAX_STAMINA, IM_COL32(235, 195, 55, 255));
 
 	if (m_showControlGuide)
@@ -3123,8 +3152,10 @@ void GameScene::DrawEnemyIntroOverlay()
 
 void GameScene::init()
 {
-	// ゲームプレイ開始時は、提出用映像にデバッグ表示が映らないようにする。
-	DebugUI::SetVisible(false);
+	// デバッグ表示は起動時の設定に従う。提出用映像を撮るときは devmode=0 / --nodebug で出さない。
+	// 以前はここで常に消していたため、devmode=1 でも倒されてやり直した2回目以降は出なかった
+	// (起動時に1回だけ出していて、作り直したシーンでは誰も出し直さなかった)。
+	DebugUI::SetVisible(DebugUI::IsGameplayDefaultVisible());
 	DebugUI::SetCursorVisible(false);
 	m_resultRequested = false;
 	SoundManager::StopBgm();
@@ -3241,6 +3272,7 @@ void GameScene::init()
 			m_captureCount = std::stoi(GetDevSetting("capture_count", "30"));
 			m_captureExit = GetDevSetting("capture_exit", "0") == "1";
 			m_captureIntro = GetDevSetting("capture_intro", "0") == "1";
+			m_captureUi = GetDevSetting("capture_ui", "0") == "1";
 		}
 	}
 	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep|spin|fireball|charge)。
@@ -4878,6 +4910,12 @@ void GameScene::DebugCombat()
     ImGui::Separator();
     ImGui::Text("プレイヤーの体力");
     ImGui::ProgressBar(m_combat.GetPlayerHp() / m_combat.GetPlayerMaxHp(), ImVec2(-1.0f, 0.0f));
+	// 体力バーの赤い部分(減った分)の動きの調整。ゲームを終えると元に戻るので、
+	// 決まった値はコードの初期値(GameScene.h)へ書き写す。
+	ImGui::SliderFloat("赤が減り始めるまで(秒)", &m_playerHpTrailHoldTime, 0.0f, 5.0f, "%.2f");
+	// 遅い側を細かく合わせられるよう、対数の目盛りにする(初期値はモンハンワールドの約0.67)。
+	ImGui::SliderFloat("赤が減る速さ(体力/秒)", &m_playerHpTrailDrainPerSecond, 0.1f, 30.0f, "%.2f",
+		ImGuiSliderFlags_Logarithmic);
     // 敵の体力はゲーム画面には出さない(弱り具合は体の動きで伝える)。ここは開発者向け。
     ImGui::Text("敵の体力 (%.0f / %.0f)", m_combat.GetEnemyHp(), m_combat.GetEnemyMaxHp());
     ImGui::ProgressBar(m_combat.GetEnemyHp() / m_combat.GetEnemyMaxHp(), ImVec2(-1.0f, 0.0f));

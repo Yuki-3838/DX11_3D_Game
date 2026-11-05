@@ -226,6 +226,19 @@ private:
 	// 敵は被弾時に発光させ、プレイヤー被弾時は画面端を赤くする。
 	float m_enemyHitFlashTime = 0.0f;
 	float m_playerDamageFlashTime = 0.0f;
+	// 体力バーの赤い部分(減った分)。被弾すると緑はすぐ減り、赤は少し待ってから追いかけて減る。
+	// どれだけ食らったかが一目で分かるようにする(モンスターハンターの体力バーの見え方を参考)。
+	float m_playerHpTrail = Combat::Tuning::PLAYER_MAX_HP;
+	float m_playerHpLastFrame = Combat::Tuning::PLAYER_MAX_HP;
+	float m_playerHpTrailHoldSeconds = 0.0f;
+	// 赤が減り始めるまでの待ち時間と、減る速さ(体力/秒)。連続で食らうと待ち時間はやり直しになる。
+	// モンハンワールドの赤い部分は「1.5秒ごとに体力1」ずつ変わる(攻略wikiの実測。
+	// 回復速度スキルLv1で0.75秒、ワイルズ・ライズでもLv1で2倍と書かれており、基準の1.5秒と合う)。
+	// 最大体力も同じ100なので、その速さ(約0.67/秒)と最初の1目盛りまでの1.5秒をそのまま使う。
+	// 以前の0.6秒・25/秒では、10の被弾の赤が1秒で消えてしまい速すぎた(ユーザー判断 2026-11-02)。
+	// デバッグ表示の「戦闘」タブで変えられる(ゲームを終えると元に戻る)。
+	float m_playerHpTrailHoldTime = 1.5f;
+	float m_playerHpTrailDrainPerSecond = 1.0f / 1.5f;
 	float m_cameraBaseDistance = 70.0f;
 	float m_cameraDistanceCurrent = 70.0f;
 	float m_cameraBaseTargetHeight = 25.0f;
@@ -339,6 +352,8 @@ private:
 	bool m_captureExit = false;
 	// capture_intro=1 のときは、戦闘ではなく登場演出(落下・着地・咆哮)の間を撮る。時刻は演出の始まりから数える。
 	bool m_captureIntro = false;
+	// capture_ui=1 のときは、体力バーなどのUIも写した絵を保存する(既定は3D描画だけ)。
+	bool m_captureUi = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
 	float m_battleSeconds = 0.0f;
 

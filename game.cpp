@@ -122,10 +122,13 @@ void gameinit()
 	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
 	GameFlow::useGameLoop = ResolveUseGameLoop();
 	GameFlow::openAttackTimelineOnStart = HasArg(L"--timeline");
+	// 最初のシーンの init がこの値を見るので、シーンを作るより先に決めておく。
+	const bool debugVisible = ResolveDebugVisible();
+	DebugUI::SetGameplayDefaultVisible(debugVisible);
 	// ゲームループを使うならタイトルから。本編だけなら直接ゲームへ。
 	SceneManager::SetCurrentScene(GameFlow::useGameLoop ? "TitleScene" : "GameScene");
 	UpdateWindowTitle();
-	if (ResolveDebugVisible())
+	if (debugVisible)
 	{
 		DebugUI::SetVisible(true);
 	}

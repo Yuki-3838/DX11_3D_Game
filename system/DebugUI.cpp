@@ -9,6 +9,7 @@ bool g_cursorHidden = false;
 
 std::vector<std::function<void(void)>> DebugUI::m_debugfunction;
 namespace { bool g_debugVisible = false; }
+namespace { bool g_gameplayDefaultVisible = false; }
 namespace { bool g_cursorVisibleRequested = false; }
 namespace
 {
@@ -121,6 +122,14 @@ void DebugUI::SetVisible(bool visible) {
 
 void DebugUI::ToggleVisible() {
     g_debugVisible = !g_debugVisible;
+}
+
+void DebugUI::SetGameplayDefaultVisible(bool visible) {
+    g_gameplayDefaultVisible = visible;
+}
+
+bool DebugUI::IsGameplayDefaultVisible() {
+    return g_gameplayDefaultVisible;
 }
 
 void DebugUI::SetCursorVisible(bool visible) {

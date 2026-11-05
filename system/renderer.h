@@ -169,6 +169,8 @@ private:
     static ComPtr<ID3D11RasterizerState> m_ShadowRasterizer;
     // キャラクターの一時的な色変化(被弾フラッシュなど)用。
     static ComPtr<ID3D11Buffer> m_TintBuffer;
+    // フレームの終わり(UIを描いた後)に保存するPNGの保存先。空なら保存しない。
+    static std::wstring m_PendingFrameEndPng;
 public:
     static void Init();
     static void Dispose();
@@ -178,6 +180,9 @@ public:
     // 画面を撮るのではなくゲーム自身が描いた絵を書き出すので、ウィンドウが
     // 他のウィンドウの後ろにあっても撮れる(前面へ出してフォーカスを奪わずに済む)。
     static bool SaveBackBufferPng(const wchar_t* path);
+    // SaveBackBufferPng と同じだが、保存をこのフレームの End(UIを描き終えた後)まで遅らせる。
+    // 体力バーなどのUIも写った絵が欲しいときに使う。
+    static void SaveBackBufferPngAtFrameEnd(const wchar_t* path) { m_PendingFrameEndPng = path; }
     static void RestoreMainRenderTarget();
     static void SetDepthEnable(bool Enable);
     static void SetDepthAllwaysWrite();

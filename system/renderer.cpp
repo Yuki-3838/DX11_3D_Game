@@ -23,6 +23,7 @@ D3D_FEATURE_LEVEL       Renderer::m_FeatureLevel = D3D_FEATURE_LEVEL_11_0;
 ComPtr<ID3D11Device> Renderer::m_Device;
 ComPtr<ID3D11DeviceContext> Renderer::m_DeviceContext;
 ComPtr<IDXGISwapChain> Renderer::m_SwapChain;
+std::wstring Renderer::m_PendingFrameEndPng;
 ComPtr<ID3D11RenderTargetView> Renderer::m_RenderTargetView;
 ComPtr<ID3D11DepthStencilView> Renderer::m_DepthStencilView;
 
@@ -385,6 +386,11 @@ void Renderer::Begin()
  */
 void Renderer::End()
 {
+    if (!m_PendingFrameEndPng.empty())
+    {
+        SaveBackBufferPng(m_PendingFrameEndPng.c_str());
+        m_PendingFrameEndPng.clear();
+    }
     m_SwapChain->Present(1, 0);
 }
 
