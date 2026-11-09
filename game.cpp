@@ -122,6 +122,7 @@ void gameinit()
 	// F1はデバッグ用にゲームシーンへ直接移るショートカットとして残す。
 	GameFlow::useGameLoop = ResolveUseGameLoop();
 	GameFlow::openAttackTimelineOnStart = HasArg(L"--timeline");
+	GameFlow::autoStart = LoadSetting("auto_start") == "1";
 	// 最初のシーンの init がこの値を見るので、シーンを作るより先に決めておく。
 	const bool debugVisible = ResolveDebugVisible();
 	DebugUI::SetGameplayDefaultVisible(debugVisible);

@@ -102,6 +102,14 @@ public:
 		// 演出の後は、追従点を現在のプレイヤー位置から取り直す。
 		m_anchorInitialized = false;
 	}
+	// 決着の演出用。カメラ位置と注視点を直接指定しつつ、命中の揺れだけは効かせる。
+	// deltaSeconds は揺れを進める時間。スローモーションの影響を受けない実時間を渡す。
+	void SetCinematicViewWithShake(const Vector3& cameraPosition, const Vector3& lookAt, float deltaSeconds)
+	{
+		m_battleTransitionActive = false;
+		m_anchorInitialized = false;
+		ApplyView(cameraPosition, lookAt, deltaSeconds);
+	}
 
 private:
 	// 追従点(プレイヤーの注視する高さ)を滑らかに動かす。水平は速く、上下はゆっくり追う。

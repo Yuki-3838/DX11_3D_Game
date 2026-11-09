@@ -9,13 +9,23 @@
 #include "../system/imgui/imgui.h"
 #include <dinput.h>
 
-void ResultScene::update(uint64_t)
+void ResultScene::update(uint64_t deltatime)
 {
+    m_elapsedSeconds += static_cast<float>(deltatime) / 1000000.0f;
+    if (GameFlow::autoStart && m_elapsedSeconds > 1.0f)
+        m_retrying = true;
+    // リトライ。シーンを切り替えて飛来の場面が出るまでの短い間も、リザルトの窓を見せないよう暗くしておく。
+    if (m_retrying)
+    {
+        GameFlow::RequestFlightIntro();
+        GameFlow::RequestScene("GameScene");
+        return;
+    }
     // キーボード(Enter・Space / Esc)でもゲームパッド(A・Start / B)でも進める。
     const GameInput& input = GameInput::Get();
     if (input.IsTriggered(GameAction::Confirm))
     {
-        GameFlow::RequestScene("GameScene");
+        m_retrying = true;
     }
     else if (input.IsTriggered(GameAction::Back))
     {
@@ -25,6 +35,15 @@ void ResultScene::update(uint64_t)
 
 void ResultScene::draw(uint64_t)
 {
+    if (m_retrying)
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::GetForegroundDrawList(viewport)->AddRectFilled(
+            viewport->WorkPos,
+            ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y),
+            IM_COL32(0, 0, 0, 255));
+        return;
+    }
     ImGui::SetNextWindowPos(
         ImVec2(Application::GetWidth() * 0.5f, Application::GetHeight() * 0.5f),
         ImGuiCond_Always,
@@ -44,7 +63,7 @@ void ResultScene::draw(uint64_t)
         ImGui::Spacing();
         if (ImGui::Button("RETRY", ImVec2(-1.0f, 48.0f)))
         {
-            GameFlow::RequestScene("GameScene");
+            m_retrying = true;
         }
         ImGui::Spacing();
         // ゲームパッドがつながっていればパッドのボタン名を出す。

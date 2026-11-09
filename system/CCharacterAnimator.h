@@ -82,6 +82,15 @@ public:
 	// (腰や脚まで取り込むと接地が崩れることが分かっているため)。
 	void SetImpactAnimation(aiAnimation* animation);
 	void PlayImpactMotion();
+	// 力尽きるモーション。全身をクリップで動かし、最後の姿勢のまま止まる(立ち上がらない)。
+	void SetDeathAnimation(aiAnimation* animation) { m_deathAnimation = animation; }
+	void PlayDeathMotion();
+	// 力尽きるモーションを再生中(最後の姿勢で止まっている間も含む)か。
+	bool IsDeathMotionPlaying() const { return m_holdImportedLastPose; }
+	// 仕切り直し(R)で起き上がらせる。次の更新で移動・待機の姿勢へ補間して戻る。
+	void StopDeathMotion() { m_holdImportedLastPose = false; }
+	// ヒットストップを打ち切る(決着の瞬間はスローモーションへ任せる)。
+	void ClearHitStop() { m_hitStopSeconds = 0.0f; }
 	// ダッシュ攻撃(走りながら弱攻撃)。クリップと時間は Combat::PlayerDashAttackStep()。
 	void SetDashAttackAnimation(aiAnimation* animation) { m_dashAttackAnimation = animation; }
 	void PlayDashAttackMotion();
@@ -318,6 +327,9 @@ private:
 	std::array<aiAnimation*, 3> m_weakAttackAnimations{};
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
 	aiAnimation* m_impactAnimation = nullptr;
+	aiAnimation* m_deathAnimation = nullptr;
+	// クリップを最後まで再生したら、最後の姿勢のまま止めておく(力尽きるモーション)。
+	bool m_holdImportedLastPose = false;
 	aiAnimation* m_dashAttackAnimation = nullptr;
 	aiAnimation* m_importedAttackAnimation = nullptr;
 	int m_importedAnimationFrame = 0;

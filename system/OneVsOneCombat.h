@@ -100,6 +100,8 @@ public:
     float GetEnemyMaxHp() const { return ENEMY_MAX_HP; }
     // 調整用。敵の体力を直接設定する(弱り具合の見た目を確かめるため。デバッグ表示から使う)。
     void SetEnemyHpForDebug(float hp) { m_enemyHp = std::clamp(hp, 1.0f, ENEMY_MAX_HP); }
+    // 調整・撮影用。決着の演出を、戦い切らずに確かめるために体力を0にする。
+    void ForceDefeatForDebug(bool enemyDefeated) { (enemyDefeated ? m_enemyHp : m_playerHp) = 0.0f; }
     // 撮影・調整用の無敵。攻撃は当たって演出(火花・怯み・吹き飛ばし)も出るが、体力だけ減らない。
     // 仕切り直し(Reset)をしても設定は残す。
     void SetEnemyDebugInvincible(bool invincible) { m_enemyDebugInvincible = invincible; }

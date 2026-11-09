@@ -386,7 +386,11 @@ Debug|x64ビルド成功、起動・プロセス応答確認済み。デバッ�
   `auto_walk`(1前・2右・3左へ自動で歩く) / `foot_lock`(0で足の接地を切る) /
   `enemy_invincible` / `player_invincible`(1で無敵。当たって演出は出るが体力は減らない) /
   `rage_at_start`(1で戦闘開始と同時に敵を怒らせる。咆哮と怒り中の動きの確認用) /
-  `weapon`(`great`で大剣を持って始める。ブランチ`feature/hata-great-sword`の作業中)
+  `weapon`(`great`で大剣を持って始める。ブランチ`feature/hata-great-sword`の作業中) /
+  `debug_finish`(`victory`|`defeat`。`debug_finish_seconds`秒後に決着させる) / `auto_attack`(1で弱攻撃を押し続ける) /
+  `death`(力尽きるクリップの差し替え)
+- **ビルドの補足(2026-11-09)**: 初期化後のこのPCのVisual Studio 18にはv143が無くv145だけが入っている。
+  `.vcxproj`はv143のままなので、コマンドラインでは`/p:PlatformToolset=v145`を足す(別のPCとの互換のため`.vcxproj`は変えていない)。
 - **地面を離れる技は明示する(2026-09-30)**。`CCharacterAnimator::m_attackLeavesGround`。
   いまはダッシュ攻撃だけ。立てないと接地の計算が足を地面へ引き戻し、
   脚を抱えた分だけ体が下がって膝が地面につく。腰が上がったかでは自動判定できない
@@ -612,6 +616,44 @@ Debug|x64ビルド成功、起動・プロセス応答確認済み。デバッ�
 着地点(z=-120)のドラゴンがはみ出して影が合っていなかった。
 現在は`m_enemyIntroActive`の間だけドラゴン中心・一辺460にしている。
 今後カメラが遠くを映す演出を足すときは、同じ問題が出ると考えること。
+
+### 決着の演出(2026-11-09 実装)
+
+体力が0になってもすぐリザルトへ移らず、スロー → 倒れる → 暗転 → リザルトの順に進む。入口は`GameScene::BeginBattleFinish()`。
+
+- **時間の遅さは`update()`の先頭で`deltatime`へ掛けている**。普段の更新をそのまま通るので、演出専用の更新経路は無い。
+  演出の進行とカメラの揺れは実時間(`realDeltaSeconds`)で進める。遅い時間で進めたいものと混ぜないこと。
+- **残り時間で減る演出は、スロー中は実時間で長く残る**。`m_enemyHitFlashTime`を0.2にしたら約1秒金色のままだった。
+- 時間配分は`GameScene.h`の`FINISH_*`。倒れるクリップを差し替えたら`ENEMY_DEATH_BODY_IMPACT_SECONDS`を測り直す
+  (撮影ログの`body_y`が落ち切る直前)。
+- 敵の状態`Dead`/`Standby`は`enemy::update()`の先頭で止めている。プレイヤーを倒したときは、判定中・隙の攻撃だけ最後まで動かす(途中で止めると固まって見える)。
+- 確認は`dev_settings.ini`の`debug_finish=victory|defeat`と`debug_finish_seconds`。実際の一撃で見るなら`enemy_hp=1`+`auto_attack=1`+`enemy_passive=1`+`player_start_z=-90`。
+  **`enemy_hp=1`だと戦闘開始直後に瀕死の咆哮が出る**ので、その衝撃波を決着の演出と見間違えないこと。
+- **撮影は`gameloop=0`か、`gameloop=1`+`auto_start=1`で行うこと**。`auto_start`なしの`gameloop=1`だとタイトルで止まり、1枚も撮れない。
+  `gameloop=0`では決着の後にシーンが作り直されて撮影の連番とログが最初からになるので、`capture_count`は暗転までに収まる枚数にする。
+- `near`/`far`はWindowsのヘッダーがマクロにしているので変数名に使えない。
+
+### ローディング画面・ドラゴンの飛来(2026-11-09 実装)
+
+タイトルから本編への流れ: 真っ黒まで暗転(曲も消す) → 夕日を背に迫ってくるドラゴンを正面から映す(この間に裏で読み込む) → 読み込みが終わり3秒たつと「NOW LOADING」が消えて下へ降下 → 雲が迫って白 → 落下 → 着地と咆哮。
+入口は`GameScene::init()`の末尾(`m_flightActive`を立てる)。
+
+- **初期化は3つに分かれている**: `init`(飛来の場面に必要なもの) → `LoadPlayerAssetsOnWorker`(裏のスレッド) → `FinishSceneInit`(仕上げ)。飛来の場面を流さないときは順に呼ぶだけ。
+- **`LoadPlayerAssetsOnWorker`では描画文脈(`GetDeviceContext`)を使うものを呼ばないこと**。`CMaterial::Create`・`CStaticMeshRenderer::Init`・`BoneCombMatrix`が該当する。デバイスだけなら使ってよい。
+- **`AssimpPerse`はグローバル変数へ読み込む**。裏のスレッドが動いている間、メインスレッドでモデルを読まないこと。
+- `FinishSceneInit`は飛行の場面の途中で動く。時間のかかる処理を足すと飛行が止まって見えるので、裏へ回す。
+- 暗転の後に止まるのは`init`の分だけ(Debug版で約0.5秒)。ここに重い処理を足すと黒い間が戻る。
+- 登録済みの名前は`Register`で上書きされない。`Shader3DSkin`は**最初に登録したシーンの版が本編でも使われる**ので、`TitleScene`と`GameScene`の登録は必ず同じ版(`Hybrid`)にそろえること。純LBS版と比べるときは両方を変える。
+- `skinTransform.hlsli`が対応するボーンの拡大は**一様な拡大だけ**。非一様に拡大するとDQS側の回転が狂う(翼は`CreateScale(一様)`なので問題ない)。
+- 流すのはタイトル・リザルトから入るときだけ(`GameFlow::RequestFlightIntro`)。`gameloop=0`・F1では流れない。確かめるには`flight_intro=1`か、デバッグ表示「戦闘」タブの「飛来の場面を見る」。
+- 撮影は`flight_intro=1`+`capture_flight=1`。続きの落下は`flight_intro=1`+`capture_intro=1`。
+  タイトルからの本来の流れは`gameloop=1`+`auto_start=1`(タイトルとリザルトをボタンなしで進める)。
+- 時間配分と迫ってくる距離は`GameScene.h`の`FLIGHT_*`、カメラの置き方は`UpdateDragonFlight()`の末尾。雲は`-Z`へ流れ、カメラは`+Z`側から`-Z`側を見ている。
+- **翼の左右は骨の名前で分けること**。翼の骨は左右とも付け根が体の中心にあるので、位置で判定すると両方同じ向きに回る。
+- 翼の骨は広げている間だけ拡大している(`FLIGHT_WING_SCALE`)。`m_enemyFallWingOpen`が0に戻れば、ふだんの大きさに戻る。
+- 空は`m_flightBackdrop.DrawSky()`で戦闘中も描いている。頂点は最初に1度作るだけなので、戦闘中の負担はこの1回の描画だけ。
+- **ビルド直後の最初の起動は、ゲームの処理が始まるまで約30秒かかることがある**。2回目以降は起きない。撮影の時間切れを疑う前に、もう一度起動してみること。
+- ビルド直後のexeが「アクセスが拒否されました」で起動できず、消えることがある(Release版で発生)。その後は同じ場所へリンクできない(LNK1104)ので、`/p:OutDir=`で別フォルダへ出すと動く。このPCのセキュリティソフトが原因の可能性があるが、確かめていない。
 
 ### 怯みと吹き飛ばし(2026-09-13 実装)
 

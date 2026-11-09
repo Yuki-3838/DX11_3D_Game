@@ -15,7 +15,10 @@ public:
 	// Roarは怒りに入る合図の咆哮。攻撃はせず、当たり判定も出ない。
 	// Turnは攻撃の前に、その場で足を踏み替えてプレイヤーの方へ向き直っている状態。
 	// 大型の敵は一瞬では振り向けない。向き直っている間が側面・背後を殴る機会になる。
-	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn };
+	// Deadは倒れた状態(倒れるクリップを再生して動かない)。
+	// Standbyはプレイヤーを倒した後に立っている状態(勝利の咆哮の後は何もしない)。
+	// 撮影のログは番号で書いているので、項目は必ず末尾へ足す。
+	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn, Dead, Standby };
 
 	explicit enemy(IScene* scene);
 
@@ -62,6 +65,17 @@ public:
 	// 登場の間は敵のAIを動かさないので、状態(Roar)ではなく時刻を外から渡して姿勢だけを付ける。
 	void setIntroRoarTime(float seconds) { m_introRoarTime = seconds; }
 	// デバッグ表示用。次に怒るまでの溜まり具合と、怒りの残り時間。
+	// --- 決着 ---
+	// 体力が0になった。倒れるクリップの再生へ移り、以後は動かない。
+	void beginDeath();
+	// プレイヤーを倒した。出している攻撃は最後まで動かし(途中で止めると固まって見える)、
+	// 一拍おいて勝利の咆哮を上げ、その後は立っているだけになる。
+	// 怒りの咆哮の最中に倒したときは、もう吠えているので吠え直さない。
+	void notifyPlayerFallen()
+	{
+		m_playerFallen = true;
+		m_victoryRoarDone = m_motionState == MotionState::Roar;
+	}
 	float getRageDamage() const { return m_rageDamage; }
 	float getRageThreshold() const;
 	float getRageSecondsLeft() const { return m_rageSeconds; }
@@ -219,6 +233,12 @@ private:
 	float m_rageDamage = 0.0f;
 	float m_rageSeconds = 0.0f;
 	float m_introRoarTime = -1.0f;
+	bool m_playerFallen = false;
+	bool m_victoryRoarDone = false;
+	// プレイヤーが倒れてから吠えるまでの間。すぐ吠えると、倒れていくプレイヤーから目が逸れる。
+	static constexpr float VICTORY_ROAR_DELAY_SECONDS = 0.9f;
+	// 倒れた瞬間に足していた体の傾き。短く0へ戻す(いきなり消すと姿勢が跳ぶ)。
+	Combat::EnemyPoseOffset m_deathPoseStart{};
 	int m_rageCount = 0;
 	float m_posture = 0.0f;
 	float m_flinchYawSign = 1.0f;

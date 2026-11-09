@@ -1197,6 +1197,18 @@ void CCharacterAnimator::PlayImpactMotion()
 	PlayImportedAttackAnimation(m_impactAnimation, "Impact", 0.60f, 0.0f, 0.0f);
 }
 
+void CCharacterAnimator::PlayDeathMotion()
+{
+	if (m_deathAnimation == nullptr)
+		return;
+	// 攻撃クリップと同じ全身の経路(脚・腰もクリップから取り、腰の水平移動は位置へ移す)で再生する。
+	// 被弾ののけぞりと違って脚まで動かさないと、立ったまま上体だけが倒れてしまう。
+	PlayImportedAttackAnimation(m_deathAnimation, "Death", ClipSeconds(m_deathAnimation), 0.0f, 0.0f);
+	m_attackRootMotionScale = 1.0f;
+	m_hitStopSeconds = 0.0f;
+	m_holdImportedLastPose = true;
+}
+
 void CCharacterAnimator::PlayAttackMotion()
 {
 	PlayAttackMotion(1);
@@ -1360,6 +1372,7 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 	float activeEnd)
 {
 	BeginAttackBlend();
+	m_holdImportedLastPose = false;
 	m_importedAttackAnimation = animation;
 	// 技(コンボの段)として再生するときだけ、PlayImportedComboStepが設定し直す。
 	m_importedClipKeysPerSecond = 0.0f;
@@ -1482,7 +1495,7 @@ void CCharacterAnimator::Update(
 
 	if (m_importedAttackAnimation != nullptr)
 	{
-		if (m_motionPlaying && m_motionTime < m_motionDuration)
+		if (m_motionPlaying && (m_motionTime < m_motionDuration || m_holdImportedLastPose))
 		{
 			if (m_attackBlendPending)
 			{
@@ -1525,7 +1538,8 @@ void CCharacterAnimator::Update(
 			if (m_attackLowerBodyPending)
 			{
 				m_attackLowerBodyPending = false;
-				m_attackLowerBodyFromLocomotion = state.walking;
+				// 力尽きるモーションは脚もクリップから取る(歩きを重ねると歩きながら倒れてしまう)。
+				m_attackLowerBodyFromLocomotion = state.walking && !m_holdImportedLastPose;
 			}
 			const bool useRunForAttack = state.running && m_runAnimation != nullptr;
 			aiAnimation* lowerBodyAnimation = m_attackLowerBodyFromLocomotion

@@ -5,6 +5,7 @@
 static const float DQS_BLEND = 0.75f;
 
 // 剛体変換行列から回転クォータニオンを取り出す。
+// 拡大を含む行列をそのまま渡すと回転が狂うので、呼ぶ側で拡大を除いておくこと。
 // 戻り値は (x, y, z, w)。
 float4 QuaternionFromMatrix(float4x4 m)
 {
@@ -73,6 +74,10 @@ struct SkinnedVertex
  * 法線も同じボーンの重みで変形させる。以前は法線をワールド行列だけで変換しており、
  * ボーンをどれだけ動かしても陰影が追従しなかった(体を捻っても明暗が変わらない)。
  * DQS側は剛体回転なので、混合した回転クォータニオンで法線を回すだけでよい。
+ *
+ * ボーンの一様な拡大にも対応する(飛来の場面でドラゴンの翼の骨を拡大している)。
+ * デュアルクォータニオンは回転と平行移動しか表せないので、拡大は別に混ぜて、回す前の頂点へ掛ける。
+ * 骨ごとの非一様な拡大には対応していない。
  */
 SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
 {
@@ -86,6 +91,7 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
     float weightSum = 0.0f;
     float4 blendedReal = (float4) 0;
     float4 blendedDual = (float4) 0;
+    float blendedScale = 0.0f;
     float4 referenceQuat = (float4) 0;
     bool hasReference = false;
 
@@ -103,7 +109,16 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
         lbsMatrix += boneMatrix * weight;
         weightSum += weight;
 
-        float4 real = normalize(QuaternionFromMatrix(boneMatrix));
+        // 拡大を除いてから回転を取り出す。平行移動はそのまま使う(拡大後の骨の位置が入っている)。
+        float scale = length(boneMatrix[0].xyz);
+        blendedScale += scale * weight;
+        float inverseScale = 1.0f / max(scale, 0.0001f);
+        float4x4 rotationMatrix = boneMatrix;
+        rotationMatrix[0].xyz *= inverseScale;
+        rotationMatrix[1].xyz *= inverseScale;
+        rotationMatrix[2].xyz *= inverseScale;
+
+        float4 real = normalize(QuaternionFromMatrix(rotationMatrix));
         if (!hasReference)
         {
             referenceQuat = real;
@@ -134,6 +149,7 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
     if (residual > 0.0f)
     {
         lbsMatrix += identity * residual;
+        blendedScale += residual;
         float4 identityReal = float4(0.0f, 0.0f, 0.0f, 1.0f);
         if (hasReference && dot(referenceQuat, identityReal) < 0.0f)
             identityReal = -identityReal;
@@ -142,7 +158,8 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
 
     float4 lbsPosition = mul(In.Position, lbsMatrix);
     // 法線は平行移動の影響を受けないので、行列の回転部分だけを使う。
-    float3 lbsNormal = mul(localNormal, (float3x3) lbsMatrix);
+    // 拡大の分だけ長くなると、下の混合でDQS側より強く効いてしまうので元の長さへ戻す。
+    float3 lbsNormal = mul(localNormal, (float3x3) lbsMatrix) / max(blendedScale, 0.0001f);
 
     float realLength = length(blendedReal);
     float4 dqsPosition = lbsPosition;
@@ -151,7 +168,7 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
     {
         float4 real = blendedReal / realLength;
         float4 dual = blendedDual / realLength;
-        float3 position = In.Position.xyz;
+        float3 position = In.Position.xyz * blendedScale;
         float3 rotated = RotateByQuaternion(real, position);
         float3 translated =
             2.0f * (real.w * dual.xyz - dual.w * real.xyz + cross(real.xyz, dual.xyz));

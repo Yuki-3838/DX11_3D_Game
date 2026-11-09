@@ -10,6 +10,7 @@
 #include	<initializer_list>
 #include	<cmath>
 #include	<iostream>
+#include	<chrono>
 #include	"GameScene.h"
 #include	"../system/LineDrawer.h"
 #include	"../system/CShader.h"
@@ -28,6 +29,7 @@
 #include	"../system/imgui/imgui.h"
 #include	"../system/DebugUI.h"
 #include	"../system/GameFlow.h"
+#include	"../system/LoadingCaption.h"
 #include	"../system/SoundManager.h"
 #include	"../system/CPlane.h"
 #include	"../system/CharacterModelProfile.h"
@@ -781,6 +783,7 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 	constexpr float battleStartTime = 4.55f;
 	const float previousIntroTime = m_enemyIntroTime;
 	m_enemyIntroTime += deltaSeconds;
+	m_flightWhiteFade = std::max(0.0f, m_flightWhiteFade - deltaSeconds);
 	// 着地の瞬間。巨体が落ちてきた重さを、土煙と地面を走る衝撃の輪で見せる。
 	if (previousIntroTime < fallDuration && m_enemyIntroTime >= fallDuration)
 	{
@@ -803,10 +806,20 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		const float remaining = 1.0f - progress;
 		enemySrt.pos = m_enemyIntroLandingPosition +
 			Vector3(0.0f, 150.0f * remaining * remaining * remaining, 0.0f);
+		// 翼を広げて降りてきて、地面が近づいたら一度大きく煽ってたたむ。
+		// 待機の立ち姿のまま落ちると、上から落とされただけの物に見える。
+		constexpr float FOLD_START = 0.72f;
+		const float fold = std::clamp((progress - FOLD_START) / (1.0f - FOLD_START), 0.0f, 1.0f);
+		m_enemyFallWingOpen = 1.0f - fold * fold * (3.0f - 2.0f * fold);
+		m_flightFlapPhase += deltaSeconds * 2.0f * PI * 2.2f;
+		// 頭から突っ込んできた流れで、前傾から起き上がりながら降りる。
+		enemySrt.rot.x = -0.55f * remaining * remaining;
 	}
 	else
 	{
 		enemySrt.pos = m_enemyIntroLandingPosition;
+		enemySrt.rot.x = 0.0f;
+		m_enemyFallWingOpen = 0.0f;
 	}
 	enemySrt.rot.y = PI;
 	m_enemies.front()->setSRT(enemySrt);
@@ -850,6 +863,8 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 	UpdateEnemyMotionEffects(deltaSeconds);
 	if (m_enemyIntroTime >= battleStartTime)
 	{
+		m_flightWhiteFade = 0.0f;
+		m_enemyFallWingOpen = 0.0f;
 		m_enemies.front()->setIntroRoarTime(-1.0f);
 		SoundManager::PlayGameBgm();
 		// 戦闘開始時のWalk先頭へ、直前に表示したIdle姿勢からつなぐ。
@@ -918,13 +933,22 @@ void GameScene::DebugAudio()
 void GameScene::update(uint64_t deltatime)
 {
     auto& input = CInputManager::GetInstance();
+	const float realDeltaSeconds = std::clamp(static_cast<float>(deltatime) * 0.000001f, 0.0f, 0.1f);
+	// 決着の演出の間は時間を遅くする。この先の更新(アニメーション・エフェクト・敵)はすべて遅い時間で進む。
+	// 演出の進行とカメラだけは realDeltaSeconds で進める。
+	if (m_battleFinish != BattleFinish::None)
+	{
+		m_battleFinishTime += realDeltaSeconds;
+		deltatime = static_cast<uint64_t>(static_cast<double>(deltatime) * BattleFinishTimeScale());
+	}
+	const bool battleFinishing = m_battleFinish != BattleFinish::None;
 	const float deltaSeconds = std::clamp(static_cast<float>(deltatime) * 0.000001f, 0.0f, 0.1f);
 	// 視点操作。フロム作品(PC版)と同じく、マウスを動かすだけでカメラが回る。
 	// そのためカーソルをゲーム画面に閉じ込めて隠す。デバッグ表示を触るときは左Altでカーソルを出す。
 	if (input.IsKeyTriggered(DIK_LMENU))
 		m_mouseLookCaptured = !m_mouseLookCaptured;
 	if (!m_enemyIntroActive)
-		m_battleSeconds += deltaSeconds;
+		m_battleSeconds += realDeltaSeconds;
 	// 調整用: dev_settings.ini の auto_walk で自動的に歩かせる(1=前へ、2=右へ、3=左へ、4=後ろへ)。
 	// 撮影で動きを確認するとき、外からキー入力を送らずに済ませるため。
 	if (m_player)
@@ -934,8 +958,18 @@ void GameScene::update(uint64_t deltatime)
 			autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f),
 			autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f));
 	}
+	// 飛来の場面(ローディング画面)の間は、ほかの更新を通さない。
+	// 終わったフレームは下へ進み、そのまま登場演出の最初のコマを作る(白の下で姿勢が切り替わる)。
+	if (m_flightActive)
+	{
+		DebugUI::SetCursorLocked(false);
+		DebugUI::SetCursorVisible(false);
+		UpdateDragonFlight(realDeltaSeconds);
+		if (m_flightActive)
+			return;
+	}
 	// F6: 攻撃のタイムラインエディターを開く・閉じる。開いている間はゲームを止める。
-	if (input.IsKeyTriggered(DIK_F6) && !ImGui::GetIO().WantTextInput && m_player)
+	if (input.IsKeyTriggered(DIK_F6) && !ImGui::GetIO().WantTextInput && m_player && !battleFinishing)
 	{
 		if (m_timelineEditor.IsOpen())
 			CloseTimelineEditor();
@@ -963,7 +997,7 @@ void GameScene::update(uint64_t deltatime)
 	// ゲームの操作はGameInput(仮想コントローラー)から「行動」として受け取る。
 	// キーボード・マウスとゲームパッドのどちらで押したかは、ここでは区別しない。
 	const GameInput& gameInput = GameInput::Get();
-	if (!m_enemyIntroActive && gameInput.IsTriggered(GameAction::LockOn))
+	if (!m_enemyIntroActive && !battleFinishing && gameInput.IsTriggered(GameAction::LockOn))
 	{
 		if (m_lockOnTarget)
 		{
@@ -983,6 +1017,10 @@ void GameScene::update(uint64_t deltatime)
 
     if (input.IsKeyTriggered(DIK_R))
     {
+		// 決着の演出の途中で仕切り直しても、演出と倒れた姿勢を持ち越さない。
+		m_battleFinish = BattleFinish::None;
+		m_battleFinishTime = 0.0f;
+		m_playerAnimator.StopDeathMotion();
 		m_combat.Reset();
 		ApplyDebugEnemyStartHp();
 		m_playerWeaponTrail.Clear();
@@ -1007,9 +1045,12 @@ void GameScene::update(uint64_t deltatime)
 	}
 	if (m_enemies.empty() || m_combat.IsEnemyDefeated())
 		m_lockOnTarget = false;
-	const bool rawAttackTriggered = gameInput.IsTriggered(GameAction::Attack);
-	const bool rawHeavyAttackTriggered = gameInput.IsTriggered(GameAction::HeavyAttack);
-	const bool rawDodgeTriggered = gameInput.IsTriggered(GameAction::Dodge);
+	// 調整・撮影用: auto_attack=1 で弱攻撃を押し続ける(最後の一撃の演出を、実際に当てて撮るため)。
+	static const bool autoAttack = GetDevSetting("auto_attack", "0") == "1";
+	// 決着の後は操作を受け付けない(倒れるところを見せる時間)。
+	const bool rawAttackTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Attack) || autoAttack);
+	const bool rawHeavyAttackTriggered = !battleFinishing && gameInput.IsTriggered(GameAction::HeavyAttack);
+	const bool rawDodgeTriggered = !battleFinishing && gameInput.IsTriggered(GameAction::Dodge);
 	const bool playerDodgeActive = m_player->isDodging();
 
 	// 先行入力。押した瞬間に出せなかった攻撃・回避を覚えておく。
@@ -1086,7 +1127,7 @@ void GameScene::update(uint64_t deltatime)
 	// 調整・撮影用: auto_sprint=1 で走り続ける(auto_walk と組み合わせて「逃げる」動きを撮る)。
 	static const bool autoSprint = GetDevSetting("auto_sprint", "0") == "1";
 	const bool sprinting = (gameInput.IsPressed(GameAction::Sprint) || autoSprint) &&
-		!m_combat.IsPlayerAttacking() && !m_player->isDodging();
+		!battleFinishing && !m_combat.IsPlayerAttacking() && !m_player->isDodging();
 	if (sprinting)
 		m_playerStamina = std::max(0.0f, m_playerStamina - 28.0f * deltaSeconds);
 	else if (!m_player->isDodging())
@@ -1115,6 +1156,7 @@ void GameScene::update(uint64_t deltatime)
 	const bool attackAnimationPlaying = m_playerAnimator.IsMotionPlaying() &&
 		!m_player->isDodging() && !canDodge;
 	const bool lockPlayerMovement =
+		battleFinishing ||
 		m_combat.IsPlayerAttacking() ||
 		(attackStarted && !canDodge) ||
 		attackAnimationPlaying;
@@ -1259,8 +1301,10 @@ void GameScene::update(uint64_t deltatime)
 			m_playerSoleOffsetY = m_playerAnimationMesh->GetAnimatedLocalMinY() - lowestFootY;
 			m_playerSoleOffsetReady = true;
 		}
+		// 力尽きて倒れる間も前転と同じく体が地面に着くので、頂点の最下点で合わせる。
 		const bool useFootBones =
-			haveFootBones && m_playerSoleOffsetReady && !m_player->isDodging();
+			haveFootBones && m_playerSoleOffsetReady && !m_player->isDodging() &&
+			!m_playerAnimator.IsDeathMotionPlaying();
 		const float lowestLocalY = useFootBones
 			? lowestFootY + m_playerSoleOffsetY
 			: m_playerAnimationMesh->GetAnimatedLocalMinY();
@@ -1442,9 +1486,13 @@ void GameScene::update(uint64_t deltatime)
 	// 壁への寄せ(衝突)より先に攻撃中の寄せを決める。
 	// SetCollisionDistanceは基準距離を上限としてクランプするため、
 	// 先に基準距離を確定させておかないと壁際で挙動がちぐはぐになる。
-	UpdateCombatCameraDistance(deltaSeconds);
-	UpdateArenaCameraCollision();
-	UpdateGameplayCamera(deltaSeconds);
+	// 決着の演出の間はカメラを演出側(UpdateBattleFinishCamera)が動かす。
+	if (!battleFinishing)
+	{
+		UpdateCombatCameraDistance(deltaSeconds);
+		UpdateArenaCameraCollision();
+		UpdateGameplayCamera(deltaSeconds);
+	}
 	if (m_playerAnimationMesh && m_player)
 	{
 		// 移動と衝突補正が終わった後に剣の位置を一度だけ確定する。
@@ -1460,7 +1508,15 @@ void GameScene::update(uint64_t deltatime)
 	}
 	m_playerWeaponTrail.Update(deltaSeconds);
 	m_hitEffect.Update(deltaSeconds);
-    if (!m_enemies.empty())
+	if (battleFinishing)
+	{
+		// 決着の後は戦闘判定を動かさない(倒れた後に当たらないように)。
+		// 飛んでいる火球はそのまま飛ばす(消えると不自然)が、もう当たらない。
+		UpdateEnemyFireballs(deltaSeconds, true);
+		WriteCaptureLog();
+		UpdateBattleFinish(realDeltaSeconds);
+	}
+	else if (!m_enemies.empty())
     {
         const Vector3 enemyPosition = m_enemies.front()->getSRT().pos;
 		Vector3 swordBase{};
@@ -1537,7 +1593,11 @@ void GameScene::update(uint64_t deltatime)
 				(punishHit ? Combat::Tuning::PUNISH_POSTURE_MULTIPLIER : 1.0f);
 			// 与えたダメージは怒りにも溜まる。しきい値を超えると敵が咆哮して怒り状態へ入る。
 			// 怯みより優先する(吠えている最中にのけぞらせると、どちらの動きか分からなくなる)。
-			if (m_enemies.front()->addRageDamage(static_cast<float>(playerAttack.damage)))
+			// 倒した一撃では怒りも怯みも出さない(このすぐ後で倒れる演出へ入る)。
+			if (m_combat.IsEnemyDefeated())
+			{
+			}
+			else if (m_enemies.front()->addRageDamage(static_cast<float>(playerAttack.damage)))
 			{
 				// 咆哮の間は攻撃が来ない。戦闘側の攻撃も取り消して、構えかけを捨てさせる。
 				m_combat.CancelEnemyAttack();
@@ -1585,7 +1645,9 @@ void GameScene::update(uint64_t deltatime)
 			m_camera.TriggerShake(1.8f, 0.30f);
 			// 瀕死に入った瞬間だけ咆哮させる。モンスターハンターで弱ったモンスターが
 			// 苦しげに吠えるのと同じく、「もう少しで倒せる」ことを音でも伝える。
-			if (m_enemies.front()->getCondition() == Combat::EnemyCondition::Dying)
+			// 一撃で倒したときは、断末魔(決着の演出)と声が重なるので鳴らさない。
+			if (m_enemies.front()->getCondition() == Combat::EnemyCondition::Dying &&
+				!m_combat.IsEnemyDefeated())
 			{
 				SoundManager::PlayEnemyRoar();
 				// 苦しげな短い咆哮。怒りの咆哮より短くする。
@@ -1624,21 +1686,19 @@ void GameScene::update(uint64_t deltatime)
 		UpdateEnemyFireballs(deltaSeconds, playerInvincible);
 		WriteCaptureLog();
 
-		// どちらかのHPが0になったら結果を保存してリザルト画面へ遷移する。
-		if (!m_resultRequested &&
-			(m_combat.IsEnemyDefeated() || m_combat.IsPlayerDefeated()))
+		// 調整・撮影用: dev_settings.ini の debug_finish=victory|defeat で、
+		// debug_finish_seconds 秒後に決着させる(演出を見るのに毎回戦い切らなくて済むように)。
+		static const std::string debugFinish = GetDevSetting("debug_finish", "");
+		if (!debugFinish.empty() && !m_debugFinishDone &&
+			m_battleSeconds >= std::stof(GetDevSetting("debug_finish_seconds", "3")))
 		{
-			GameFlow::SetResult(
-				m_combat.IsEnemyDefeated()
-				? GameFlow::Result::Victory
-				: GameFlow::Result::Defeat);
-			m_resultRequested = true;
-			// ゲームループを使うならリザルトへ。本編だけなら同じ戦いをやり直す。
-			if (GameFlow::useGameLoop)
-				GameFlow::RequestScene("ResultScene");
-			else
-				GameFlow::RequestRestart();
+			m_debugFinishDone = true;
+			m_combat.ForceDefeatForDebug(debugFinish == "victory");
 		}
+
+		// どちらかのHPが0になったら決着の演出へ入る(リザルトへは演出の最後に移る)。
+		if (m_combat.IsEnemyDefeated() || m_combat.IsPlayerDefeated())
+			BeginBattleFinish(m_combat.IsEnemyDefeated());
     }
 	else
 	{
@@ -1687,6 +1747,256 @@ void GameScene::update(uint64_t deltatime)
 		m_lastPlayerComboStep = 0;
 		m_lastPlayerHeavyAttack = false;
 	}
+}
+
+void GameScene::BeginBattleFinish(bool victory)
+{
+	m_battleFinish = victory ? BattleFinish::Victory : BattleFinish::Defeat;
+	m_battleFinishTime = 0.0f;
+	m_battleFinishImpactDone = false;
+	m_battleFinishRoarPlayed = false;
+	m_lockOnTarget = false;
+	m_bufferedAction = BufferedAction::None;
+	m_combat.CancelPlayerAttack();
+	m_combat.CancelEnemyAttack();
+	GameFlow::SetResult(victory ? GameFlow::Result::Victory : GameFlow::Result::Defeat);
+	// BGMを切る。決着の瞬間の静けさで「終わった」と伝える(咆哮だけが響く)。
+	SoundManager::StopBgm();
+	// 止める役はスローモーションが受け持つ。ヒットストップが残っていると、その分だけモーションが遅れて動き出す。
+	m_playerAnimator.ClearHitStop();
+
+	enemy* foe = m_enemies.empty() ? nullptr : m_enemies.front().get();
+	if (victory)
+	{
+		if (foe)
+		{
+			foe->beginDeath();
+			// 注視点は体の中心。倒れても注視点が上下しないよう、最初に1度だけ測って足元からのずれで持つ。
+			const SRT render = foe->getRenderSRT();
+			const Vector3 localCenter =
+				(m_localEnemyMeshBounds.min + m_localEnemyMeshBounds.max) * 0.5f;
+			m_finishFocusOffset = Vector3::Transform(localCenter, render.GetMatrix()) - foe->getSRT().pos;
+			// 低めを見る。手前に立っているプレイヤーの足元が画面の下で切れないように。
+			m_finishFocusOffset.y = std::clamp(m_finishFocusOffset.y, 6.0f, 14.0f);
+		}
+		m_camera.TriggerShake(3.4f, 0.90f);
+		// 発光の残り時間は遅い時間で減るので短めにする(0.2だと約1秒も金色のままで、倒れる動きが読めなかった)。
+		m_enemyHitFlashTime = 0.06f;
+		// 最後の一撃の火花は大きく。止まった時間の中で火花が開く。
+		Vector3 swordBase{}, swordTip{}, previousSwordTip{};
+		if (m_combat.DidPlayerHitLand() && m_playerAnimationMesh &&
+			m_playerAnimationMesh->GetSwordWorldSweep(swordBase, swordTip, previousSwordTip))
+		{
+			Vector3 bladeDirection = swordTip - previousSwordTip;
+			if (bladeDirection.LengthSquared() < 0.0001f)
+				bladeDirection = swordTip - swordBase;
+			m_hitEffect.Spawn(swordTip, bladeDirection, 34, 2.4f);
+		}
+	}
+	else
+	{
+		m_playerAnimator.PlayDeathMotion();
+		if (foe)
+		{
+			foe->notifyPlayerFallen();
+			// 怒りの咆哮の最中に倒した場合は、もう声が出ているので鳴らし直さない。
+			m_battleFinishRoarPlayed = foe->isRoaring();
+		}
+		m_camera.TriggerShake(3.0f, 0.70f);
+		m_playerDamageFlashTime = 0.90f;
+	}
+
+	// カメラは今いる方角のまま回り込み始める(いきなり反対側へ回ると、何が起きたか見失う)。
+	m_finishCameraStartPosition = m_camera.GetPosition();
+	m_finishCameraStartLookat = m_camera.GetLookat();
+	const Vector3 pivot = (victory && foe) ? foe->getSRT().pos : m_player->getSRT().pos;
+	m_finishCameraYaw = std::atan2(
+		m_finishCameraStartPosition.x - pivot.x,
+		m_finishCameraStartPosition.z - pivot.z);
+	m_finishCameraOrbitDelta = 0.0f;
+	const auto wrapAngle = [](float angle) { return std::atan2(std::sinf(angle), std::cosf(angle)); };
+	// その向きへカメラを置いたときに闘技場の内側へ収まるか。
+	const auto fitsInArena = [&pivot](float yaw, float distance)
+	{
+		const float x = pivot.x + std::sinf(yaw) * distance;
+		const float z = pivot.z + std::cosf(yaw) * distance;
+		return x * x + z * z <= FINISH_CAMERA_SAFE_RADIUS * FINISH_CAMERA_SAFE_RADIUS;
+	};
+	if (victory && foe)
+	{
+		// ドラゴンは自分の左側へ首を投げ出して倒れる(撮影で確認)。首の向きと同じ方角にカメラがあると、
+		// 頭が手前へ伸びて画面の下で切れた。体の真正面か真後ろ(首が画面の横へ伸びる位置)のうち、
+		// 今のカメラに近いほうへ回り込む。そちらが壁の外なら、もう一方を使う。
+		const float foeYaw = foe->getSRT().rot.y;
+		float closerDelta = wrapAngle(foeYaw + PI - m_finishCameraYaw);
+		float otherDelta = wrapAngle(foeYaw - m_finishCameraYaw);
+		if (std::abs(otherDelta) < std::abs(closerDelta))
+			std::swap(closerDelta, otherDelta);
+		m_finishCameraOrbitDelta =
+			fitsInArena(m_finishCameraYaw + closerDelta, FINISH_VICTORY_CAMERA_DISTANCE) ? closerDelta : otherDelta;
+	}
+	else if (foe)
+	{
+		// 敵の反対側から映す(プレイヤーの向こうに敵が立つ構図)。今のカメラのままだと、
+		// 追いかけてきた敵の体がカメラとプレイヤーの間へ入り、倒れるところが隠れた(撮影で確認)。
+		// 壁際で真後ろが壁の外になるときは、壁に沿う向きへ少しずつずらす。
+		const Vector3 fromFoe = m_player->getSRT().pos - foe->getSRT().pos;
+		const float awayYaw = std::atan2(fromFoe.x, fromFoe.z);
+		float chosen = awayYaw;
+		for (const float offset : { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f, 1.8f, -1.8f })
+		{
+			if (fitsInArena(awayYaw + offset, FINISH_DEFEAT_CAMERA_DISTANCE_END))
+			{
+				chosen = awayYaw + offset;
+				break;
+			}
+		}
+		m_finishCameraOrbitDelta = wrapAngle(chosen - m_finishCameraYaw);
+	}
+}
+
+float GameScene::BattleFinishTimeScale() const
+{
+	const bool victory = m_battleFinish == BattleFinish::Victory;
+	const float freezeEnd = victory ? FINISH_VICTORY_FREEZE_END : FINISH_DEFEAT_FREEZE_END;
+	const float slowEnd = victory ? FINISH_VICTORY_SLOW_END : FINISH_DEFEAT_SLOW_END;
+	const float recoverEnd = victory ? FINISH_VICTORY_RECOVER_END : FINISH_DEFEAT_RECOVER_END;
+	const float freezeScale = victory ? 0.03f : 0.05f;
+	const float slowScale = victory ? 0.22f : 0.35f;
+	const float t = m_battleFinishTime;
+	if (t < freezeEnd)
+		return freezeScale;
+	if (t < slowEnd)
+		return slowScale;
+	if (t >= recoverEnd)
+		return 1.0f;
+	const float rate = (t - slowEnd) / (recoverEnd - slowEnd);
+	return slowScale + (1.0f - slowScale) * rate * rate * (3.0f - 2.0f * rate);
+}
+
+void GameScene::UpdateBattleFinish(float realDeltaSeconds)
+{
+	if (m_resultRequested || !m_player)
+		return;
+	const bool victory = m_battleFinish == BattleFinish::Victory;
+	enemy* foe = m_enemies.empty() ? nullptr : m_enemies.front().get();
+	if (victory)
+	{
+		// 断末魔。止まった時間が動き出すのと同時に鳴らす。
+		if (!m_battleFinishRoarPlayed && m_battleFinishTime >= FINISH_VICTORY_FREEZE_END)
+		{
+			SoundManager::PlayEnemyRoar();
+			m_battleFinishRoarPlayed = true;
+		}
+		// 体が地面に着いた瞬間の地響き。専用の音は無い(音声アセットは追加できない)ので、土煙と揺れで見せる。
+		if (foe && !m_battleFinishImpactDone &&
+			foe->getMotionState() == enemy::MotionState::Dead &&
+			foe->getStateTime() >= ENEMY_DEATH_BODY_IMPACT_SECONDS)
+		{
+			m_battleFinishImpactDone = true;
+			Vector3 body = foe->getSRT().pos;
+			GetEnemyBoneWorld("Armature_back2", body);
+			body.y = ARENA_FLOOR_TOP_Y;
+			m_enemyMotionFx.SpawnGroundRing(body, 120.0f, 0.65f, 0.55f);
+			m_enemyMotionFx.SpawnDust(body, Vector3(0.0f, 0.0f, 0.0f), 30, 95.0f, 15.0f, 1.5f, 0.32f);
+			m_camera.TriggerShake(3.0f, 0.60f);
+		}
+	}
+	else if (foe && !m_battleFinishRoarPlayed && foe->isRoaring())
+	{
+		// 出していた攻撃が終わったら、勝ち誇って吠える。
+		SoundManager::PlayEnemyRoar();
+		StartEnemyRoarEffect(Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS * 0.8f);
+		m_battleFinishRoarPlayed = true;
+	}
+
+	UpdateBattleFinishCamera(realDeltaSeconds);
+
+	// 見終わった人は決定ボタンで先へ進める(何度も遊ぶと毎回最後まで見るのは長い)。
+	const float fadeStart = victory ? FINISH_VICTORY_FADE_START : FINISH_DEFEAT_FADE_START;
+	if (m_battleFinishTime >= FINISH_SKIP_ALLOWED_AFTER && m_battleFinishTime < fadeStart &&
+		GameInput::Get().IsTriggered(GameAction::Confirm))
+	{
+		m_battleFinishTime = fadeStart;
+	}
+	if (m_battleFinishTime < fadeStart + FINISH_FADE_SECONDS)
+		return;
+	m_resultRequested = true;
+	// ゲームループを使うならリザルトへ。本編だけなら同じ戦いをやり直す。
+	if (GameFlow::useGameLoop)
+		GameFlow::RequestScene("ResultScene");
+	else
+		GameFlow::RequestRestart();
+}
+
+void GameScene::UpdateBattleFinishCamera(float realDeltaSeconds)
+{
+	const auto smooth = [](float value)
+	{
+		const float t = std::clamp(value, 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	};
+	const bool victory = m_battleFinish == BattleFinish::Victory;
+	const enemy* foe = m_enemies.empty() ? nullptr : m_enemies.front().get();
+	Vector3 focus{};
+	float distance = 0.0f;
+	float height = 0.0f;
+	float orbit = 0.0f;
+	if (victory && foe)
+	{
+		// 倒れていく敵を、低い位置からゆっくり回り込んで映す。
+		focus = foe->getSRT().pos + m_finishFocusOffset;
+		distance = FINISH_VICTORY_CAMERA_DISTANCE;
+		height = 26.0f;
+		orbit = m_finishCameraOrbitDelta * smooth(m_battleFinishTime / 2.0f) + 0.04f * m_battleFinishTime;
+	}
+	else
+	{
+		// 倒れたプレイヤーへ寄ってから、ゆっくり上へ引いて小さく見せる。
+		const float pull = smooth(m_battleFinishTime / FINISH_DEFEAT_FADE_START);
+		focus = m_player->getSRT().pos;
+		focus.y = ARENA_FLOOR_TOP_Y + 14.0f - 8.0f * pull;
+		distance = 44.0f + (FINISH_DEFEAT_CAMERA_DISTANCE_END - 44.0f) * pull;
+		height = 20.0f + 30.0f * pull;
+		orbit = m_finishCameraOrbitDelta * smooth(m_battleFinishTime / 1.2f) + 0.05f * m_battleFinishTime;
+	}
+	const float yaw = m_finishCameraYaw + orbit;
+	Vector3 position = focus + Vector3(std::sinf(yaw) * distance, height, std::cosf(yaw) * distance);
+	// 闘技場の外へ出さない(壁の裏から映さない)。
+	const float radius = std::sqrt(position.x * position.x + position.z * position.z);
+	if (radius > FINISH_CAMERA_SAFE_RADIUS)
+	{
+		position.x *= FINISH_CAMERA_SAFE_RADIUS / radius;
+		position.z *= FINISH_CAMERA_SAFE_RADIUS / radius;
+	}
+	// 決着の瞬間のカメラから、演出の構図へつなぐ。
+	const float blend = smooth(m_battleFinishTime / 1.2f);
+	m_camera.SetCinematicViewWithShake(
+		Vector3::Lerp(m_finishCameraStartPosition, position, blend),
+		Vector3::Lerp(m_finishCameraStartLookat, focus, blend),
+		realDeltaSeconds);
+}
+
+void GameScene::DrawBattleFinishOverlay()
+{
+	if (m_battleFinish == BattleFinish::None)
+		return;
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetForegroundDrawList(viewport);
+	const ImVec2 min = viewport->Pos;
+	const ImVec2 max(min.x + viewport->Size.x, min.y + viewport->Size.y);
+	// 上下の黒帯。登場演出と同じく「ここは操作する場面ではない」と伝える。
+	const float barRate = std::clamp(m_battleFinishTime / 0.6f, 0.0f, 1.0f);
+	const float barHeight = viewport->Size.y * 0.10f * barRate * (2.0f - barRate);
+	drawList->AddRectFilled(min, ImVec2(max.x, min.y + barHeight), IM_COL32(4, 6, 10, 255));
+	drawList->AddRectFilled(ImVec2(min.x, max.y - barHeight), max, IM_COL32(4, 6, 10, 255));
+	// 最後に暗くしてリザルトへ移る。
+	const float fadeStart = m_battleFinish == BattleFinish::Victory
+		? FINISH_VICTORY_FADE_START
+		: FINISH_DEFEAT_FADE_START;
+	const float fade = std::clamp((m_battleFinishTime - fadeStart) / FINISH_FADE_SECONDS, 0.0f, 1.0f);
+	if (fade > 0.0f)
+		drawList->AddRectFilled(min, max, IM_COL32(0, 0, 0, static_cast<int>(255.0f * fade)));
 }
 
 void GameScene::BeginAttackTimeline(Combat::PlayerAttackSlot slot)
@@ -2369,8 +2679,23 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			recoveryPoseFrame = static_cast<int>(attackKeyCount - 1);
 	}
 
+	// 倒れた敵。倒れるクリップを1回だけ再生して最後の姿勢で止まる。
+	const bool enemyDead = state == enemy::MotionState::Dead;
+	// 決着の後の動きへ移るときは、直前の姿勢から短くつなぐ(攻撃の途中で倒れても姿勢が飛ばないように)。
+	const bool finishBlendState = enemyDead ||
+		(m_battleFinish != BattleFinish::None &&
+			(state == enemy::MotionState::Roar || state == enemy::MotionState::Standby));
 	if (state != m_previousEnemyMotionState)
 	{
+		if (finishBlendState && m_enemyLastSampledAnimation != nullptr)
+		{
+			m_enemyAttackBlendFromAnimation = m_enemyLastSampledAnimation;
+			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
+			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+			m_enemyAttackBlendTime = 0.0f;
+			m_enemyAttackBlendDuration = ENEMY_FINISH_BLEND_SECONDS;
+			m_enemyAttackBlendActive = true;
+		}
 		const bool wasAttackMotion =
 			m_previousEnemyMotionState == enemy::MotionState::Windup ||
 			m_previousEnemyMotionState == enemy::MotionState::Active;
@@ -2397,9 +2722,35 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
 			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
 			m_enemyAttackBlendTime = 0.0f;
+			m_enemyAttackBlendDuration = ENEMY_ATTACK_BLEND_SECONDS;
 			m_enemyAttackBlendActive = m_enemyAttackBlendFromAnimation != nullptr;
 		}
 		m_previousEnemyMotionState = state;
+	}
+	if (enemyDead && m_enemyDieAnimation != nullptr)
+	{
+		// 再生位置は倒れてからの時間で決める(スローモーションの分も自然に遅くなる)。
+		unsigned int dieKeyCount = 0;
+		for (unsigned int channelIndex = 0;
+			channelIndex < m_enemyDieAnimation->mNumChannels;
+			++channelIndex)
+		{
+			const aiNodeAnim* channel = m_enemyDieAnimation->mChannels[channelIndex];
+			if (channel != nullptr)
+				dieKeyCount = std::max(dieKeyCount, channel->mNumRotationKeys);
+		}
+		const double ticksPerSecond = m_enemyDieAnimation->mTicksPerSecond > 0.0
+			? m_enemyDieAnimation->mTicksPerSecond
+			: 30.0;
+		const float clipSeconds = static_cast<float>(m_enemyDieAnimation->mDuration / ticksPerSecond);
+		if (clipSeconds > 0.0f && dieKeyCount > 1)
+		{
+			const float lastKey = static_cast<float>(dieKeyCount - 1);
+			const float keyPosition = std::clamp(
+				m_enemies.front()->getStateTime() / clipSeconds * lastKey, 0.0f, lastKey);
+			m_enemyAnimationFrame = static_cast<int>(keyPosition);
+			m_enemyAnimationTick = keyPosition - std::floor(keyPosition);
+		}
 	}
 	// ドラゴンの歩きモーションは約1.67秒に9キーある。
 	// 約10回の固定更新ごとに1キー進め、足が地面を滑らないようにする。
@@ -2514,6 +2865,13 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				m_enemyAnimationFrame = recoveryPoseFrame;
 			}
 			break;
+		case enemy::MotionState::Dead:
+			if (m_enemyDieAnimation != nullptr)
+			{
+				holdStandingPose = false;
+				animation = m_enemyDieAnimation;
+			}
+			break;
 		default:
 			// 怯みなど。立ち姿勢に体の傾き(EnemyFlinchPose)を重ねて見せる。
 			break;
@@ -2560,11 +2918,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			if (m_enemyIntroBattleBlendTime >= ENEMY_INTRO_BATTLE_BLEND_SECONDS)
 				m_enemyIntroBattleBlendActive = false;
 		}
-		else if (m_enemyAttackBlendActive && clipDrivenAttack)
+		else if (m_enemyAttackBlendActive && (clipDrivenAttack || finishBlendState))
 		{
-			// 攻撃の入り。直前の姿勢から攻撃クリップの再生位置へ短くつなぐ。
+			// 攻撃の入り・決着の後の動きの入り。直前の姿勢から次のクリップの再生位置へ短くつなぐ。
 			const float blendRate = std::clamp(
-				m_enemyAttackBlendTime / ENEMY_ATTACK_BLEND_SECONDS, 0.0f, 1.0f);
+				m_enemyAttackBlendTime / m_enemyAttackBlendDuration, 0.0f, 1.0f);
+			m_enemyLastSampledAnimation = animation;
 			m_enemyLastSampledFrame = m_enemyAnimationFrame;
 			m_enemyLastSampledFraction = fraction;
 			m_enemyAnimationMesh->UpdateBlendedRotationAnimation(
@@ -2579,11 +2938,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				false,
 				blendRate);
 			m_enemyAttackBlendTime += std::max(deltaSeconds, 0.0f);
-			if (m_enemyAttackBlendTime >= ENEMY_ATTACK_BLEND_SECONDS)
+			if (m_enemyAttackBlendTime >= m_enemyAttackBlendDuration)
 				m_enemyAttackBlendActive = false;
 		}
 		else
 		{
+			m_enemyLastSampledAnimation = animation;
 			m_enemyLastSampledFrame = m_enemyAnimationFrame;
 			m_enemyLastSampledFraction = fraction;
 			m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame,
@@ -2638,7 +2998,8 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	{
 		// 攻撃中は再生位置をクリップの時間から直接決めているので、ここでは進めない。
 		// 立ち姿勢も最初の姿勢で止めておく。
-		if (clipDrivenAttack || holdStandingPose)
+		// 倒れるクリップも再生位置を時間から決めているので同じ。
+		if (clipDrivenAttack || holdStandingPose || enemyDead)
 			return;
 		// 尾回転の一拍(半回転と半回転の間)では脚も止める。
 		// 体が回っていないのに歩きのキーだけ進むと、その場で足踏みして見える。
@@ -2659,6 +3020,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 
 void GameScene::draw(uint64_t deltatime)
 {
+	if (m_flightActive)
+	{
+		DrawDragonFlight();
+		CaptureFrameIfRequested();
+		return;
+	}
 	// 影の生成は本描画より先に行う。
 	// ライトから見た深度を作ってから、通常のカメラで描き直す2パス構成。
 	// 影パス用のシェーダーはライトのビュー射影行列を専用の定数バッファ(b7)から
@@ -2666,6 +3033,9 @@ void GameScene::draw(uint64_t deltatime)
 	RenderShadowMap();
 
 	m_camera.Draw();
+	// 空。飛来の場面と同じ夕焼けにする(闘技場の壁の上に見える)。
+	// 以前は画面を消す色の青がそのまま見えていて、夕焼けの直後に空の色が変わってしまった。
+	m_flightBackdrop.DrawSky(m_camera.GetPosition());
 
 	// 3軸カラー
 	Color axiscol[3] = {
@@ -2882,6 +3252,7 @@ void GameScene::draw(uint64_t deltatime)
 	}
 	DrawGameplayHud();
 	DrawEnemyIntroOverlay();
+	DrawBattleFinishOverlay();
 	CaptureFrameIfRequested();
 }
 
@@ -2895,7 +3266,7 @@ void GameScene::WriteCaptureLog()
 		_wfopen_s(&m_captureLog, (m_captureDir + L"\\enemy_log.csv").c_str(), L"w");
 		if (!m_captureLog)
 			return;
-		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail\n");
+		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail,state_time,body_y,player_y,time_scale\n");
 	}
 	const enemy& e = *m_enemies.front();
 	const Vector3 enemyPos = e.getSRT().pos;
@@ -2915,7 +3286,12 @@ void GameScene::WriteCaptureLog()
 		if (GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
 			footHeight[i] = foot.y - ARENA_FLOOR_TOP_Y;
 	}
-	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f\n",
+	// 胴の高さ(倒れるクリップで体が地面へ着く瞬間を測る)と、プレイヤーの描画の高さ(接地の確認)。
+	Vector3 enemyBody{};
+	const float bodyHeight = GetEnemyBoneWorld("Armature_back2", enemyBody)
+		? enemyBody.y - ARENA_FLOOR_TOP_Y
+		: 0.0f;
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f\n",
 		m_battleSeconds,
 		static_cast<int>(e.getMotionState()),
 		static_cast<int>(e.getAttackKind()),
@@ -2928,17 +3304,27 @@ void GameScene::WriteCaptureLog()
 		footHeight[0], footHeight[1], footHeight[2], footHeight[3],
 		m_enemyMotionFx.GetPuffCount(), m_enemyMotionFx.GetRingCount(),
 		m_enemyWallPush.Length(),
-		m_playerHpTrail);
+		m_playerHpTrail,
+		e.getStateTime(),
+		bodyHeight,
+		m_player->getRenderSRT().pos.y,
+		m_battleFinish != BattleFinish::None ? BattleFinishTimeScale() : 1.0f);
 	fflush(m_captureLog);
 }
 
 void GameScene::CaptureFrameIfRequested()
 {
-	// 撮るのは、登場演出の間(capture_intro=1)か、戦闘の間のどちらか一方だけ。
-	if (m_captureDir.empty() || m_capturedFrames >= m_captureCount ||
-		m_enemyIntroActive != m_captureIntro)
+	// 撮るのは、飛来の場面(capture_flight=1)か、登場演出の間(capture_intro=1)か、戦闘の間のどれか1つだけ。
+	if (m_captureDir.empty() || m_capturedFrames >= m_captureCount)
 		return;
-	const float clock = m_captureIntro ? m_enemyIntroTime : m_battleSeconds;
+	if (m_captureFlight)
+	{
+		if (!m_flightActive)
+			return;
+	}
+	else if (m_flightActive || m_enemyIntroActive != m_captureIntro)
+		return;
+	const float clock = m_captureFlight ? m_flightTime : (m_captureIntro ? m_enemyIntroTime : m_battleSeconds);
 	const float nextTime =
 		m_captureStartSeconds + m_captureIntervalSeconds * static_cast<float>(m_capturedFrames);
 	if (clock < nextTime)
@@ -2988,6 +3374,10 @@ void GameScene::DrawGameplayHud()
 		drawList->AddRectFilledMultiColor(
 			ImVec2(min.x, max.y - bandHeight), max, clear, clear, edge, edge);
 	}
+
+	// 決着の演出の間はHUDを消す(画面の縁の赤だけは被弾の余韻として残す)。
+	if (m_battleFinish != BattleFinish::None)
+		return;
 
 	// 体力バーの赤い部分を進める。ヒットストップ中も止めずに実時間で減らす。
 	// 減った瞬間は前のフレームとの差で見るので、近接・火球のどちらの被弾でも同じように動く。
@@ -3130,8 +3520,243 @@ void GameScene::DrawControlGuide()
 	}
 }
 
+float GameScene::DragonFlightCloudRise() const
+{
+	// 急降下に入ると加速しながら雲海へ近づき、白くなる頃に雲海の高さ(約300下)を抜ける。
+	const float t = std::clamp(m_flightDiveTime / (FLIGHT_DIVE_SECONDS + FLIGHT_WHITE_SECONDS), 0.0f, 1.0f);
+	return 330.0f * t * t;
+}
+
+std::unordered_map<std::string, Matrix4x4> GameScene::BuildEnemyWingRotations(
+	float flapPhase, float open) const
+{
+	std::unordered_map<std::string, Matrix4x4> offsets;
+	if (!m_enemyAnimationMesh || open <= 0.0f)
+		return offsets;
+	// モデル空間の軸は BuildEnemyTellRotations と同じ(前 = -Y)。
+	const Vector3 forwardModel(0.0f, -1.0f, 0.0f);
+	const auto& boneGlobals = m_enemyAnimationMesh->GetDebugBoneMatrices();
+	const auto rotation = [&](const char* boneName, float angle)
+	{
+		const auto found = boneGlobals.find(boneName);
+		if (found == boneGlobals.end() || std::abs(angle) < 0.0005f)
+			return Matrix4x4::Identity;
+		Matrix4x4 global = found->second;
+		global._41 = global._42 = global._43 = 0.0f;
+		Vector3 axis = Vector3::TransformNormal(forwardModel, global.Invert());
+		if (axis.LengthSquared() < 0.000001f)
+			return Matrix4x4::Identity;
+		axis.Normalize();
+		return Matrix4x4::CreateFromAxisAngle(axis, angle);
+	};
+	// 翼はふだん背中で縦にたたまれている。先の骨を開くと、膜が横へ広がる(撮影で確かめた)。
+	// 付け根を大きく上下させ、先の骨は少し遅らせて、しなって見せる。
+	const float flap = std::sin(flapPhase) * open;
+	const float tipFlap = std::sin(flapPhase - 0.9f) * open;
+	// side: 左の翼(モデルの+X側)は1、右の翼は-1。+X側の翼は、前の軸まわりの負の回転で先が上がる。
+	// 骨の位置からは決められない(左右とも付け根が体の中心にある)。
+	const auto wing = [&](const char* rootBone, const char* tipBone, float side)
+	{
+		const float lift = FLIGHT_WING_FLAP * flap + FLIGHT_WING_FOLD_LIFT * (1.0f - open);
+		const float tip = FLIGHT_WING_TIP_OPEN * open + FLIGHT_WING_TIP_FLAP * tipFlap;
+		// このモデルの翼は飛ぶには小さいので、広げている間だけ骨ごと拡大して翼らしい大きさにする。
+		const float scale = 1.0f + (FLIGHT_WING_SCALE - 1.0f) * open;
+		offsets[rootBone] = Matrix4x4::CreateScale(scale) * rotation(rootBone, -lift * side);
+		offsets[tipBone] = rotation(tipBone, -tip * side);
+	};
+	wing("Armature_wing_lower_L", "Armature_wing_upper_L", 1.0f);
+	wing("Armature_wing_lower_R", "Armature_wing_upper_R", -1.0f);
+	return offsets;
+}
+
+std::unordered_map<std::string, Matrix4x4> GameScene::BuildEnemyFlightRotations(
+	float flapPhase, float dive) const
+{
+	std::unordered_map<std::string, Matrix4x4> offsets;
+	if (!m_enemyAnimationMesh)
+		return offsets;
+	// モデル空間の軸は BuildEnemyTellRotations と同じ(上 = -Z、前 = -Y、左右 = X)。
+	const Vector3 upModel(0.0f, 0.0f, -1.0f);
+	const Vector3 lateralModel(1.0f, 0.0f, 0.0f);
+	const Vector3 forwardModel(0.0f, -1.0f, 0.0f);
+	const auto& boneGlobals = m_enemyAnimationMesh->GetDebugBoneMatrices();
+	// モデル空間の軸で回す回転を、その骨のローカル空間の回転へ直す。
+	const auto rotation = [&](const char* boneName, const Vector3& modelAxis, float angle)
+	{
+		const auto found = boneGlobals.find(boneName);
+		if (found == boneGlobals.end() || std::abs(angle) < 0.0005f)
+			return Matrix4x4::Identity;
+		Matrix4x4 global = found->second;
+		global._41 = global._42 = global._43 = 0.0f;
+		Vector3 axis = Vector3::TransformNormal(modelAxis, global.Invert());
+		if (axis.LengthSquared() < 0.000001f)
+			return Matrix4x4::Identity;
+		axis.Normalize();
+		return Matrix4x4::CreateFromAxisAngle(axis, angle);
+	};
+	const auto bend = [&](const char* boneName, float angle)
+	{
+		offsets[boneName] = rotation(boneName, lateralModel, angle);
+	};
+
+	offsets = BuildEnemyWingRotations(flapPhase, 1.0f - dive);
+
+	// 首はまっすぐ前へ伸ばし、頭だけ少し起こして進む先を見る。
+	bend("Armature_neck1", -0.95f);
+	bend("Armature_neck2", -0.25f);
+	bend("Armature_neck3", 0.05f);
+	bend("Armature_jaw_upper", 0.30f);
+	// 脚はたたんで後ろへ流す。
+	bend("Armature_leg_front_upper_L", -0.9f);
+	bend("Armature_leg_front_upper_R", -0.9f);
+	bend("Armature_leg_back_upper_L", -0.9f);
+	bend("Armature_leg_back_upper_R", -0.9f);
+	bend("Armature_leg_front_lower_L", 0.8f);
+	bend("Armature_leg_front_lower_R", 0.8f);
+	bend("Armature_leg_back_lower_L", 0.7f);
+	bend("Armature_leg_back_lower_R", 0.7f);
+	// 尾は羽ばたきに遅れて上下にうねらせる。
+	const float tailWave = std::sin(flapPhase - 1.2f);
+	bend("Armature_tail1", 0.12f + 0.08f * tailWave);
+	bend("Armature_tail2", 0.08f + 0.14f * tailWave);
+	bend("Armature_tail3", 0.04f + 0.20f * tailWave);
+
+	return offsets;
+}
+
+void GameScene::UpdateDragonFlight(float deltaSeconds)
+{
+	m_flightTime += deltaSeconds;
+
+	// 裏のスレッドの読み込みが終わったら、仕上げをしてここから先へ進めるようにする。
+	if (m_loadFuture.valid() &&
+		m_loadFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+	{
+		m_loadFuture.get();
+		FinishSceneInit();
+		m_flightLoadFinished = true;
+	}
+	// 決定ボタンで飛ばす。読み込みが終わるまでは覚えておき、終わったら白まで飛ばす。
+	if (m_flightTime >= FLIGHT_SKIP_ALLOWED_AFTER && GameInput::Get().IsTriggered(GameAction::Confirm))
+		m_flightSkipRequested = true;
+	// 降下は「読み込みが終わった」かつ「迫ってくる姿を見せ切った」ら始める。
+	// 読み込みが長いPCでは、終わるまで目の前で羽ばたいて待つ。
+	if (m_flightLoadFinished)
+	{
+		if (m_flightSkipRequested && m_flightDiveTime < FLIGHT_DIVE_SECONDS)
+			m_flightDiveTime = FLIGHT_DIVE_SECONDS;
+		else if (m_flightTime >= FLIGHT_APPROACH_SECONDS || m_flightDiveTime > 0.0f)
+			m_flightDiveTime += deltaSeconds;
+	}
+	if (m_flightDiveTime >= FLIGHT_DIVE_SECONDS + FLIGHT_WHITE_SECONDS)
+	{
+		m_flightActive = false;
+		m_flightWhiteFade = FLIGHT_WHITE_FADE_SECONDS;
+		return;
+	}
+
+	const auto smooth = [](float value)
+	{
+		const float t = std::clamp(value, 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	};
+	const float dive = smooth(m_flightDiveTime / 0.55f);
+
+	m_flightBackdrop.Update(deltaSeconds, FLIGHT_CLOUD_SPEED);
+	// 羽ばたきは大きくゆっくり。1秒に1.5回。
+	constexpr float FLAP_RADIANS_PER_SECOND = 2.0f * PI * 1.5f;
+	m_flightFlapPhase += deltaSeconds * FLAP_RADIANS_PER_SECOND;
+
+	// 姿勢: 待機の最初のコマに、飛ぶ姿勢を重ねる。
+	if (m_enemyIdleAnimation != nullptr)
+	{
+		int frame = 0;
+		m_enemyAnimationMesh->SetCurentAnimation(m_enemyIdleAnimation);
+		m_enemyAnimationMesh->Update(m_enemyBoneComb, frame, 0.0f, true);
+	}
+	if (m_enemyAnimationMesh->AddBoneLocalRotations(BuildEnemyFlightRotations(m_flightFlapPhase, dive)))
+		m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
+	m_enemyBoneComb.Update();
+
+	// 体: 向きは+Z(カメラの方)。羽ばたきに合わせて少し上下し、降下で頭を下げて下へ抜ける。
+	const float bob = std::sin(m_flightFlapPhase - 2.2f);
+	const float dropProgress = std::clamp(
+		m_flightDiveTime / (FLIGHT_DIVE_SECONDS + FLIGHT_WHITE_SECONDS), 0.0f, 1.0f);
+	const Vector3 drop(0.0f, -FLIGHT_DIVE_DROP * dropProgress * dropProgress, 0.0f);
+	m_flightDragonSrt = SRT{};
+	m_flightDragonSrt.scale = Vector3(ENEMY_MODEL_SCALE, ENEMY_MODEL_SCALE, ENEMY_MODEL_SCALE);
+	m_flightDragonSrt.pos = Vector3(0.0f, 4.0f * bob * (1.0f - dive), 0.0f) + drop;
+	const float pitch = 0.12f + 0.03f * bob - 1.15f * dive;   // 負で頭が下がる
+	m_flightDragonSrt.rot = Vector3(PI * 0.5f + pitch, PI, 0.0f);
+
+	// カメラ: ドラゴンの進む先に置いて後ろ向きに飛ばし、夕日を背に遠くから迫ってくる姿を正面から映す。
+	// 距離を一定の速さで縮めるだけで、近づくほど速く大きくなって見える(遠近の効果)。
+	// 降下では、カメラはその場に残って見下ろす。ドラゴンだけが画面の下へ抜けていく。
+	const Vector3 localCenter = (m_localEnemyMeshBounds.min + m_localEnemyMeshBounds.max) * 0.5f;
+	const Vector3 focus = Vector3::Transform(localCenter, m_flightDragonSrt.GetMatrix());
+	const Vector3 anchor = focus - drop;
+	const float approach = std::clamp(m_flightTime / FLIGHT_APPROACH_SECONDS, 0.0f, 1.0f);
+	// 終わり際だけ少し緩めて、降下へ移るときに急に止まって見えないようにする。
+	const float approachEased = 1.0f - std::pow(1.0f - approach, 1.4f);
+	const float distance = FLIGHT_CAMERA_DISTANCE_START +
+		(FLIGHT_CAMERA_DISTANCE_END - FLIGHT_CAMERA_DISTANCE_START) * approachEased;
+	// 少しだけ横へずらす。真正面だと平らに見える。
+	const Vector3 cameraPosition = anchor + Vector3(distance * 0.12f, -6.0f + 34.0f * dive, distance);
+	const Vector3 cruiseLook = anchor + Vector3(0.0f, 4.0f, 0.0f);
+	const Vector3 lookAt = cruiseLook + (focus - cruiseLook) * (0.8f * dive);
+	m_camera.SetCinematicView(cameraPosition, lookAt);
+}
+
+void GameScene::DrawDragonFlight()
+{
+	// この場面に影は要らない(足元に地面が無い)。
+	Renderer::SetLightViewProjection(Matrix4x4::Identity, false);
+	m_camera.Draw();
+	m_flightBackdrop.DrawSky(m_camera.GetPosition());
+	m_flightBackdrop.PrepareClouds(m_camera.GetViewMatrix(), m_camera.GetPosition(), DragonFlightCloudRise());
+
+	Matrix4x4 world = m_flightDragonSrt.GetMatrix();
+	Renderer::SetWorldMatrix(&world);
+	ShaderManager::Get<CShader>("Shader3DSkin")->SetGPU();
+	m_enemyBoneComb.SetGPU();
+	m_enemyAnimationMesh->Draw();
+
+	m_flightBackdrop.DrawClouds();
+
+	// 画面に重ねるもの。上下の黒帯は登場演出と同じ高さにして、次の場面へ同じ構えのままつなぐ。
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetForegroundDrawList(viewport);
+	const ImVec2 min = viewport->WorkPos;
+	const ImVec2 max(min.x + viewport->WorkSize.x, min.y + viewport->WorkSize.y);
+	const float height = viewport->WorkSize.y;
+	// 帯は不透明にする。半透明だと、帯の向こうに太陽の光がにじんで見えた(撮影で確認)。
+	drawList->AddRectFilled(min, ImVec2(max.x, min.y + height * 0.12f), IM_COL32(4, 6, 10, 255));
+	drawList->AddRectFilled(ImVec2(min.x, max.y - height * 0.12f), max, IM_COL32(4, 6, 10, 255));
+
+	const float white = std::clamp((m_flightDiveTime - FLIGHT_DIVE_SECONDS) / FLIGHT_WHITE_SECONDS, 0.0f, 1.0f);
+	// 「NOW LOADING」は読み込みの間と、迫ってくる間。降下が始まると消える。
+	const float captionFade = std::clamp(1.0f - m_flightDiveTime / 0.15f, 0.0f, 1.0f);
+	DrawNowLoadingCaption(m_flightTime, static_cast<int>(255.0f * captionFade));
+
+	const float fadeIn = std::clamp(m_flightTime / FLIGHT_FADE_IN_SECONDS, 0.0f, 1.0f);
+	if (fadeIn < 1.0f)
+		drawList->AddRectFilled(min, max, IM_COL32(0, 0, 0, static_cast<int>(255.0f * (1.0f - fadeIn))));
+	if (white > 0.0f)
+		drawList->AddRectFilled(min, max, IM_COL32(255, 248, 236, static_cast<int>(255.0f * white)));
+}
+
 void GameScene::DrawEnemyIntroOverlay()
 {
+	// 飛来の場面で雲へ突っ込んだ白が、落ちてくる場面の上から晴れていく。
+	if (m_flightWhiteFade > 0.0f)
+	{
+		ImGuiViewport* whiteViewport = ImGui::GetMainViewport();
+		const ImVec2 whiteMin = whiteViewport->WorkPos;
+		const ImVec2 whiteMax(whiteMin.x + whiteViewport->WorkSize.x, whiteMin.y + whiteViewport->WorkSize.y);
+		const float amount = m_flightWhiteFade / FLIGHT_WHITE_FADE_SECONDS;
+		ImGui::GetForegroundDrawList(whiteViewport)->AddRectFilled(
+			whiteMin, whiteMax, IM_COL32(255, 248, 236, static_cast<int>(255.0f * amount * amount)));
+	}
 	if (!m_enemyIntroActive)
 		return;
 
@@ -3202,64 +3827,30 @@ void GameScene::init()
 	m_segments[2] = std::make_unique<Segment>(Vector3(0, 0, 0), Vector3(0, 0, 100));
 
 	// シェーダを生戁E
-	std::unique_ptr<CShader> shader{};
-	shader = std::make_unique<CShader>();
-	shader->Create(
-		"shader/vertexLightingVS.hlsl",			// 頂点シェーダー
-		"shader/vertexLightingPS.hlsl"			// ピクセルシェーダー
-	);
-	ShaderManager::Register<CShader>("Shader3D", std::move(shader));
+	// 登録済みの名前は登録し直されない(ResourceManager::Register)。登録済みならコンパイルも省く。
+	// シェーダーのコンパイルは読み込みの中で一番時間がかかる(1組で約0.3秒)。
+	if (!ShaderManager::Contains("Shader3DSkin") || !ShaderManager::Contains("Shader3D"))
+	{
+		std::unique_ptr<CShader> shader{};
+		shader = std::make_unique<CShader>();
+		shader->Create(
+			"shader/vertexLightingVS.hlsl",			// 頂点シェーダー
+			"shader/vertexLightingPS.hlsl"			// ピクセルシェーダー
+		);
+		ShaderManager::Register<CShader>("Shader3D", std::move(shader));
 
-	std::unique_ptr<CShader> skinShader = std::make_unique<CShader>();
-	// LBS/DQSハイブリッドスキニング。純粋なLBSは捻りで体積が潰れるため、
-	// 攻撃モーションで腕・胴を大きく回すと破綻していた。
-	// 純LBS版と比較したい場合は vertexLightingOneSkinVSSafe.hlsl に戻せばよい。
-	// 技術的な背景は docs/スキニング技術解説.md を参照。
-	skinShader->Create(
-		"shader/vertexLightingOneSkinVSHybrid.hlsl",
-		"shader/vertexLightingSkinPS.hlsl"
-	);
-	ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
-
-	// 影生成パス用の深度専用シェーダー。
-	// 本描画とは別に、ライトから見た深度だけを書き込むために使う。
-	m_shadowDepthShader.Create(
-		"shader/shadowDepthVS.hlsl",
-		"shader/shadowDepthPS.hlsl");
-	m_shadowDepthSkinShader.Create(
-		"shader/shadowDepthSkinVS.hlsl",
-		"shader/shadowDepthPS.hlsl");
-
-	// メチEすュを生戁E
-	for (int cnt = 0; cnt < g_loadmodel.size(); cnt++) {
-		std::unique_ptr<CStaticMesh> mesh{};
-		mesh = std::make_unique<CStaticMesh>();
-		mesh->Load(g_loadmodel[cnt].filename, g_loadmodel[cnt].texdirectoryname);
-
-		// メチEすュレンダラを生戁E
-		std::unique_ptr<CStaticMeshRenderer> meshrenderer{};
-		meshrenderer = std::make_unique<CStaticMeshRenderer>();
-		meshrenderer->Init(*mesh.get());
-
-		if (g_loadmodel[cnt].meshid.empty()) {
-			g_loadmodel[cnt].meshid = getfilename(g_loadmodel[cnt].filename);
-		}
-
-		MeshManager::RegisterMesh<CStaticMesh>(g_loadmodel[cnt].meshid, std::move(mesh));
-		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[cnt].meshid, std::move(meshrenderer));
+		std::unique_ptr<CShader> skinShader = std::make_unique<CShader>();
+		// LBS/DQSハイブリッドスキニング。純粋なLBSは捻りで体積が潰れるため、
+		// 攻撃モーションで腕・胴を大きく回すと破綻していた。
+		// 純LBS版と比較したい場合は、TitleSceneの登録と合わせて vertexLightingOneSkinVSSafe.hlsl に戻す。
+		// 技術的な背景は docs/スキニング技術解説.md を参照。
+		skinShader->Create(
+			"shader/vertexLightingOneSkinVSHybrid.hlsl",
+			"shader/vertexLightingSkinPS.hlsl"
+		);
+		ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 	}
 
-	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
-	m_playerAnimationMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
-	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
-	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
-	m_playerAnimationData.LoadAnimation(
-		"assets/motion/sword and shield walk.fbx", "walk");
-	m_playerAnimationData.LoadAnimation(
-		"assets/motion/sword and shield run.fbx", "run");
-	// 待機モーション。idleクリップは4種類あるので、これもiniで差し替えられるようにする。
-	m_playerAnimationData.LoadAnimation(
-		GetDevSetting("idle", "assets/motion/sword and shield idle.fbx"), "idle");
 	// 撮影・調整用の連続保存(dev_settings.ini の capture_dir / capture_start / capture_interval /
 	// capture_count / capture_exit)。詳しくは GameScene.h の CaptureFrameIfRequested を参照。
 	{
@@ -3272,6 +3863,7 @@ void GameScene::init()
 			m_captureCount = std::stoi(GetDevSetting("capture_count", "30"));
 			m_captureExit = GetDevSetting("capture_exit", "0") == "1";
 			m_captureIntro = GetDevSetting("capture_intro", "0") == "1";
+			m_captureFlight = GetDevSetting("capture_flight", "0") == "1";
 			m_captureUi = GetDevSetting("capture_ui", "0") == "1";
 		}
 	}
@@ -3303,6 +3895,137 @@ void GameScene::init()
 		AttackTimelineFile::Load();
 		attackTimelineLoaded = true;
 	}
+	// ドラゴンの静的メッシュ。飛来の場面で体の中心を求めるのに使うので、先に読む。
+	if (!MeshManager::ContainsMesh(g_loadmodel[1].meshid))
+	{
+		std::unique_ptr<CStaticMesh> mesh = std::make_unique<CStaticMesh>();
+		mesh->Load(g_loadmodel[1].filename, g_loadmodel[1].texdirectoryname);
+		std::unique_ptr<CStaticMeshRenderer> meshrenderer = std::make_unique<CStaticMeshRenderer>();
+		meshrenderer->Init(*mesh.get());
+		MeshManager::RegisterMesh<CStaticMesh>(g_loadmodel[1].meshid, std::move(mesh));
+		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[1].meshid, std::move(meshrenderer));
+	}
+	if (g_loadmodel[0].meshid.empty())
+		g_loadmodel[0].meshid = getfilename(g_loadmodel[0].filename);
+
+	m_enemyAnimationMesh = std::make_unique<CAnimationMesh>();
+	m_enemyAnimationMesh->Load(
+		"assets/model/CethielDragon/dragon.dae",
+		"assets/model/CethielDragon/");
+	m_enemyBoneComb.Create();
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_idle.dae", "idle");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_walk.dae", "walk");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_attack.dae", "attack");
+	m_enemyAnimationData.LoadAnimation(
+		"assets/model/CethielDragon/dragon_die.dae", "die");
+	m_enemyIdleAnimation = m_enemyAnimationData.GetAnimation("idle", 0);
+	m_enemyWalkAnimation = m_enemyAnimationData.GetAnimation("walk", 0);
+	m_enemyAttackAnimation = m_enemyAnimationData.GetAnimation("attack", 0);
+	m_enemyDieAnimation = m_enemyAnimationData.GetAnimation("die", 0);
+	// 最初は立ち姿勢(待機の最初のコマ。4本の足がすべて地面に着いた構え)。
+	if (m_enemyWalkAnimation != nullptr || m_enemyIdleAnimation != nullptr)
+	{
+		m_enemyAnimationMesh->SetCurentAnimation(
+			m_enemyIdleAnimation != nullptr ? m_enemyIdleAnimation : m_enemyWalkAnimation);
+		m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame);
+	}
+	else
+	{
+		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
+	}
+	m_enemyBoneComb.Update();
+
+	// 敵のローカル境界球とモデル境界を作成する。
+	{
+		CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[1].meshid);
+		if (mesh == nullptr || mesh->GetVertices().empty())
+		{
+			m_localbsenemy = { Vector3(0, 0, 0), 0.0f };
+			m_localEnemyMeshBounds = {
+				Vector3(0.0f, 0.0f, 0.0f),
+				Vector3(0.0f, 0.0f, 0.0f) };
+		}
+		else
+		{
+			const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
+			std::vector<Vector3> vs;
+			vs.reserve(vertices.size());
+			for (const auto& v : vertices) {
+				vs.push_back(v.Position);
+			}
+			SRT srt{};
+			m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
+			m_localEnemyMeshBounds =
+				GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
+		}
+	}
+	m_field = std::make_unique<field>(this);
+	m_field->init();
+
+	m_flightBackdrop.Initialize();
+
+	// 飛来の場面(ローディング画面)。タイトル・リザルトから来たときだけ流す。
+	// 本編だけで動かしているとき(gameloop=0・F1)は、調整のたびに待たされないよう流さない。
+	// 調整・撮影用: dev_settings.ini の flight_intro=1 でいつでも流せる。
+	const bool playFlight = GameFlow::ConsumeFlightIntroRequest() || GetDevSetting("flight_intro", "0") == "1";
+	if (playFlight && GetDevSetting("no_enemy", "0") != "1")
+	{
+		// ドラゴンが飛んでいる間に、残りを裏のスレッドで読む。終わると UpdateDragonFlight が仕上げを呼ぶ。
+		m_flightActive = true;
+		m_flightTime = 0.0f;
+		m_flightDiveTime = 0.0f;
+		m_flightFlapPhase = 0.0f;
+		UpdateDragonFlight(0.0f);
+		m_loadFuture = std::async(std::launch::async, [this]() { LoadPlayerAssetsOnWorker(); });
+		return;
+	}
+	LoadPlayerAssetsOnWorker();
+	FinishSceneInit();
+}
+
+/**
+ * @brief 裏のスレッドで読むもの。読み込みの大半(シェーダーのコンパイル・モデルとクリップのファイル解析)はここにある。
+ *
+ * ここで使ってよいのは「描画文脈(ID3D11DeviceContext)に触らないもの」だけ。
+ * デバイス(ID3D11Device)はスレッドをまたいで使えるが、描画文脈はメインスレッドが描画に使っている。
+ *   - CShader::Create … デバイスだけ
+ *   - CStaticMesh::Load・CAnimationMesh::LoadWithoutRenderResources … ファイル解析とテクスチャの作成(デバイスだけ)
+ *   - CMaterial::Create・CStaticMeshRenderer::Init は描画文脈を使うので、ここでは呼ばない(FinishSceneInit で呼ぶ)
+ *
+ * AssimpPerse はグローバル変数へ読み込むので、モデルの読み込みは同時に1つだけ。
+ * これが動いている間、メインスレッドはモデルを読まない。
+ */
+void GameScene::LoadPlayerAssetsOnWorker()
+{
+	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
+	// 影生成パス用の深度専用シェーダー。
+	// 本描画とは別に、ライトから見た深度だけを書き込むために使う。
+	m_shadowDepthShader.Create(
+		"shader/shadowDepthVS.hlsl",
+		"shader/shadowDepthPS.hlsl");
+	m_shadowDepthSkinShader.Create(
+		"shader/shadowDepthSkinVS.hlsl",
+		"shader/shadowDepthPS.hlsl");
+
+	if (!MeshManager::ContainsMesh(g_loadmodel[0].meshid))
+	{
+		m_pendingPlayerMesh = std::make_unique<CStaticMesh>();
+		m_pendingPlayerMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
+	}
+	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
+	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
+	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
+	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
+	m_playerAnimationData.LoadAnimation(
+		"assets/motion/sword and shield walk.fbx", "walk");
+	m_playerAnimationData.LoadAnimation(
+		"assets/motion/sword and shield run.fbx", "run");
+	// 待機モーション。idleクリップは4種類あるので、これもiniで差し替えられるようにする。
+	m_playerAnimationData.LoadAnimation(
+		GetDevSetting("idle", "assets/motion/sword and shield idle.fbx"), "idle");
 	m_playerWalkAnimation = m_playerAnimationData.GetAnimation("walk", 0);
 	aiAnimation* playerRunAnimation = m_playerAnimationData.GetAnimation("run", 0);
 	std::array<aiAnimation*, 3> weakAttackAnimations{};
@@ -3362,12 +4085,11 @@ void GameScene::init()
 	// ダッシュ攻撃(走りながら弱攻撃)。モンハンの片手剣の突進斬りの役。
 	m_playerAnimationData.LoadAnimation(Combat::PlayerDashAttackStep().clipFile, "dash_attack");
 	m_playerAnimator.SetDashAttackAnimation(m_playerAnimationData.GetAnimation("dash_attack", 0));
+	// 力尽きるモーション(決着の演出)。dev_settings.ini の death で差し替えて見比べられる。
+	m_playerAnimationData.LoadAnimation(
+		GetDevSetting("death", "assets/motion/sword and shield death.fbx"), "death");
+	m_playerAnimator.SetDeathAnimation(m_playerAnimationData.GetAnimation("death", 0));
 
-	// 攻撃のタイムラインエディター(F6)。クリップの読み込みとイベントの再生はこのシーンが受け持つ。
-	m_timelineEditor.Initialize({
-		[this](Combat::PlayerAttackSlot slot) { return ReloadAttackClip(slot); },
-		[this](const Combat::TimelineEvent& event) { FireTimelineEvent(event); },
-	});
 	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
 	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting("attack_hips_rotation", "1")));
 	if (playerIdleAnimation == nullptr)
@@ -3376,6 +4098,29 @@ void GameScene::init()
 		std::cout << "[Player] walk animation not loaded" << std::endl;
 	if (playerRunAnimation == nullptr)
 		std::cout << "[Player] run animation not loaded" << std::endl;
+}
+
+/**
+ * @brief 読み込みの仕上げ。描画文脈を使う準備と、読み込んだものを使う初期化。メインスレッドで呼ぶ。
+ * 飛来の場面の途中で動くので、時間のかかることはここへ置かない(裏のスレッドへ回す)。
+ */
+void GameScene::FinishSceneInit()
+{
+	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
+	if (m_pendingPlayerMesh)
+	{
+		std::unique_ptr<CStaticMeshRenderer> meshrenderer = std::make_unique<CStaticMeshRenderer>();
+		meshrenderer->Init(*m_pendingPlayerMesh);
+		MeshManager::RegisterMesh<CStaticMesh>(g_loadmodel[0].meshid, std::move(m_pendingPlayerMesh));
+		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[0].meshid, std::move(meshrenderer));
+	}
+	m_playerAnimationMesh->InitRenderResources();
+
+	// 攻撃のタイムラインエディター(F6)。クリップの読み込みとイベントの再生はこのシーンが受け持つ。
+	m_timelineEditor.Initialize({
+		[this](Combat::PlayerAttackSlot slot) { return ReloadAttackClip(slot); },
+		[this](const Combat::TimelineEvent& event) { FireTimelineEvent(event); },
+	});
 	m_playerBoneComb.Create();
 	// 最初の描画前に立ち姿を適用する。
 	// 空の姿勢のままだと、更新が止まったフレームでモデルがTポーズになるためである。
@@ -3384,36 +4129,6 @@ void GameScene::init()
 		m_playerBoneComb,
 		CharacterAnimationState{ false, false, false, 0.0f });
 
-	m_enemyAnimationMesh = std::make_unique<CAnimationMesh>();
-	m_enemyAnimationMesh->Load(
-		"assets/model/CethielDragon/dragon.dae",
-		"assets/model/CethielDragon/");
-	m_enemyBoneComb.Create();
-	m_enemyAnimationData.LoadAnimation(
-		"assets/model/CethielDragon/dragon_idle.dae", "idle");
-	m_enemyAnimationData.LoadAnimation(
-		"assets/model/CethielDragon/dragon_walk.dae", "walk");
-	m_enemyAnimationData.LoadAnimation(
-		"assets/model/CethielDragon/dragon_attack.dae", "attack");
-	m_enemyAnimationData.LoadAnimation(
-		"assets/model/CethielDragon/dragon_die.dae", "die");
-	m_enemyIdleAnimation = m_enemyAnimationData.GetAnimation("idle", 0);
-	m_enemyWalkAnimation = m_enemyAnimationData.GetAnimation("walk", 0);
-	m_enemyAttackAnimation = m_enemyAnimationData.GetAnimation("attack", 0);
-	m_enemyDieAnimation = m_enemyAnimationData.GetAnimation("die", 0);
-	// 最初は立ち姿勢(待機の最初のコマ。4本の足がすべて地面に着いた構え)。
-	if (m_enemyWalkAnimation != nullptr || m_enemyIdleAnimation != nullptr)
-	{
-		m_enemyAnimationMesh->SetCurentAnimation(
-			m_enemyIdleAnimation != nullptr ? m_enemyIdleAnimation : m_enemyWalkAnimation);
-		m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame);
-	}
-	else
-	{
-		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
-	}
-	m_enemyBoneComb.Update();
-
 	m_player = std::make_unique<player>(this);
 	m_player->init();
 	SRT playerModelSrt = m_player->getSRT();
@@ -3421,9 +4136,6 @@ void GameScene::init()
 	// 下で同じ頂点とSRTからOBBを作り直し、表示倍率と衝突寸法を一致させる。
 	playerModelSrt.scale = playerProfile.modelScale;
 	m_player->setSRT(playerModelSrt);
-
-	m_field = std::make_unique<field>(this);
-	m_field->init();
 
 	// 壁パネルを重ねて闘技場の外周を作る。
 	// 通常のm_wallsへ登録することで、プレイヤー移動、敵AI、回避距離、
@@ -3482,37 +4194,14 @@ void GameScene::init()
 		m_player->setVisualGroundOffsetY(m_playerStandingGroundOffsetY);
 	}
 
-	// 敵のローカル境界球とモデル境界を作成する。
+	// 敵は描画時にX軸へ+90度回転させている(ドラゴンのモデルが傾いた姿勢で作られているため)。
+	// この回転ではローカルの+Zがワールドの-Yへ向くので、「一番低い点」は
+	// ローカルAABBのmin.yではなくmax.zで決まる。min.yで計算すると敵が地面から浮いて見える。
 	{
-		CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[1].meshid);
-		if (mesh == nullptr || mesh->GetVertices().empty())
+		const CStaticMesh* enemyMesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[1].meshid);
+		if (enemyMesh != nullptr && !enemyMesh->GetVertices().empty())
 		{
-			m_localbsenemy = { Vector3(0, 0, 0), 0.0f };
-			m_localEnemyMeshBounds = {
-				Vector3(0.0f, 0.0f, 0.0f),
-				Vector3(0.0f, 0.0f, 0.0f) };
-		}
-		else
-		{
-			const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
-
-			std::vector<Vector3> vs;
-			vs.reserve(vertices.size());
-			for (const auto& v : vertices) {
-				vs.push_back(v.Position);
-			}
-
-			SRT srt{};
-			m_localbsenemy = GM31::GE::Collision::calcBSphere(vs, srt);
-		m_localEnemyMeshBounds =
-				GM31::GE::Collision::BuildLocalAABBFromVertices(vs);
 			const float enemyGroundY = -0.3f;
-			// 敵はenemy::getRenderSRT()で描画時にX軸へ+90度回転させている
-			// (ドラゴンのモデルが傾いた姿勢で作られているため)。
-			// この回転ではローカルの+Zがワールドの-Yへ向くので、
-			// 「一番低い点」はローカルAABBのmin.yではなくmax.zで決まる。
-			// プレイヤーと同じようにmin.yで計算すると別の軸の寸法を使うことになり、
-			// 敵が地面から浮いて見える。
 			m_enemies.front()->setVisualGroundOffsetY(
 				enemyGroundY + m_localEnemyMeshBounds.max.z * ENEMY_MODEL_SCALE);
 		}
@@ -3524,7 +4213,6 @@ void GameScene::init()
 	DebugUI::RedistDebugFunction([this]() {
 		DrawDebugWindow();
 		});
-
 }
 
 void GameScene::ApplyDebugEnemyStartHp()
@@ -3579,6 +4267,10 @@ void GameScene::DrawDebugWindow()
 	
 void GameScene::dispose()
 {
+	// 読み込みの途中でシーンを抜けるときは、裏のスレッドが終わるのを待つ。
+	// 待たないと、このシーンのメンバーへ書き込み続けたまま破棄してしまう。
+	if (m_loadFuture.valid())
+		m_loadFuture.wait();
 	m_playerAnimationMesh.reset();
 	if (m_captureLog)
 	{
@@ -3726,7 +4418,11 @@ void GameScene::ApplyEnemyTellPose(const Combat::EnemyTellPose& tell)
 	// 構えが無いときも必ず呼ぶ。前のフレームで重ねた回転を取り消すのは、この呼び出しの中だからである。
 	// 早く抜けてしまうと、再生中のクリップにキーが無い骨(待機クリップには首の2番目のキーが無い)に
 	// 回転が残り続け、次に重ねたときに積み上がってしまう。
-	if (m_enemyAnimationMesh->AddBoneLocalRotations(BuildEnemyTellRotations(tell)))
+	std::unordered_map<std::string, Matrix4x4> rotations = BuildEnemyTellRotations(tell);
+	// 落下中は翼を広げている(飛来の場面の続き)。構えと翼で同じ骨は使わないので、そのまま足す。
+	if (m_enemyFallWingOpen > 0.0f)
+		rotations.merge(BuildEnemyWingRotations(m_flightFlapPhase, m_enemyFallWingOpen));
+	if (m_enemyAnimationMesh->AddBoneLocalRotations(rotations))
 		m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
 }
 
@@ -4871,6 +5567,21 @@ void GameScene::DebugCombat()
 	}
 	if (ImGui::Button("練習台の敵を置く(動かない・攻撃しない・倒れない)"))
 		PlaceTrainingDummy();
+	// 決着の演出を、戦い切らずに確かめるボタン。Rで仕切り直せる(ゲームループでは最後にリザルトへ移る)。
+	if (!m_enemies.empty() && m_battleFinish == BattleFinish::None && !m_enemyIntroActive)
+	{
+		if (ImGui::Button("討伐の演出を見る"))
+			m_combat.ForceDefeatForDebug(true);
+		ImGui::SameLine();
+		if (ImGui::Button("力尽きる演出を見る"))
+			m_combat.ForceDefeatForDebug(false);
+	}
+	// 飛来の場面(ローディング画面)を、タイトルへ戻らずに確かめるボタン。シーンを作り直す。
+	if (ImGui::Button("飛来の場面を見る"))
+	{
+		GameFlow::RequestFlightIntro();
+		GameFlow::RequestRestart();
+	}
 	// 怒り状態の見た目と動きを、殴らずに確かめるためのボタン。
 	if (!m_enemies.empty() && ImGui::Button("敵を怒らせる(咆哮して怒り状態へ)"))
 		m_enemies.front()->forceRage();

@@ -19,6 +19,8 @@ namespace
     constexpr const char* kGuildAssetDirectory = "assets/model/KayKitGuild/";
     constexpr float kWalkStartSeconds = 2.20f;
     constexpr float kWalkDurationSeconds = 3.10f;
+    constexpr float kFadeStartSeconds = 4.40f;
+    constexpr float kFadeSeconds = 0.70f;
 
     void StartTitleTransition(bool& starting, float& transitionSeconds)
     {
@@ -119,16 +121,22 @@ void TitleScene::update(uint64_t deltatime)
                 m_playerWalkFrame);
         }
 
-        // キャラクターが画面外へ出た後にゲームシーンへ切り替える。
-        if (m_transitionSeconds >= kWalkStartSeconds + kWalkDurationSeconds + 0.15f)
+        // 暗くなるのに合わせて曲も小さくする。
+        // 以前は読み込みの直前に曲がぷつっと切れていた。
+        SoundManager::SetBgmFade(1.0f - SmoothStep((m_transitionSeconds - kFadeStartSeconds) / kFadeSeconds));
+
+        // 真っ暗になったらすぐゲームシーンへ切り替える。残りの読み込みは、ドラゴンが飛んでいる間に裏で行う。
+        if (m_transitionSeconds >= kFadeStartSeconds + kFadeSeconds)
         {
+            GameFlow::RequestFlightIntro();
             GameFlow::RequestScene("GameScene");
         }
         return;
     }
 
     // キーボード(Enter・Space)でもゲームパッド(A・Start)でも始められる。
-    if (GameInput::Get().IsTriggered(GameAction::Confirm))
+    if (GameInput::Get().IsTriggered(GameAction::Confirm) ||
+        (GameFlow::autoStart && m_timeSeconds > 0.5f))
     {
         StartTitleTransition(m_starting, m_transitionSeconds);
     }
@@ -390,9 +398,10 @@ void TitleScene::draw(uint64_t)
 
     if (m_starting)
     {
-        const float fadeProgress = SmoothStep((m_transitionSeconds - 4.40f) / 0.70f);
+        // 真っ黒まで落とす。以前は少し透けたまま(235)読み込みで止まり、次の場面へ切れずに続いて見えた。
+        const float fadeProgress = SmoothStep((m_transitionSeconds - kFadeStartSeconds) / kFadeSeconds);
         drawList->AddRectFilled(min, max,
-            IM_COL32(0, 0, 0, static_cast<int>(fadeProgress * 235.0f)));
+            IM_COL32(0, 0, 0, static_cast<int>(fadeProgress * 255.0f)));
     }
 }
 
@@ -405,8 +414,10 @@ void TitleScene::init()
     shader->Create("shader/vertexLightingVS.hlsl", "shader/vertexLightingPS.hlsl");
     ShaderManager::Register<CShader>("Shader3D", std::move(shader));
 
+    // 登録済みの名前は登録し直されない(ResourceManager::Register)ので、ここで登録した版が本編でも使われる。
+    // GameSceneと必ず同じ版にすること。違う版にすると、タイトルから始めたときだけ本編の見た目が変わる。
     auto skinShader = std::make_unique<CShader>();
-    skinShader->Create("shader/vertexLightingOneSkinVSSafe.hlsl", "shader/vertexLightingSkinPS.hlsl");
+    skinShader->Create("shader/vertexLightingOneSkinVSHybrid.hlsl", "shader/vertexLightingSkinPS.hlsl");
     ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 
     m_camera.Init();

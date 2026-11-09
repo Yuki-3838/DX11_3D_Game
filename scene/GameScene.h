@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include <memory>
 #include <array>
+#include <future>
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -15,6 +16,7 @@
 #include "../system/HitEffect.h"
 #include "../system/EnemyFireball.h"
 #include "../system/EnemyMotionEffects.h"
+#include "../system/FlightBackdrop.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
 #include "../system/CAnimationData.h"
@@ -167,7 +169,10 @@ private:
 	int m_enemyAttackBlendFromFrame = 0;
 	float m_enemyAttackBlendFromFraction = 0.0f;
 	float m_enemyAttackBlendTime = 0.0f;
+	float m_enemyAttackBlendDuration = ENEMY_ATTACK_BLEND_SECONDS;
 	bool m_enemyAttackBlendActive = false;
+	// 直前に当てていたクリップ。決着で倒れるクリップなどへ移るときのつなぎ元にする。
+	aiAnimation* m_enemyLastSampledAnimation = nullptr;
 	enemy::MotionState m_previousEnemyMotionState = enemy::MotionState::Approach;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
@@ -310,6 +315,97 @@ private:
 	float m_bufferedActionTime = 0.0f;
 	static constexpr float INPUT_BUFFER_SECONDS = 0.3f;
 	bool m_resultRequested = false;
+
+	// --- 決着の演出 ---
+	// 体力が0になった瞬間にリザルトへ切り替えず、一度スローモーションにして、
+	// 倒れるところを見せてから画面を暗くしてリザルトへ移る。
+	// 流れの間も通常の更新(アニメーション・エフェクト)を通し、時間だけを遅くする。入力と戦闘判定は止める。
+	enum class BattleFinish { None, Victory, Defeat };
+	void BeginBattleFinish(bool victory);
+	// 今のスローモーションの倍率。m_battleFinishTime(実時間)から決まる。
+	float BattleFinishTimeScale() const;
+	// 演出の進行(咆哮・地響き・カメラ・リザルトへの移動)。実時間を渡す。
+	void UpdateBattleFinish(float realDeltaSeconds);
+	void UpdateBattleFinishCamera(float realDeltaSeconds);
+	void DrawBattleFinishOverlay();
+	BattleFinish m_battleFinish = BattleFinish::None;
+	float m_battleFinishTime = 0.0f;            ///< 決着してからの実時間(秒)
+	bool m_battleFinishRoarPlayed = false;
+	bool m_battleFinishImpactDone = false;
+	// カメラ: 決着の瞬間の位置から、見せたいものを回り込む位置へつなぐ。
+	Vector3 m_finishCameraStartPosition{};
+	Vector3 m_finishCameraStartLookat{};
+	Vector3 m_finishFocusOffset{};              ///< 倒れる敵の足元の位置から注視点までのずれ
+	float m_finishCameraYaw = 0.0f;
+	float m_finishCameraOrbitDelta = 0.0f;      ///< 演出の間に回り込む角度(ラジアン)
+	// 撮影・調整用(dev_settings.ini の debug_finish)を1回だけ効かせる。
+	bool m_debugFinishDone = false;
+	// 時間配分(どれも実時間の秒)。討伐は倒れるクリップ(2.5秒)を最後まで見せてから暗くする。
+	static constexpr float FINISH_VICTORY_FREEZE_END = 0.10f;
+	static constexpr float FINISH_VICTORY_SLOW_END = 0.95f;
+	static constexpr float FINISH_VICTORY_RECOVER_END = 1.35f;
+	static constexpr float FINISH_VICTORY_FADE_START = 4.30f;
+	static constexpr float FINISH_DEFEAT_FREEZE_END = 0.06f;
+	static constexpr float FINISH_DEFEAT_SLOW_END = 0.75f;
+	static constexpr float FINISH_DEFEAT_RECOVER_END = 1.05f;
+	static constexpr float FINISH_DEFEAT_FADE_START = 3.60f;
+	static constexpr float FINISH_FADE_SECONDS = 1.00f;
+	// カメラの距離と、闘技場の内側に収める半径(壁の少し手前)。
+	static constexpr float FINISH_VICTORY_CAMERA_DISTANCE = 115.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_END = 62.0f;
+	static constexpr float FINISH_CAMERA_SAFE_RADIUS = 280.0f;
+	// これより後なら決定ボタンで飛ばせる(回避を連打していて誤って飛ばさないよう、すぐには受け付けない)。
+	static constexpr float FINISH_SKIP_ALLOWED_AFTER = 1.50f;
+	// 倒れるクリップ(dragon_die.dae)で体が地面に着く時刻(クリップの秒)。ここで地響きを出す。
+	// 撮影のログの胴の高さで測った(クリップの2.0〜2.3秒で19→9.5単位へ落ちる)。
+	static constexpr float ENEMY_DEATH_BODY_IMPACT_SECONDS = 2.15f;
+	static constexpr float ENEMY_FINISH_BLEND_SECONDS = 0.25f;
+
+	// 飛来の場面(ローディング画面)。タイトルやリザルトから来たとき、登場演出の前に流す。
+	// ドラゴンが夕日を背に迫ってくる間に、裏のスレッドで読み込む。読み込みが終わると下へ降下し、
+	// 雲に包まれて白くなったところで登場演出の落下へつなぐ。
+	void UpdateDragonFlight(float deltaSeconds);
+	// 初期化の分割。init(飛来の場面に必要なもの) → LoadPlayerAssetsOnWorker(裏のスレッド) → FinishSceneInit。
+	// 飛来の場面を流さないときは、init の中で順に呼ぶ。
+	void LoadPlayerAssetsOnWorker();
+	void FinishSceneInit();
+	std::future<void> m_loadFuture;
+	std::unique_ptr<CStaticMesh> m_pendingPlayerMesh;   ///< 裏で読んだメッシュ。登録は仕上げで行う
+	bool m_flightLoadFinished = false;
+	bool m_flightSkipRequested = false;
+	void DrawDragonFlight();
+	// 飛んでいる姿勢(骨の名前 → 重ねる回転)。dive は急降下へ移る度合い(0〜1)。
+	std::unordered_map<std::string, Matrix4x4> BuildEnemyFlightRotations(float flapPhase, float dive) const;
+	// 翼だけの回転。open は開き具合(0でふだんのたたんだ翼、1で広げて羽ばたく)。
+	// 飛来の場面と、続く落下の場面の両方で使う。
+	std::unordered_map<std::string, Matrix4x4> BuildEnemyWingRotations(float flapPhase, float open) const;
+	// 雲を突き抜ける瞬間までの高さの変化。雲海がこの分だけ下から迫る。
+	float DragonFlightCloudRise() const;
+	bool m_flightActive = false;
+	float m_flightTime = 0.0f;
+	float m_flightDiveTime = 0.0f;              ///< 降下が始まってからの秒。始まるまでは0
+	float m_flightFlapPhase = 0.0f;
+	float m_flightWhiteFade = 0.0f;             ///< 落下へ切り替わった後、白が消えるまでの残り秒
+	float m_enemyFallWingOpen = 0.0f;           ///< 落下中の翼の開き具合。着地に向けて0へたたむ
+	SRT m_flightDragonSrt{};
+	FlightBackdrop m_flightBackdrop;
+	static constexpr float FLIGHT_FADE_IN_SECONDS = 0.35f;
+	// 遠くから迫ってくる時間。読み込みが先に終わっても、ここまでは見せる。
+	static constexpr float FLIGHT_APPROACH_SECONDS = 3.00f;
+	static constexpr float FLIGHT_DIVE_SECONDS = 0.90f;     ///< 降下してから白くなり始めるまで
+	static constexpr float FLIGHT_WHITE_SECONDS = 0.25f;
+	static constexpr float FLIGHT_SKIP_ALLOWED_AFTER = 0.30f;
+	static constexpr float FLIGHT_CAMERA_DISTANCE_START = 1000.0f;  ///< 最初のカメラとの距離
+	static constexpr float FLIGHT_CAMERA_DISTANCE_END = 125.0f;     ///< 迫り切ったときの距離
+	static constexpr float FLIGHT_DIVE_DROP = 240.0f;               ///< 白くなるまでに下へ抜ける距離
+	static constexpr float FLIGHT_CLOUD_SPEED = 620.0f;
+	static constexpr float FLIGHT_WING_SCALE = 2.6f;
+	static constexpr float FLIGHT_WING_FLAP = 0.55f;        ///< 付け根を上下させる大きさ
+	static constexpr float FLIGHT_WING_TIP_OPEN = 0.9f;     ///< 先の骨を開く量
+	static constexpr float FLIGHT_WING_TIP_FLAP = 0.35f;    ///< 先の骨がしなる大きさ
+	static constexpr float FLIGHT_WING_FOLD_LIFT = 0.5f;    ///< たたむときに付け根を上げる量
+	static constexpr float FLIGHT_WHITE_FADE_SECONDS = 0.40f;
+
 	bool m_enemyIntroActive = true;
 	bool m_enemyRoarPlayed = false;
 	bool m_lockOnTarget = false;
@@ -352,6 +448,8 @@ private:
 	bool m_captureExit = false;
 	// capture_intro=1 のときは、戦闘ではなく登場演出(落下・着地・咆哮)の間を撮る。時刻は演出の始まりから数える。
 	bool m_captureIntro = false;
+	// capture_flight=1 のときは、飛来の場面を撮る。時刻は場面の始まりから数える。
+	bool m_captureFlight = false;
 	// capture_ui=1 のときは、体力バーなどのUIも写した絵を保存する(既定は3D描画だけ)。
 	bool m_captureUi = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。

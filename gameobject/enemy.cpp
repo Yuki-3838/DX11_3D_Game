@@ -55,6 +55,16 @@ void enemy::resetEncounter()
 	m_conditionTime = 0.0f;
 	m_rangedCooldown = 0.0f;
 	m_chargeStunned = false;
+	m_playerFallen = false;
+	m_victoryRoarDone = false;
+}
+
+void enemy::beginDeath()
+{
+	// 先に今の傾きを控える(changeStateの後では状態が変わって求められない)。
+	m_deathPoseStart = getAttackPoseOffset();
+	m_move = Vector3(0.0f, 0.0f, 0.0f);
+	changeState(MotionState::Dead);
 }
 
 bool enemy::isInRecovery() const
@@ -430,6 +440,29 @@ void enemy::update(uint64_t dt)
 	}
 	m_move = Vector3(0, 0, 0);
 	m_conditionTime += deltaSec;
+	// 決着の後。倒れた敵・勝ち残った敵は何もしない。
+	if (m_motionState == MotionState::Dead)
+		return;
+	if (m_motionState == MotionState::Standby)
+	{
+		// 一拍おいて勝利の咆哮を上げる。咆哮の後はここへ戻り、立っているだけになる。
+		if (!m_victoryRoarDone && m_stateTime >= VICTORY_ROAR_DELAY_SECONDS)
+		{
+			m_victoryRoarDone = true;
+			changeState(MotionState::Roar);
+		}
+		return;
+	}
+	// プレイヤーを倒したら、出している攻撃(判定中・隙)だけは最後まで動かす。
+	// 予兆は捨てる(誰もいないところへ攻撃を出さない)。
+	if (m_playerFallen &&
+		m_motionState != MotionState::Active &&
+		m_motionState != MotionState::Recovery &&
+		m_motionState != MotionState::Roar)
+	{
+		changeState(MotionState::Standby);
+		return;
+	}
 	// 怒っている時間を減らす。切れたら普通の動きへ戻る。
 	m_rageSeconds = std::max(0.0f, m_rageSeconds - deltaSec);
 	m_rangedCooldown = std::max(0.0f, m_rangedCooldown - deltaSec);
@@ -458,6 +491,12 @@ void enemy::update(uint64_t dt)
 		if (m_stateTime < Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS)
 		{
 			m_srt.pos += m_move;
+			return;
+		}
+		// 勝利の咆哮の後は立っているだけ。
+		if (m_playerFallen)
+		{
+			changeState(MotionState::Standby);
 			return;
 		}
 		// 吠え終わったら様子見へ戻す。この先は通常どおり動く。
@@ -662,6 +701,17 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	// 登場の咆哮。登場の間はAIが動かないので、外から渡された時刻で姿勢を付ける。
 	if (m_introRoarTime >= 0.0f)
 		return Combat::EnemyIntroRoarPose(m_introRoarTime);
+	// 倒れた。倒れた瞬間の傾きを短く0へ戻し、あとは倒れるクリップに任せる。
+	if (m_motionState == MotionState::Dead)
+	{
+		constexpr float DEATH_POSE_FADE_SECONDS = 0.30f;
+		const float t = std::clamp(m_stateTime / DEATH_POSE_FADE_SECONDS, 0.0f, 1.0f);
+		const float remain = 1.0f - t * t * (3.0f - 2.0f * t);
+		Combat::EnemyPoseOffset pose = m_deathPoseStart;
+		pose.pitch *= remain;
+		pose.yaw *= remain;
+		return pose;
+	}
 	// 咆哮は最優先。吠えている間は攻撃の構えも弱り具合の姿勢も出さない。
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
@@ -709,7 +759,7 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarTellPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
 	// 怯んでいる間は攻撃の構えを捨てる(全身の傾きと同じ扱い)。
-	if (m_motionState == MotionState::Flinch || isChargeStunned())
+	if (m_motionState == MotionState::Flinch || m_motionState == MotionState::Dead || isChargeStunned())
 		return Combat::EnemyTellPose{};
 	return Combat::EnemyAttackTellPose(
 		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
@@ -876,6 +926,8 @@ const char* enemy::getMotionStateName() const
 	case MotionState::Flinch: return "怯み";
 	case MotionState::Roar: return "咆哮(怒り)";
 	case MotionState::Turn: return "向き直り";
+	case MotionState::Dead: return "倒れた";
+	case MotionState::Standby: return "勝ち残り";
 	default: return "不明";
 	}
 }

@@ -509,6 +509,39 @@ void CAnimationMesh::Draw()
 
 void CAnimationMesh::Load(std::string filename, std::string texturedirectory) 
 {
+	LoadWithoutRenderResources(std::move(filename), std::move(texturedirectory));
+	InitRenderResources();
+}
+
+void CAnimationMesh::InitRenderResources()
+{
+	m_StaticMeshRenderer.Init(*this);
+	if (m_hideEmbeddedShieldSubset)
+	{
+		// 出力された装備名が入れ替わっており、Helmetというサブセットが大きな盾形、
+		// Shieldが兜の外殻になっている。兜用関節のスケールを0にせず、
+		// 描画時に盾サブセットだけを隠して攻撃中に復活しないようにする。
+		if (!m_StaticMeshRenderer.SetSubsetVisibleByKeyword(
+			"Paladin_J_Nordstrom_Helmet", false))
+			std::cout << "[Player] shield subset not found" << std::endl;
+	}
+
+	m_swordProxyRenderer.Init(*m_swordProxyMesh);
+	MATERIAL proxyMaterial{};
+	proxyMaterial.Ambient = Color(0.55f, 0.55f, 0.60f, 1.0f);
+	proxyMaterial.Diffuse = Color(1.0f, 1.0f, 1.0f, 1.0f);
+	proxyMaterial.Specular = Color(0.8f, 0.8f, 0.9f, 1.0f);
+	proxyMaterial.Emission = Color(0.12f, 0.12f, 0.16f, 1.0f);
+	proxyMaterial.Shiness = 32.0f;
+	proxyMaterial.TextureEnable = FALSE;
+	m_swordProxyMaterial.Create(proxyMaterial);
+
+	if (m_swordMesh)
+		m_swordRenderer.Init(*m_swordMesh);
+}
+
+void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
+{
 	// メッシュ読み込み
 	// アニメーション用メッシュはボーン変換を後段で適用するため、
 	// Assimp の静的頂点変換は行わない。
@@ -587,17 +620,8 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 		}
 	}
 
-	// レンダラ初期化
-	m_StaticMeshRenderer.Init(*this);
-	if (filename.find("SwordShieldPack_Player") != std::string::npos)
-	{
-		// 出力された装備名が入れ替わっており、Helmetというサブセットが大きな盾形、
-		// Shieldが兜の外殻になっている。兜用関節のスケールを0にせず、
-		// 描画時に盾サブセットだけを隠して攻撃中に復活しないようにする。
-		if (!m_StaticMeshRenderer.SetSubsetVisibleByKeyword(
-			"Paladin_J_Nordstrom_Helmet", false))
-			std::cout << "[Player] shield subset not found" << std::endl;
-	}
+	// レンダラの準備は InitRenderResources で行う(描画文脈を使うため)。
+	m_hideEmbeddedShieldSubset = filename.find("SwordShieldPack_Player") != std::string::npos;
 
 	float playerExtent = 100.0f;
 	if (!m_vertices.empty())
@@ -615,15 +639,6 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 	// FBXの状態に関係なく、剣を振る機能を確認できる描画用メッシュ。
 	m_swordProxyLength = playerExtent * 0.75f;
 	m_swordProxyMesh = std::make_unique<CGuaranteedSwordMesh>();
-	m_swordProxyRenderer.Init(*m_swordProxyMesh);
-	MATERIAL proxyMaterial{};
-	proxyMaterial.Ambient = Color(0.55f, 0.55f, 0.60f, 1.0f);
-	proxyMaterial.Diffuse = Color(1.0f, 1.0f, 1.0f, 1.0f);
-	proxyMaterial.Specular = Color(0.8f, 0.8f, 0.9f, 1.0f);
-	proxyMaterial.Emission = Color(0.12f, 0.12f, 0.16f, 1.0f);
-	proxyMaterial.Shiness = 32.0f;
-	proxyMaterial.TextureEnable = FALSE;
-	m_swordProxyMaterial.Create(proxyMaterial);
 
 	// プレイヤー武器の追加接続処理。Fallen Paladinの元FBXには分離した剣が含まれるため、
 	// 汎用デバッグ剣ではなく、抽出済みでテクスチャ付きのモデルを使う。
@@ -675,7 +690,6 @@ void CAnimationMesh::Load(std::string filename, std::string texturedirectory)
 		m_swordMesh = std::make_unique<CStaticMesh>();
 		// 読み込みノードの変換を適用し、抽出した剣が読み込み元のローカル位置に残らないようにする。
 		m_swordMesh->Load(swordPath.string(), "assets/model/", true);
-		m_swordRenderer.Init(*m_swordMesh);
 		if (!m_swordMesh->GetVertices().empty())
 		{
 			Vector3 minPosition = m_swordMesh->GetVertices().front().Position;

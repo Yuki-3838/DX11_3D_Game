@@ -33,6 +33,32 @@ namespace GameFlow
      */
     inline bool openAttackTimelineOnStart = false;
 
+    /**
+     * @brief 調整・撮影用。タイトルとリザルトを、ボタンを押さずに自動で進める。
+     * 起動時に dev_settings.ini の auto_start=1 で立てる。
+     * 撮影のために外からキー入力を送らずに、タイトルからの一連の流れを通すため。
+     */
+    inline bool autoStart = false;
+
+    /**
+     * @brief 次にゲーム本編へ入るとき、飛来の場面(ローディング画面)を流す合図。
+     * タイトルとリザルトから入るときに立てる。使ったら下ろす。
+     * 本編だけで動かしているとき(gameloop=0・F1)は立てないので、調整のたびに待たされない。
+     */
+    inline bool flightIntroRequested = false;
+
+    inline void RequestFlightIntro()
+    {
+        flightIntroRequested = true;
+    }
+
+    inline bool ConsumeFlightIntroRequest()
+    {
+        const bool result = flightIntroRequested;
+        flightIntroRequested = false;
+        return result;
+    }
+
     inline void SetResult(Result result)
     {
         lastResult = result;

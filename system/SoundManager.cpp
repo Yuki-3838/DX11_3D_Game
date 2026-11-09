@@ -282,8 +282,17 @@ namespace
 
         void StopBgm()
         {
+            SetBgmFade(1.0f);
             CloseVoice(m_bgm);
             m_bgmTrack = BgmTrack::None;
+        }
+
+        void SetBgmFade(float amount)
+        {
+            if (!m_bgm.active || m_bgm.device == nullptr)
+                return;
+            const DWORD level = static_cast<DWORD>(std::clamp(amount, 0.0f, 1.0f) * 65535.0f);
+            waveOutSetVolume(m_bgm.device, level | (level << 16));
         }
 
         void PlaySwordSwing()
@@ -495,6 +504,7 @@ namespace SoundManager
     void Init() { g_audio.Init(); }
     void Update() { g_audio.Update(); }
     void Shutdown() { g_audio.Shutdown(); }
+    void SetBgmFade(float amount) { g_audio.SetBgmFade(amount); }
     void PlayTitleBgm() { g_audio.PlayBgm(BgmTrack::Title); }
     void PlayGameBgm() { g_audio.PlayBgm(BgmTrack::Game); }
     void StopBgm() { g_audio.StopBgm(); }

@@ -41,6 +41,7 @@ protected:
 
 	// レンダラ
 	CStaticMeshRenderer m_StaticMeshRenderer{};
+	bool m_hideEmbeddedShieldSubset = false;
 	std::unique_ptr<CStaticMesh> m_swordMesh{};
 	CStaticMeshRenderer m_swordRenderer{};
 	std::string m_swordAssetPath{};
@@ -106,6 +107,10 @@ public:
 	void SetCurentAnimation(aiAnimation* currentanimation);
 
 	void Load(std::string filename, std::string texturedirectory = "");
+	// Load を2つに分けたもの。前半は描画文脈(ID3D11DeviceContext)を使わないので、裏のスレッドで呼べる。
+	// 後半はメインスレッドで呼ぶ。ふつうは Load だけ呼べばよい。
+	void LoadWithoutRenderResources(std::string filename, std::string texturedirectory = "");
+	void InitRenderResources();
 	void ApplyModelProfile(const CharacterModelProfile& profile);
 
 	// 階層構造を考慮したボーンコンビネーション行列を更新

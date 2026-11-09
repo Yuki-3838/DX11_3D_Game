@@ -11,6 +11,9 @@ namespace SoundManager
     void PlayTitleBgm();
     void PlayGameBgm();
     void StopBgm();
+    // 今流れているBGMだけを一時的に小さくする(1で元の音量、0で無音)。設定には保存しない。
+    // 画面の暗転に合わせて曲を消すのに使う。StopBgmで元に戻る。
+    void SetBgmFade(float amount);
 
     void PlaySwordSwing();
     void PlayEnemyRoar();
