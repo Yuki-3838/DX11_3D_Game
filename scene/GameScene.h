@@ -347,6 +347,8 @@ private:
 	BufferedAction m_bufferedAction = BufferedAction::None;
 	float m_bufferedActionTime = 0.0f;
 	static constexpr float INPUT_BUFFER_SECONDS = 0.3f;
+	// 回避中に押した攻撃の予約を、回避が終わるまで保つか(false で以前の扱い。比較用)。
+	bool m_holdAttackBufferDuringDodge = true;
 	bool m_resultRequested = false;
 
 	// --- 決着の演出 ---
@@ -487,6 +489,41 @@ private:
 	bool m_captureUi = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
 	float m_battleSeconds = 0.0f;
+
+	// --- 戦闘記録(比較用) ---
+	// dev_settings.ini の combat_log=ファイル名 で、一戦を通して「出来事」ごとに1行書く。
+	// 撮影用の enemy_log.csv(毎フレーム・枚数に上限)とは別に、
+	// 回避・攻撃の入力がどう扱われたか(予約・実行・期限切れ)と、
+	// 敵の攻撃がどう外れたか(前転の無敵・射程外・角度外)を後から数えるために使う。
+	// 根拠: docs/戦闘設計分析_ヒットアンドアウェイの単調化と隙をつく体験.txt の13-1・第20章。
+	void OpenCombatLog();
+	void LogCombatEvent(const char* event, const char* detail = "", float value = 0.0f, const char* note = "");
+	// 敵の攻撃の始まり・判定・出し切り・立て直しを、状態の変化から書く。
+	void LogEnemyAttackProgress();
+	FILE* m_combatLog = nullptr;
+	int m_enemyAttackSeq = 0;                ///< 一戦の中で何回目の敵の攻撃か
+	std::array<int, 6> m_enemyAttackKindCount{}; ///< 攻撃の種類ごとの回数
+	int m_enemyAttackKindTry = 0;            ///< いまの攻撃が、その種類の何回目か
+	Combat::EnemyAttackKind m_loggedEnemyAttackKind = Combat::EnemyAttackKind::Slam;
+	enemy::MotionState m_loggedEnemyState = enemy::MotionState::Standby;
+	bool m_loggedDodging = false;
+	bool m_loggedDodgeInvincible = false;
+
+	// --- 回避中の攻撃入力の自動確認 ---
+	// dev_settings.ini の input_probe=dodge_attack で、敵を動かさない状態にして
+	// 「回避を押す → input_probe_offsets 秒後に攻撃を1回だけ押す」を順に試し、戦闘記録へ結果を書く。
+	// 回避の早い時点で押した攻撃が、回避の終わりまでに予約切れで消えるかを確かめるため(分析文書の第20章)。
+	// input_probe_exit=1 なら試し終えたらゲームを終える。
+	void UpdateInputProbe(float realDeltaSeconds, bool& pressAttack, bool& pressDodge);
+	bool m_inputProbeEnabled = false;
+	bool m_inputProbeExit = false;
+	std::vector<float> m_inputProbeOffsets;
+	int m_inputProbeIndex = -1;              ///< いま試している番号。-1は開始前
+	float m_inputProbeTime = 0.0f;           ///< いまの試行を始めてからの秒(開始前は待ち時間)
+	bool m_inputProbeAttackSent = false;
+	bool m_inputProbeDodgeSent = false;
+	static constexpr float INPUT_PROBE_START_DELAY = 1.5f;  ///< 戦闘開始から最初の試行までの秒
+	static constexpr float INPUT_PROBE_TRIAL_SECONDS = 2.5f; ///< 1回の試行の長さ(攻撃が終わり、スタミナが戻るまで)
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系
