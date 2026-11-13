@@ -29,7 +29,12 @@ namespace
         WAVEHDR header{};
         std::vector<int16_t> samples;
         bool active = false;
+        // 何の音を鳴らしているか(途中で止めたい音だけ見分ける。0は区別しない)。
+        int tag = 0;
     };
+
+    // 途中で止めることがある効果音の見分け。
+    constexpr int SFX_TAG_ENEMY_ROAR = 1;
 
     enum class BgmTrack
     {
@@ -302,7 +307,17 @@ namespace
 
         void PlayEnemyRoar()
         {
-            PlaySfx(m_enemyRoarSamples);
+            PlaySfx(m_enemyRoarSamples, SFX_TAG_ENEMY_ROAR);
+        }
+
+        // 鳴っている咆哮を止める(登場の演出を飛ばしたとき、声だけが戦闘へ残らないように)。
+        void StopEnemyRoar()
+        {
+            for (Voice& voice : m_sfxVoices)
+            {
+                if (voice.active && voice.tag == SFX_TAG_ENEMY_ROAR)
+                    CloseVoice(voice);
+            }
         }
 
         void PlayDodge()
@@ -349,7 +364,7 @@ namespace
             }
         }
 
-        void PlaySfx(const std::vector<int16_t>& samples)
+        void PlaySfx(const std::vector<int16_t>& samples, int tag = 0)
         {
             if (!m_initialized && !InitializeOnDemand())
                 return;
@@ -370,7 +385,8 @@ namespace
                 selected = &m_sfxVoices.front();
                 CloseVoice(*selected);
             }
-            OpenVoice(*selected, std::vector<int16_t>(samples), m_sfxVolume);
+            if (OpenVoice(*selected, std::vector<int16_t>(samples), m_sfxVolume))
+                selected->tag = tag;
         }
 
     private:
@@ -510,6 +526,7 @@ namespace SoundManager
     void StopBgm() { g_audio.StopBgm(); }
     void PlaySwordSwing() { g_audio.PlaySwordSwing(); }
     void PlayEnemyRoar() { g_audio.PlayEnemyRoar(); }
+    void StopEnemyRoar() { g_audio.StopEnemyRoar(); }
     void PlayDodge() { g_audio.PlayDodge(); }
     void PlayDragonAttack() { g_audio.PlayDragonAttack(); }
     float GetBgmVolume() { return g_audio.GetBgmVolume(); }

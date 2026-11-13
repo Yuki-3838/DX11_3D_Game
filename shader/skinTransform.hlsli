@@ -78,8 +78,11 @@ struct SkinnedVertex
  * ボーンの一様な拡大にも対応する(飛来の場面でドラゴンの翼の骨を拡大している)。
  * デュアルクォータニオンは回転と平行移動しか表せないので、拡大は別に混ぜて、回す前の頂点へ掛ける。
  * 骨ごとの非一様な拡大には対応していない。
+ *
+ * bones には頂点の4本の骨の行列を渡す。今のフレームの骨なら SkinVertexHybrid を使えばよい
+ * (モーションブラーは、前のフレームの骨でも同じ計算をするためにこの形で呼ぶ)。
  */
-SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
+SkinnedVertex SkinVertexFromBones(VSONESKIN_IN In, float3 localNormal, float4x4 bones[4])
 {
     float4x4 identity = (float4x4) 0;
     identity[0][0] = 1.0f;
@@ -104,7 +107,7 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
             continue;
         }
 
-        float4x4 boneMatrix = BoneMatrix[In.BoneIndex[i]];
+        float4x4 boneMatrix = bones[i];
         float weight = In.BoneWeight[i];
         lbsMatrix += boneMatrix * weight;
         weightSum += weight;
@@ -185,6 +188,19 @@ SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
         ? blendedNormal / normalLength
         : localNormal;
     return result;
+}
+
+// 今のフレームの骨(BoneMatrix)でスキニングする。
+SkinnedVertex SkinVertexHybrid(VSONESKIN_IN In, float3 localNormal)
+{
+    float4x4 bones[4];
+    for (int i = 0; i < 4; ++i)
+    {
+        bones[i] = (float4x4) 0;
+        if (In.BoneIndex[i] >= 0 && In.BoneIndex[i] < MAX_BONE)
+            bones[i] = BoneMatrix[In.BoneIndex[i]];
+    }
+    return SkinVertexFromBones(In, localNormal, bones);
 }
 
 // 位置だけが必要な場合(影生成パスなど)。

@@ -31,6 +31,7 @@ enum class GameAction
 	LockOn,      // ロックオンの切り替え
 	Confirm,     // 決定(タイトル・リザルト)
 	Back,        // 戻る(リザルト→タイトル)
+	Pause,       // 戦闘中の一時停止の切り替え
 	Count
 };
 
@@ -128,6 +129,7 @@ public:
 		case GameAction::LockOn:      return pad ? "右スティック押し込み" : "Tab";
 		case GameAction::Confirm:     return pad ? "A" : "Enter";
 		case GameAction::Back:        return pad ? "B" : "Esc";
+		case GameAction::Pause:       return pad ? "START" : "Esc";
 		default:                      return "";
 		}
 	}
@@ -209,6 +211,7 @@ private:
 		m_padPressed[Index(GameAction::LockOn)] = button(XINPUT_GAMEPAD_RIGHT_THUMB);
 		m_padPressed[Index(GameAction::Confirm)] = button(XINPUT_GAMEPAD_A) || button(XINPUT_GAMEPAD_START);
 		m_padPressed[Index(GameAction::Back)] = button(XINPUT_GAMEPAD_B);
+		m_padPressed[Index(GameAction::Pause)] = button(XINPUT_GAMEPAD_START);
 
 		m_padMove = ReadStick(pad.sThumbLX, pad.sThumbLY);
 		m_padLook = ReadStick(pad.sThumbRX, pad.sThumbRY);
@@ -250,6 +253,7 @@ private:
 		m_keyboardPressed[Index(GameAction::Confirm)] =
 			input.IsKeyPressed(DIK_RETURN) || input.IsKeyPressed(DIK_SPACE);
 		m_keyboardPressed[Index(GameAction::Back)] = input.IsKeyPressed(DIK_ESCAPE);
+		m_keyboardPressed[Index(GameAction::Pause)] = input.IsKeyPressed(DIK_ESCAPE);
 
 		const float forward = static_cast<float>(keyDown(DIK_W, 'W')) - static_cast<float>(keyDown(DIK_S, 'S'));
 		const float right = static_cast<float>(keyDown(DIK_D, 'D')) - static_cast<float>(keyDown(DIK_A, 'A'));

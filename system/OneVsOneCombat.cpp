@@ -157,6 +157,8 @@ namespace
 void OneVsOneCombat::Reset()
 {
     m_playerHp = PLAYER_MAX_HP;
+    m_playerRecoverableHp = 0.0f;
+    m_playerRecoveryWait = 0.0f;
     m_enemyHp = ENEMY_MAX_HP;
     m_enemyCooldown = 0.7f;
     m_enemyAttackKind = Combat::EnemyAttackKind::Slam;
@@ -258,7 +260,8 @@ void OneVsOneCombat::Update(
     const float deltaSeconds = std::min(
         static_cast<float>(deltaMicroseconds) / 1000000.0f,
         0.1f);
-    const float distance = DistanceXZ(playerPosition, enemyPosition);
+    // 大型の敵は間合いも大きいので、表の距離と比べられるよう倍率で割る。
+    const float distance = DistanceXZ(playerPosition, enemyPosition) / Combat::EnemyReachScale();
 	m_playerHitLanded = false;
 	m_enemyHitLanded = false;
 
@@ -380,11 +383,7 @@ void OneVsOneCombat::Update(
 					// 撮影・調整用の「プレイヤーを無敵」では、体力だけ減らさない。
 					m_enemyHitLanded = true;
 					if (!m_playerDebugInvincible)
-					{
-						m_playerHp = std::max(
-							0.0f,
-							m_playerHp - static_cast<float>(enemyAttack.damage));
-					}
+						DamagePlayer(static_cast<float>(enemyAttack.damage));
 				}
 				// 判定の権利を使い切るタイミング。
 				// ほかの攻撃は「当たる瞬間」に1回だけ見るので、外れてもそこで使い切る。
@@ -422,10 +421,29 @@ bool OneVsOneCombat::ApplyEnemyProjectileHit(float damage)
 		return false;
 	// 撮影・調整用の「プレイヤーを無敵」では、体力だけ減らさない(演出は呼び出し側が出す)。
 	if (!m_playerDebugInvincible)
-		m_playerHp = std::max(0.0f, m_playerHp - damage);
+		DamagePlayer(damage);
 	if (IsPlayerDefeated())
 		m_playerAttack = { Phase::Defeated, 0.0f, false };
 	return true;
+}
+
+void OneVsOneCombat::DamagePlayer(float damage)
+{
+	const float before = m_playerHp;
+	m_playerHp = std::max(0.0f, m_playerHp - damage);
+	if (m_playerHp <= 0.0f)
+	{
+		m_playerRecoverableHp = 0.0f;
+		return;
+	}
+	// 減った分の一部を回復できる体力(赤)に足す。前の被弾の赤も残す(足し合わせる)。
+	// 赤と今の体力の合計は最大体力を超えない。
+	const float lost = before - m_playerHp;
+	m_playerRecoverableHp = std::min(
+		m_playerRecoverableHp + lost * std::clamp(PlayerRecoverableRatio, 0.0f, 1.0f),
+		PLAYER_MAX_HP - m_playerHp);
+	// 食らうたびに回復の待ち時間はやり直し(連続で食らっている間は戻らない)。
+	m_playerRecoveryWait = PlayerRecoveryDelaySeconds;
 }
 
 void OneVsOneCombat::UpdateWithoutEnemy(

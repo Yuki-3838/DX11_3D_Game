@@ -690,12 +690,27 @@ void enemy::update(uint64_t dt)
 	m_srt.pos += m_move;
 }
 
+bool enemy::isRoarFromClip() const
+{
+	return s_roarFromClip && (m_introRoarTime >= 0.0f || m_motionState == MotionState::Roar);
+}
+
+bool enemy::isAttackFromClip() const
+{
+	return s_attacksFromClip &&
+		Combat::EnemyAttackUsesAttackClip(m_attackKind) &&
+		currentAttackPhase() != Combat::EnemyAttackPhase::None;
+}
+
 Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 {
 	// 撮影・比較用。構えを入れる前の見た目を再現する(dev_settings.ini の enemy_attack_pose=0)。
 	// 怯み・弱り具合の姿勢もまとめて切る。どれも同じ「描画用SRTへ足す演出」で、
 	// 一部だけ残すと比較にならないため。
 	if (!s_attackPoseEnabled)
+		return Combat::EnemyPoseOffset{};
+	// 咆哮・攻撃の動きをクリップで見せるモデルでは、全身の傾きを足さない。
+	if (isRoarFromClip() || isAttackFromClip())
 		return Combat::EnemyPoseOffset{};
 
 	// 登場の咆哮。登場の間はAIが動かないので、外から渡された時刻で姿勢を付ける。
@@ -751,6 +766,8 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 {
 	// 全身の傾きと同じ切り替え(dev_settings.ini の enemy_attack_pose=0)で、比較用にまとめて切れる。
 	if (!s_attackPoseEnabled)
+		return Combat::EnemyTellPose{};
+	if (isRoarFromClip() || isAttackFromClip())
 		return Combat::EnemyTellPose{};
 	// 登場の咆哮。音に合わせて口を開け、吠えている間は開けたまま震わせる。
 	if (m_introRoarTime >= 0.0f)
@@ -879,7 +896,8 @@ float enemy::distanceToTarget(const Vector3& targetPosition) const
 {
 	const float x = targetPosition.x - m_srt.pos.x;
 	const float z = targetPosition.z - m_srt.pos.z;
-	return std::sqrt(x * x + z * z);
+	// 大型のモデルは間合いも大きいので、表の距離と比べられるよう倍率で割る(Combat::EnemyReachScale)。
+	return std::sqrt(x * x + z * z) / Combat::EnemyReachScale();
 }
 
 float enemy::angleToTarget(const Vector3& targetPosition) const
@@ -910,7 +928,8 @@ float enemy::facingErrorTo(const Vector3& targetPosition) const
 
 void enemy::moveInFacingDirection(float distance)
 {
-	m_move = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y)) * distance;
+	// 大型のモデルは歩幅も大きいので、動く量を倍率で掛ける(Combat::EnemyReachScale)。
+	m_move = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y)) * (distance * Combat::EnemyReachScale());
 }
 
 const char* enemy::getMotionStateName() const

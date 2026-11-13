@@ -17,6 +17,7 @@
 #include "../system/EnemyFireball.h"
 #include "../system/EnemyMotionEffects.h"
 #include "../system/FlightBackdrop.h"
+#include "../system/MotionBlur.h"
 #include "../system/ThirdPersonCamera.h"
 #include "../system/CAnimationMesh.h"
 #include "../system/CAnimationData.h"
@@ -25,6 +26,8 @@
 #include "../system/collision.h"
 #include "../system/OneVsOneCombat.h"
 #include "../system/FootLock.h"
+#include "../system/EnemyModelProfile.h"
+#include "../system/EnemyPreload.h"
 #include "../gameobject/player.h"
 #include "../gameobject/field.h"
 #include "../gameobject/wall.h"
@@ -65,6 +68,8 @@ public:
 	void StartEnemyIntro();
 	void UpdateEnemyIntro(float deltaSeconds);
 	void DrawEnemyIntroOverlay();
+	// 一時停止中の表示(画面を少し暗くして「一時停止」と再開のボタン名を出す)。
+	void DrawPauseOverlay();
 	void DrawGameplayHud();
 	void UpdateArenaCameraCollision();
 	// 敵の体がカメラとプレイヤーの間に入る場合の、許容できるカメラ距離を返す。
@@ -137,6 +142,9 @@ public:
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
 	void RenderShadowMap();
 	Matrix4x4 BuildLightViewProjection() const;
+	// キャラクターの動きを速度バッファへ描き、今の画面へブラーを掛ける。
+	// 剣の軌跡や火花までぼけないよう、キャラクターを描いた直後に呼ぶ。
+	void RenderCharacterMotionBlur();
 
 private:
 	ThirdPersonCamera m_camera;
@@ -145,18 +153,45 @@ private:
 	CCharacterAnimator m_playerAnimator;
 	BoneCombMatrix m_playerBoneComb;
 	BoneCombMatrix m_enemyBoneComb;
-	CAnimationData m_enemyAnimationData;
+	std::unique_ptr<CAnimationData> m_enemyAnimationData;
+	// タイトル・リザルトの間に裏で読んでおいた敵のモデルとクリップ(init の間だけ持つ)。
+	std::unique_ptr<EnemyPreloadData> m_enemyPreloaded;
 	CAnimationData m_playerAnimationData;
 	aiAnimation* m_playerWalkAnimation = nullptr;
 	aiAnimation* m_enemyIdleAnimation = nullptr;
 	aiAnimation* m_enemyWalkAnimation = nullptr;
 	aiAnimation* m_enemyAttackAnimation = nullptr;
 	aiAnimation* m_enemyDieAnimation = nullptr;
+	// 敵のモデル(Wyvern が置いてあれば Wyvern、無ければ Cethiel のドラゴン)。骨の名前・拡大率・クリップを持つ。
+	const EnemyModelProfile* m_enemyProfile = &GetCethielDragonProfile();
+	// 敵の拡大率。モデルの値に dev_settings.ini の enemy_scale(倍率)を掛けたもの。
+	float m_enemyModelScale = 60.0f;
+	aiAnimation* m_enemyRunAnimation = nullptr;
+	aiAnimation* m_enemyFlyAnimation = nullptr;
+	aiAnimation* m_enemyRoarAnimation = nullptr;
+	// クリップの切り替え(羽ばたき→咆哮、咆哮→歩きなど)を、直前の姿勢から短くつなぐ。
+	static constexpr float ENEMY_CLIP_SWITCH_BLEND_SECONDS = 0.30f;
+	bool m_enemyGenericBlend = false;
+	aiAnimation* m_enemyPreviousTimeDrivenClip = nullptr;
+	// 咆哮のクリップの再生位置(クリップの秒)。咆哮でなければ負。
+	float EnemyRoarClipTime(enemy::MotionState state) const;
+	// 攻撃ごとの専用クリップ(叩き付け・噛みつき・薙ぎ払い)。無ければ共通の攻撃クリップを使う。
+	std::array<aiAnimation*, 3> m_enemyAttackClipAnimations{};
+	// 歩き・走りの再生の速さを実際の移動の速さに合わせるため、敵の水平の速さを測る。
+	Vector3 m_enemyLocomotionPreviousPosition{};
+	bool m_enemyLocomotionPreviousValid = false;
+	float m_enemyLocomotionSpeed = 0.0f;
+	aiAnimation* EnemyAttackAnimationFor(Combat::EnemyAttackKind kind) const;
+	const EnemyAttackClipBinding* EnemyAttackBindingFor(Combat::EnemyAttackKind kind) const;
+	bool GetEnemyBoneWorld(EnemyBone role, Vector3& out) const;
+	bool GetEnemyStrikeSegment(EnemyStrikePart part, Vector3& root, Vector3& tip) const;
 	int m_enemyAnimationFrame = 0;
 	// 次のキーまでの進み具合(0〜1)。経過時間で進める(fpsに依存させない)。
 	float m_enemyAnimationTick = 0.0f;
 	// カットシーン終了時のIdle姿勢を、戦闘開始時のWalk先頭へ短時間でつなぐ。
 	static constexpr float ENEMY_INTRO_BATTLE_BLEND_SECONDS = 0.18f;
+	// 登場の演出(着地と咆哮)を決定ボタンで飛ばせるようになるまでの秒数。
+	static constexpr float ENEMY_INTRO_SKIP_ALLOWED_AFTER = 0.30f;
 	bool m_enemyIntroBattleBlendActive = false;
 	float m_enemyIntroBattleBlendTime = 0.0f;
 	int m_enemyIntroBlendFromFrame = 0;
@@ -191,6 +226,11 @@ private:
 	CShader m_shadowDepthShader;
 	CShader m_shadowDepthSkinShader;
 	bool m_shadowEnabled = true;
+	// キャラクターのモーションブラー。dev_settings.ini の motion_blur=0 で切れる(見比べる撮影用)。
+	MotionBlur m_motionBlur;
+	bool m_motionBlurEnabled = true;
+	// dev_settings.ini の lockon_at によるロックオンを済ませたか。
+	bool m_debugLockOnAtDone = false;
 	// 攻撃中だけカメラを寄せる。引いたままだと画面内のキャラクターが小さく、
 	// 振りの迫力が出ないため、踏み込みに合わせて距離を詰める。
 	// 剣の軌跡。武器ボーン由来のワールド座標だけを使うため、
@@ -231,24 +271,17 @@ private:
 	// 敵は被弾時に発光させ、プレイヤー被弾時は画面端を赤くする。
 	float m_enemyHitFlashTime = 0.0f;
 	float m_playerDamageFlashTime = 0.0f;
-	// 体力バーの赤い部分(減った分)。被弾すると緑はすぐ減り、赤は少し待ってから追いかけて減る。
-	// どれだけ食らったかが一目で分かるようにする(モンスターハンターの体力バーの見え方を参考)。
+	// 体力バーの赤い部分の右端(今の体力 + 時間で戻る体力)。描画と撮影ログ用。
+	// 赤の量・戻る速さは OneVsOneCombat が持つ(実際に体力が戻るので戦闘側の値)。
+	// 調整値は CombatAttackTable.h の PLAYER_RECOVERY_*。
 	float m_playerHpTrail = Combat::Tuning::PLAYER_MAX_HP;
-	float m_playerHpLastFrame = Combat::Tuning::PLAYER_MAX_HP;
-	float m_playerHpTrailHoldSeconds = 0.0f;
-	// 赤が減り始めるまでの待ち時間と、減る速さ(体力/秒)。連続で食らうと待ち時間はやり直しになる。
-	// モンハンワールドの赤い部分は「1.5秒ごとに体力1」ずつ変わる(攻略wikiの実測。
-	// 回復速度スキルLv1で0.75秒、ワイルズ・ライズでもLv1で2倍と書かれており、基準の1.5秒と合う)。
-	// 最大体力も同じ100なので、その速さ(約0.67/秒)と最初の1目盛りまでの1.5秒をそのまま使う。
-	// 以前の0.6秒・25/秒では、10の被弾の赤が1秒で消えてしまい速すぎた(ユーザー判断 2026-11-02)。
-	// デバッグ表示の「戦闘」タブで変えられる(ゲームを終えると元に戻る)。
-	float m_playerHpTrailHoldTime = 1.5f;
-	float m_playerHpTrailDrainPerSecond = 1.0f / 1.5f;
 	float m_cameraBaseDistance = 70.0f;
 	float m_cameraDistanceCurrent = 70.0f;
 	float m_cameraBaseTargetHeight = 25.0f;
 	// マウスで視点を回すか(カーソルをゲーム画面に閉じ込める)。左Altで切り替える。
 	bool m_mouseLookCaptured = true;
+	// 戦闘中の一時停止(Esc・パッドのSTART)。止めている間は update の大半を通さない。
+	bool m_paused = false;
 	// 足の接地(フットロック)。移動中、接地している足のつま先をワールドへ固定して脚をIKで合わせる。
 	void UpdateFootLock(float deltaSeconds);
 	// 撮影・調整用: 動かない・攻撃しない・倒れない敵(練習台)をプレイヤーの正面へ置く。

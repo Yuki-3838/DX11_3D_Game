@@ -17,6 +17,8 @@ namespace SoundManager
 
     void PlaySwordSwing();
     void PlayEnemyRoar();
+    // 鳴っている咆哮だけを止める(登場の演出を飛ばしたとき用)。
+    void StopEnemyRoar();
     void PlayDodge();
     void PlayDragonAttack();
 

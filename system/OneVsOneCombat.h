@@ -95,6 +95,29 @@ public:
 		bool playerHeavyAttackTriggered);
 
     float GetPlayerHp() const { return m_playerHp; }
+    // 回復できる体力(体力バーの赤い部分)。今の体力の上に、この量だけ時間で戻る。
+    float GetPlayerRecoverableHp() const { return m_playerRecoverableHp; }
+    // 回復できる体力を時間で戻す。戦闘中だけ呼ぶ(一時停止・演出の間は呼ばない)。
+    void UpdatePlayerRecovery(float deltaSeconds)
+    {
+        if (IsPlayerDefeated())
+        {
+            m_playerRecoverableHp = 0.0f;
+            return;
+        }
+        if (m_playerRecoveryWait > 0.0f)
+        {
+            m_playerRecoveryWait -= deltaSeconds;
+            return;
+        }
+        const float heal = std::min(m_playerRecoverableHp, PlayerRecoveryPerSecond * std::max(deltaSeconds, 0.0f));
+        m_playerHp = std::min(PLAYER_MAX_HP, m_playerHp + heal);
+        m_playerRecoverableHp -= heal;
+    }
+    // 調整用(デバッグ表示)。初期値は Combat::Tuning の PLAYER_RECOVERY_*。
+    float PlayerRecoveryDelaySeconds = Combat::Tuning::PLAYER_RECOVERY_DELAY_SECONDS;
+    float PlayerRecoveryPerSecond = Combat::Tuning::PLAYER_RECOVERY_PER_SECOND;
+    float PlayerRecoverableRatio = Combat::Tuning::PLAYER_RECOVERABLE_RATIO;
     float GetEnemyHp() const { return m_enemyHp; }
     float GetPlayerMaxHp() const { return PLAYER_MAX_HP; }
     float GetEnemyMaxHp() const { return ENEMY_MAX_HP; }
@@ -183,6 +206,10 @@ private:
 	// (通常は1回。尾回転だけ半回転ごとに1回)。
 
     float m_playerHp = PLAYER_MAX_HP;
+    float m_playerRecoverableHp = 0.0f;
+    float m_playerRecoveryWait = 0.0f;
+    // プレイヤーの体力を減らし、減った分の一部を回復できる体力(赤)にする。
+    void DamagePlayer(float damage);
     float m_enemyHp = ENEMY_MAX_HP;
     float m_enemyCooldown = 0.7f;
     // 敵が現在出している攻撃の種類。時間・威力・射程はここから引く。

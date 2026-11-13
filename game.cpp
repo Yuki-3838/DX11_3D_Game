@@ -14,6 +14,7 @@
 #include	"system/GameInput.h"
 #include    "system/GameFlow.h"
 #include    "system/SoundManager.h"
+#include    "system/StartupLog.h"
 
 namespace
 {
@@ -102,7 +103,9 @@ bool ResolveDebugVisible()
 void gameinit()
 {
 	// レンダラの初期化
+	LogStartup("gameinit start");
 	Renderer::Init();
+	LogStartup("Renderer::Init done");
 
 	// DirectInputの初期化
 	CDirectInput::GetInstance().Init(Application::GetHInstance(), 
@@ -113,6 +116,7 @@ void gameinit()
 	// デバッグUIの初期化
 	DebugUI::Init(Renderer::GetDevice(), Renderer::GetDeviceContext());
 	SoundManager::Init();
+	LogStartup("DebugUI/Sound init done");
 
 	// シーンマネージャの初期化
 	SceneManager::Init();
@@ -128,6 +132,7 @@ void gameinit()
 	DebugUI::SetGameplayDefaultVisible(debugVisible);
 	// ゲームループを使うならタイトルから。本編だけなら直接ゲームへ。
 	SceneManager::SetCurrentScene(GameFlow::useGameLoop ? "TitleScene" : "GameScene");
+	LogStartup("first scene init done");
 	UpdateWindowTitle();
 	if (debugVisible)
 	{
@@ -194,6 +199,12 @@ void gamedraw(uint64_t deltatime)
 
 	// シーンマネージャの描画
 	SceneManager::Draw(deltatime);
+	static bool firstFrameLogged = false;
+	if (!firstFrameLogged)
+	{
+		firstFrameLogged = true;
+		LogStartup("first frame drawn");
+	}
 
 	// デバッグUIの描画
 	DebugUI::Render();

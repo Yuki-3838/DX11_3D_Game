@@ -1,6 +1,7 @@
 #include	<vector>
 #include	<string>
 #include	"dx11helper.h"
+#include	"ShaderBlobCache.h"
 
 #pragma comment(lib,"d3dcompiler.lib")
 
@@ -91,6 +92,11 @@ HRESULT CompileShader(const char* szFileName, LPCSTR szEntryPoint, LPCSTR szShad
 //--------------------------------------------------------------------------------------
 HRESULT CompileShaderFromFile(const char* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut)
 {
+	// Reuse bytecode compiled earlier in this process (see ShaderBlobCache.h).
+	const ShaderBlobCache::Key cacheKey = ShaderBlobCache::MakeKey(szFileName, szEntryPoint, szShaderModel);
+	if (ShaderBlobCache::Find(cacheKey, ppBlobOut))
+		return S_OK;
+
 	ID3DBlob* p1 = nullptr;
 
 	HRESULT hr = S_OK;
@@ -133,6 +139,7 @@ HRESULT CompileShaderFromFile(const char* szFileName, LPCSTR szEntryPoint, LPCST
 		return hr;
 	}
 	if (pErrorBlob) pErrorBlob->Release();
+	ShaderBlobCache::Store(cacheKey, *ppBlobOut);
 
 	return S_OK;
 }

@@ -10,9 +10,13 @@
  */
 struct CameraLookInput
 {
-	float deltaX = 0.0f;   ///< 横方向の移動量(マウスの移動量。右が正)
-	float deltaY = 0.0f;   ///< 縦方向の移動量(下が正)
-	bool active = false;   ///< 視点操作を受け付けているか(カーソルを出している間はfalse)
+	float deltaX = 0.0f;   ///< マウスの横の移動量(カウント。右が正)
+	float deltaY = 0.0f;   ///< マウスの縦の移動量(カウント。下が正)
+	bool active = false;   ///< マウスの視点操作を受け付けているか(カーソルを出している間はfalse)
+	// ゲームパッドの右スティック(-1〜1)。マウスとは別に扱う。
+	// マウスは「動かした量 = 回る量」、スティックは「倒した量 = 回る速さ」で、性質が違うため。
+	float stickX = 0.0f;   ///< 右が正
+	float stickY = 0.0f;   ///< 上が正
 };
 
 /**
@@ -79,20 +83,40 @@ public:
 	float GetDesiredDistance() const { return m_desiredDistance; }
 	float GetTargetHeight() const { return m_targetHeight; }
 	float GetMouseSensitivity() const { return m_mouseSensitivity; }
+	float GetMouseSmoothSeconds() const { return m_mouseSmoothSeconds; }
 	bool IsAutoFollowEnabled() const { return m_autoFollowEnabled; }
 	Matrix4x4 GetViewMatrix() const { return m_camera.GetViewMatrix(); }
 	Matrix4x4 GetProjMatrix() const { return m_camera.GetProjMatrix(); }
 	// 遮蔽判定のため、実際に使われているカメラ位置と注視点を参照する。
 	Vector3 GetPosition() const { return m_camera.GetPosition(); }
 	Vector3 GetLookat() const { return m_camera.GetLookat(); }
+	// カメラが追っている点(揺れ・ロックオンのずれを含まない)。
+	// モーションブラーで、カメラの追従の分を動きから打ち消すのに使う。
+	Vector3 GetFollowAnchor() const { return m_anchor; }
 
 	void SetTargetHeight(float height) { m_targetHeight = height; }
+	// 大型の敵に合わせてカメラを引く倍率(距離)と、注視点の高さの倍率。Init・BeginBattleTransition より前に呼ぶ。
+	// 既定の1なら従来どおり(距離70・注視点の高さ25、ロックオン中は64〜112)。
+	void SetFramingScale(float distanceScale, float targetHeightScale)
+	{
+		m_framingScale = distanceScale;
+		m_framingTargetScale = targetHeightScale;
+	}
 	void SetMouseSensitivity(float sensitivity) { m_mouseSensitivity = sensitivity; }
+	void SetMouseSmoothSeconds(float seconds) { m_mouseSmoothSeconds = seconds > 0.0f ? seconds : 0.0f; }
 	void SetAutoFollowEnabled(bool enabled) { m_autoFollowEnabled = enabled; }
 	void SetLookDistance(float distance);
 	// 闘技場の壁や敵の体がプレイヤーとカメラの間に入る場合はカメラを引き寄せる。
 	// 負の値を指定すると通常の距離に戻す。
 	void SetCollisionDistance(float distance);
+	// カメラが出てはいけない範囲(原点を中心とする水平の円の半径)。0以下なら制限しない。
+	// SetCollisionDistanceは距離を補間で縮めるので、速く回ると遅れてはみ出すことがある。
+	// 揺れも後から足される。そうした分も含めて、最後にこの円の中へ収める。
+	void SetBoundaryRadius(float radius) { m_boundaryRadius = radius; }
+	// 壁の判定に使う安全円の半径(GameScene の壁の判定と同じ値)。0以下なら壁を考えない。
+	// ロックオン中、この円に阻まれてカメラの後ろに余地が無いときは、壁に沿って横へ回り込む。
+	void SetWallSafeRadius(float radius) { m_wallSafeRadius = radius; }
+	float GetWallSlideYaw() const { return m_wallSlideYaw; }
 	// 操作を受け付けない短い登場演出で、カメラ位置と注視点を直接指定する。
 	void SetCinematicView(const Vector3& cameraPosition, const Vector3& lookAt)
 	{
@@ -117,6 +141,10 @@ private:
 	// 衝突による距離の制限を反映した、実際に使う距離を滑らかに動かす。
 	void UpdateDistance(float desiredDistance, float deltaSeconds);
 	Vector3 BoomOffset(float distance) const;
+	// 追従点からyawの向き(カメラ側)へ、壁の安全円まで取れる水平距離。
+	float HorizontalRoom(float yaw) const;
+	// 壁を背にしているとき、背後の向き(behindYaw)からどれだけ横へずらせば余地が取れるか。
+	float FindWallSlideYaw(float behindYaw, float wantedHorizontal) const;
 	void ApplyView(
 		const Vector3& position,
 		const Vector3& lookat,
@@ -133,20 +161,35 @@ private:
 	// 0.0010では「速すぎる」との指摘があったため0.00045まで下げた(デバッグ表示のスライダーで調整可)。
 	float m_mouseSensitivity = 0.00045f;
 	// --- マウスの慣らし ---
-	// 生の移動量をそのまま足すと、1フレームの飛び込み量がそのまま視点の飛びになる。
-	// いったん「これから回す分」として溜めて、毎フレーム一部だけ使う。
-	// 手を止めれば残りも指数的に消えるので、流れるように止まる。
+	// 既定は0(慣らしなし): マウスを動かした量をそのフレームで全部回す。
+	// モンハン・エルデンリングのPC版と同じで、手を止めた瞬間にカメラも止まる。
+	// 以前は55ミリ秒の慣らしに「1秒に4.2ラジアンまで」の上限を重ねていた。
+	// 素早く振ると上限で使い切れない分が溜まり、手を止めた後もカメラが回り続けて
+	// 「ぬるっとする」「滑る」と指摘された(2026-11-10)。上限は撤廃し、慣らしは調整用に残す。
+	float m_mouseSmoothSeconds = 0.0f;
 	float m_pendingYaw = 0.0f;
 	float m_pendingPitch = 0.0f;
-	// 慣らしの時間(秒)。大きいほど滑らかだが、操作が遅れて感じる。
-	static constexpr float LOOK_SMOOTH_SECONDS = 0.055f;
-	// 1秒あたりの回転の上限(ラジアン)。マウスを勢いよく振っても視点が飛ばない。
-	static constexpr float LOOK_MAX_SPEED = 4.2f;
+	// --- スティック ---
+	// 倒した瞬間に最高速で回ると硬く、離した後に惰性で回ると滑って感じる。
+	// 回る速さを、倒したときは短く立ち上がらせ、離したときはすぐ止める。
+	float m_stickYawSpeed = 0.0f;
+	float m_stickPitchSpeed = 0.0f;
+	// 自動追従の効き(0〜1)。待ち時間が過ぎてから少しずつ効かせる。
+	// いきなり最大の速さで回り始めると、カメラが勝手に滑り出したように見える。
+	float m_autoFollowWeight = 0.0f;
+	// 視点操作の途中の状態(溜めた回転・スティックの速さ・自動追従の効き)を捨てる。
+	void ClearLookState();
 	float m_lookDistance = 70.0f;
 	float m_desiredDistance = 70.0f;
 	float m_currentDistance = 70.0f;
 	float m_collisionDistance = -1.0f;
+	float m_boundaryRadius = 0.0f;
+	float m_wallSafeRadius = 0.0f;
+	// ロックオン中、壁に沿って背後の向きからずらしている量(ラジアン)。
+	float m_wallSlideYaw = 0.0f;
 	float m_targetHeight = 25.0f;
+	float m_framingScale = 1.0f;
+	float m_framingTargetScale = 1.0f;
 
 	// 追従点(プレイヤーの注視する高さ)と、注視点の追従点からのずれ量(ロックオン中に敵の方へ寄せる)。
 	Vector3 m_anchor{ 0.0f, 0.0f, 0.0f };

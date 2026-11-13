@@ -198,6 +198,9 @@ public:
     static ID3D11DeviceContext* GetDeviceContext(void) { return m_DeviceContext.Get(); }
     static void SetBlendState(int nBlendState);
     static IDXGISwapChain* GetSwapChain() { return m_SwapChain.Get(); }
+    // 本描画の描画先。別の描画先へ切り替えて本描画の深度を読むポストエフェクトで使う。
+    static ID3D11RenderTargetView* GetMainRenderTargetView() { return m_RenderTargetView.Get(); }
+    static ID3D11DepthStencilView* GetMainDepthStencilView() { return m_DepthStencilView.Get(); }
     static void ClearDepthBuffer() {
         m_DeviceContext->ClearDepthStencilView(m_DepthStencilView.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
     }

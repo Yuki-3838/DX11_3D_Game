@@ -8,6 +8,7 @@
 #include "../system/SoundManager.h"
 #include "../system/imgui/imgui.h"
 #include <dinput.h>
+#include "../system/EnemyPreload.h"
 
 void ResultScene::update(uint64_t deltatime)
 {
@@ -83,6 +84,8 @@ void ResultScene::init()
     DebugUI::SetVisible(false);
     DebugUI::SetCursorVisible(true);
     SoundManager::StopBgm();
+    // リザルトを見せている間に、次の戦いの敵のモデルを裏で読んでおく(再戦の黒い画面を短くする)。
+    EnemyPreload::StartForNextBattle();
 }
 
 void ResultScene::dispose() {}

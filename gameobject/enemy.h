@@ -142,9 +142,21 @@ public:
 	// 全個体で共通の設定なので静的に持つ。
 	static void setAttackPoseEnabled(bool enabled) { s_attackPoseEnabled = enabled; }
 	static bool isAttackPoseEnabled() { return s_attackPoseEnabled; }
+	// 咆哮・攻撃(叩き付け・噛みつき・薙ぎ払い)の動きがクリップに入っているモデル(Wyvern)では、
+	// 手続きで足す全身の傾き・首やあごの構えを出さない(クリップの動きに重なって形が崩れるため)。
+	static void setClipDrivenPoses(bool roar, bool attacks)
+	{
+		s_roarFromClip = roar;
+		s_attacksFromClip = attacks;
+	}
 
 private:
 	static inline bool s_attackPoseEnabled = true;
+	static inline bool s_roarFromClip = false;
+	static inline bool s_attacksFromClip = false;
+	// クリップで動きを見せている攻撃・咆哮の最中か(上の設定と今の状態から)。
+	bool isRoarFromClip() const;
+	bool isAttackFromClip() const;
 
 	void changeState(MotionState nextState);
 	// 描画用の構え(EnemyAttackPose.h)へ渡すため、AIの状態を攻撃の段階へ変換する。

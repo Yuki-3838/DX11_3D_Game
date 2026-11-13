@@ -6,6 +6,8 @@
 
 void CStaticMesh::Load(std::string filename, std::string texturedirectory, bool pretransformVertices)
 {
+	// The assimp loader shares global work buffers; serialize loads across threads (AssimpPerse.h LoadMutex).
+	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
 	std::vector<GM31::GE::myAssimp::SUBSET> subsets{};					// サブセット情報
 	std::vector<std::vector<GM31::GE::myAssimp::VERTEX>> vertices{};	// 頂点データ（メッシュ単位）
 	std::vector<std::vector<unsigned int>> indices{};					// インデックスデータ（メッシュ単位）

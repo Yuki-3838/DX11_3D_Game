@@ -483,26 +483,40 @@ void CAnimationMesh::Draw()
 {
 	// メッシュ描画
 	m_StaticMeshRenderer.Draw();
-	const bool drawProxy = m_swordUseGuaranteedProxy && m_swordProxyMesh;
-	const bool drawFbx = !m_swordUseGuaranteedProxy && m_swordMesh;
-	if (m_swordEnabled && m_swordWorldSegmentValid && (drawProxy || drawFbx))
+	Matrix4x4 swordWorld{};
+	if (GetAttachedSwordWorldMatrix(swordWorld))
 	{
 		Matrix4x4 parentWorld = Renderer::GetWorldMatrix();
-		Renderer::SetWorldMatrix(&m_swordWorldMatrix);
+		Renderer::SetWorldMatrix(&swordWorld);
 		if (auto* swordShader = ShaderManager::Get<CShader>("Shader3D"))
 		{
 			swordShader->SetGPU();
-			if (drawProxy)
-			{
-				m_swordProxyMaterial.SetGPU();
-				m_swordProxyRenderer.Draw();
-			}
-			else
-			{
-				m_swordRenderer.Draw();
-			}
+			DrawAttachedSwordGeometry();
 		}
 		Renderer::SetWorldMatrix(&parentWorld);
+	}
+}
+
+bool CAnimationMesh::GetAttachedSwordWorldMatrix(Matrix4x4& outWorld) const
+{
+	const bool drawProxy = m_swordUseGuaranteedProxy && m_swordProxyMesh;
+	const bool drawFbx = !m_swordUseGuaranteedProxy && m_swordMesh;
+	if (!m_swordEnabled || !m_swordWorldSegmentValid || (!drawProxy && !drawFbx))
+		return false;
+	outWorld = m_swordWorldMatrix;
+	return true;
+}
+
+void CAnimationMesh::DrawAttachedSwordGeometry()
+{
+	if (m_swordUseGuaranteedProxy && m_swordProxyMesh)
+	{
+		m_swordProxyMaterial.SetGPU();
+		m_swordProxyRenderer.Draw();
+	}
+	else if (m_swordMesh)
+	{
+		m_swordRenderer.Draw();
 	}
 }
 
@@ -542,6 +556,8 @@ void CAnimationMesh::InitRenderResources()
 
 void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
 {
+	// 読み込みの作業領域(AssimpPerse)は共有なので、取り出し終わるまで排他する(敵の先読みが裏のスレッドで読むため)。
+	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
 	// メッシュ読み込み
 	// アニメーション用メッシュはボーン変換を後段で適用するため、
 	// Assimp の静的頂点変換は行わない。
@@ -813,6 +829,13 @@ void CAnimationMesh::BuildLocalPoseMap(
 
 		// assimp SRT=>DX版　SRT
 		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DX化
+		// 拡大のキーは使うと決めたモデルだけ読む(SetUseAnimationScaleKeys)。
+		if (m_useAnimationScaleKeys && nodeAnim->mNumScalingKeys > 0)
+		{
+			const aiVector3D scale =
+				nodeAnim->mScalingKeys[keyIndex(nodeAnim->mNumScalingKeys, 0)].mValue;
+			s = Vector3(scale.x, scale.y, scale.z);
+		}
 		Vector3 t = { pos.x,pos.y,pos.z };	// 20240714 DX化
 		Quaternion r{};						// 20240714 DX化
 
@@ -1002,8 +1025,13 @@ float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
 
 	float lowestHeight = (std::numeric_limits<float>::max)();
 	bool hasVertex = false;
-	for (const VERTEX_3D& vertex : m_vertices)
+	// 頂点が多いモデルは等間隔に間引いて見る(足の指のように地面に着く部分は頂点が密なので、間引いても拾える)。
+	const size_t stride = m_groundingSampleBudget > 0
+		? std::max<size_t>(1, m_vertices.size() / m_groundingSampleBudget)
+		: 1;
+	for (size_t vertexIndex = 0; vertexIndex < m_vertices.size(); vertexIndex += stride)
 	{
+		const VERTEX_3D& vertex = m_vertices[vertexIndex];
 		Vector3 skinned{};
 		float weightSum = 0.0f;
 		for (int slot = 0; slot < 4; ++slot)

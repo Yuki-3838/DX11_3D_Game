@@ -3,6 +3,7 @@
 #include	<assimp\scene.h>
 #include	<assimp\postprocess.h>
 #include	<assimp/cimport.h>
+#include	<mutex>
 #include	"CTexture.h"
 #include	"CTreeNode.h"
 
@@ -65,6 +66,16 @@ namespace myAssimp
 		std::string filename,
 		std::string texturedirectory,
 		bool pretransformVertices = false);
+
+	// GetModelData は読み込んだ結果を共有の作業領域(この名前空間の変数)へ置き、呼び出し側が Get〜 で取り出す。
+	// 裏のスレッドでも読む(敵の先読み EnemyPreload・GameScene の読み込み)ので、
+	// GetModelData から取り出し終わるまでをこれで排他する(CStaticMesh::Load・CAnimationMesh の読み込み)。
+	// CAnimationMesh の読み込みは中で CStaticMesh::Load を呼ぶので、同じスレッドから重ねて取れるようにしてある。
+	inline std::recursive_mutex& LoadMutex()
+	{
+		static std::recursive_mutex mutex;
+		return mutex;
+	}
 
 	std::vector<SUBSET> GetSubsets();
 

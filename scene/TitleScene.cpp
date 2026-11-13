@@ -13,6 +13,8 @@
 #include <cmath>
 #include <dinput.h>
 #include <Windows.h>
+#include "../system/StartupLog.h"
+#include "../system/EnemyPreload.h"
 
 namespace
 {
@@ -357,7 +359,7 @@ void TitleScene::draw(uint64_t)
 
     if (!m_starting)
     {
-        const float menuHeight = buttonH * 2.0f + 66.0f;
+        const float menuHeight = buttonH * 2.0f + 44.0f;
         ImGui::SetNextWindowPos(ImVec2(menuX, menuY), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(buttonW, menuHeight), ImGuiCond_Always);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.92f));
@@ -374,15 +376,22 @@ void TitleScene::draw(uint64_t)
             const float contentWidth = ImGui::GetContentRegionAvail().x;
             if (ImGui::Button("START", ImVec2(contentWidth, buttonH)))
                 StartTitleTransition(m_starting, m_transitionSeconds);
-
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            // ゲームパッドがつながっていればパッドのボタン名を出す。
-            const char* prompt = GameInput::Get().GetDisplayDevice() == InputDevice::Gamepad
-                ? "PRESS A" : "PRESS ENTER";
-            const ImVec2 promptSize = ImGui::CalcTextSize(prompt);
-            ImGui::SetCursorPosX((contentWidth - promptSize.x) * 0.5f + ImGui::GetStyle().WindowPadding.x);
-            ImGui::TextDisabled("%s", prompt);
-            ImGui::Dummy(ImVec2(0.0f, 10.0f));
+            // 決定のボタン名はSTARTの中の右端に小さく出す。
+            // 以前はSTARTとENDの間に「PRESS ENTER」の行を置いていて、3つ目の項目に見えた
+            // (2026-11-10の自動プレイの画面で確認)。
+            {
+                // ゲームパッドがつながっていればパッドのボタン名を出す。
+                const char* prompt = GameInput::Get().GetDisplayDevice() == InputDevice::Gamepad
+                    ? "A" : "ENTER";
+                const ImVec2 buttonMin = ImGui::GetItemRectMin();
+                const ImVec2 buttonMax = ImGui::GetItemRectMax();
+                const ImVec2 promptSize = ImGui::CalcTextSize(prompt);
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(buttonMax.x - promptSize.x - 14.0f,
+                        (buttonMin.y + buttonMax.y - promptSize.y) * 0.5f),
+                    IM_COL32(235, 200, 160, 150), prompt);
+            }
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.13f, 0.16f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.26f, 0.30f, 1.0f));
@@ -420,6 +429,7 @@ void TitleScene::init()
     skinShader->Create("shader/vertexLightingOneSkinVSHybrid.hlsl", "shader/vertexLightingSkinPS.hlsl");
     ShaderManager::Register<CShader>("Shader3DSkin", std::move(skinShader));
 
+    LogStartup("title: shaders done");
     m_camera.Init();
     m_camera.SetPosition(Vector3(10.0f, 24.0f, -66.0f));
     m_camera.SetLookat(Vector3(3.0f, 16.0f, 10.0f));
@@ -427,6 +437,7 @@ void TitleScene::init()
     m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
     m_playerAnimationMesh->Load("assets/model/SwordShieldPack/runtime/SwordShieldPack_Player.glb",
         "assets/model/SwordShieldPack/runtime/");
+    LogStartup("title: player mesh loaded");
     m_playerAnimator.Initialize(*m_playerAnimationMesh);
     m_playerBoneComb.Create();
 
@@ -442,6 +453,7 @@ void TitleScene::init()
     if (walkScene != nullptr && walkScene->mNumAnimations > 0)
         m_playerWalkAnimation = m_playerAnimationData.GetAnimation("walk", 0);
 
+    LogStartup("title: walk clip loaded");
     m_playerSrt.scale = Vector3(18.0f, 18.0f, 18.0f);
     m_playerSrt.pos = Vector3(20.0f, 0.75f, 5.0f);
     m_playerSrt.rot.y = 0.46f;
@@ -477,6 +489,10 @@ void TitleScene::init()
     m_guildChest.Load(std::string(kGuildAssetDirectory) + "chest.glb", kGuildAssetDirectory);
     m_guildChestRenderer.Init(m_guildChest);
 
+    LogStartup("title: guild props loaded");
+    // タイトルを見せている間に、戦いの敵のモデルを裏で読んでおく。
+    // START を押してから飛来の場面が出るまでの黒い画面が、Wyvern の読み込み(Debug版で約3.6秒)の分だけ長かった。
+    EnemyPreload::StartForNextBattle();
     DebugUI::SetVisible(false);
 }
 

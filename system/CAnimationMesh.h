@@ -42,6 +42,8 @@ protected:
 	// レンダラ
 	CStaticMeshRenderer m_StaticMeshRenderer{};
 	bool m_hideEmbeddedShieldSubset = false;
+	size_t m_groundingSampleBudget = 0;
+	bool m_useAnimationScaleKeys = false;
 	std::unique_ptr<CStaticMesh> m_swordMesh{};
 	CStaticMeshRenderer m_swordRenderer{};
 	std::string m_swordAssetPath{};
@@ -316,10 +318,26 @@ public:
 	float GetAnimatedLocalMinY() const;
 	// 現在のボーン行列でスキニングした頂点を、upAxis方向の成分で見たときの最小値。
 	float GetAnimatedLowestAlong(const Vector3& upAxis) const;
+	// 最下点を求めるときに見る頂点の数のおおよその上限(0 = 全頂点)。
+	// 頂点が多いモデルで、毎フレームの全頂点スキニングが重くならないよう間引く。
+	void SetGroundingSampleBudget(size_t vertexBudget) { m_groundingSampleBudget = vertexBudget; }
+	// クリップの拡大のキーを使うか(既定は使わず、常に1倍)。
+	// Unreal Engine から書き出した FBX は、アーマチュア(wyvern_Rig)のキーに100倍の拡大が入っている
+	// (骨は m 単位、メッシュは cm 単位)。1倍として扱うと体が1/100に縮んで見えなくなる。
+	// 既存のモデル(プレイヤー・Cethiel のドラゴン)の見え方を変えないよう、使うモデルだけで有効にする。
+	void SetUseAnimationScaleKeys(bool use) { m_useAnimationScaleKeys = use; }
 
 	// 描画
 	void UpdateSwordWorldTransform(const Matrix4x4& parentWorld);
 	void Draw();
+	// 本体のスキンメッシュだけを、いま設定されているシェーダーで描く。
+	// Draw() は剣を描くときにシェーダーを差し替えるので、速度バッファのように
+	// 自分のシェーダーで描きたいパスではこちらを使う。
+	void DrawSkinnedBody() { m_StaticMeshRenderer.Draw(); }
+	// 骨に付けた別メッシュの剣を描く状態なら、そのワールド行列を返す。
+	bool GetAttachedSwordWorldMatrix(Matrix4x4& outWorld) const;
+	// 骨に付けた別メッシュの剣を、いま設定されているシェーダーとワールド行列で描く。
+	void DrawAttachedSwordGeometry();
 	bool IsSwordLoaded() const { return m_swordMesh != nullptr || m_swordEmbeddedInPlayerAsset; }
 	bool GetSwordWorldSweep(Vector3& base, Vector3& tip, Vector3& previousTip) const
 	{

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -24,7 +25,11 @@ namespace
 	// --- 調整値(秒・ラジアン・ワールド単位) ---
 	// 自動追従: 視点を最後に触ってから、この秒数が経つまでは回さない。
 	// 自分で合わせた視点を勝手に戻されると、操作を奪われたように感じるため。
-	constexpr float AUTO_FOLLOW_DELAY = 0.8f;
+	// 0.8秒だと、マウスで向きを合わせて走り出した直後にカメラが勝手に回り始め、
+	// 「滑る」と感じる原因になっていた。マウスは手を一瞬離すことが多いので長めにする。
+	constexpr float AUTO_FOLLOW_DELAY = 1.5f;
+	// 待ち時間が過ぎてから、効きが最大になるまでの時間(秒)。
+	constexpr float AUTO_FOLLOW_RAMP_SECONDS = 1.0f;
 	// 自動追従の最大の速さ(ラジアン/秒)。真横へ全力で走ったときにこの速さになる。
 	// 最初は約57度/秒にしたが、実測するとダッシュで横へ走り続けたときに半径約46(身長の2.5倍)の円を
 	// 約6秒で一周してしまい、カメラに振り回される。約29度/秒(半径約90、一周約12秒)へ下げた。
@@ -56,6 +61,48 @@ namespace
 	constexpr float LOCK_ON_SHOULDER_OFFSET = 5.0f;
 
 	constexpr float RECENTER_RATE = 12.0f;
+
+	// ロックオン中、壁を背にしてカメラの後ろに余地が無いときは、壁に沿って横へ回り込む。
+	// 以前は距離を縮めるだけだったため、壁際では追従点の約6後ろまで寄り、
+	// プレイヤーが画面から消えてドラゴンの体で画面が埋まっていた(2026-11-10の自動プレイで、
+	// 壁際に押し込まれた後半の画面の約7割)。
+	// 上へ逃がす案は、密着した大型の敵では頭(予兆)が画面の上へ切れるので採らなかった。
+	// 横へ回れば、プレイヤーと敵を横から並べて映せる。
+	// 欲しい水平距離のうち、この割合が取れる向きを探す。
+	constexpr float WALL_SLIDE_ROOM_RATIO = 0.75f;
+	// 回り込む角度の上限(約100度)。壁際では真横(90度)まで回らないと余地が出ないことが多い。
+	constexpr float WALL_SLIDE_MAX = 1.75f;
+	constexpr float WALL_SLIDE_SEARCH_STEP = 0.1f;
+	// 回り込むときは速く(ただし向きの速さの上限 LOCK_ON_MAX_YAW_SPEED は掛かる)、戻るときはゆっくり。
+	constexpr float WALL_SLIDE_ENGAGE_RATE = 8.0f;
+	constexpr float WALL_SLIDE_RELEASE_RATE = 1.5f;
+	// 壁の判定に使う円は、プレイヤーよりこの分だけ外まで広げる(GameScene の壁の判定と同じ考え方)。
+	constexpr float WALL_ROOM_BEYOND_ANCHOR = 6.0f;
+
+	// スティックで回る最高の速さ(ラジアン/秒)。横は約150度/秒、縦は約92度/秒。
+	constexpr float STICK_YAW_SPEED = 2.6f;
+	constexpr float STICK_PITCH_SPEED = 1.6f;
+	// 回る速さの追いつき方。倒したときは約60ミリ秒で立ち上がり、離したときは約25ミリ秒で止まる。
+	constexpr float STICK_ACCEL_RATE = 16.0f;
+	constexpr float STICK_DECEL_RATE = 40.0f;
+
+	// スティックの倒し具合を回る速さへ。少し倒したときは細かく合わせやすいよう遅く、
+	// 倒し切ると最高の速さになる(直線と3乗の中間)。
+	float StickCurve(float value)
+	{
+		const float v = std::clamp(value, -1.0f, 1.0f);
+		return 0.4f * v + 0.6f * v * v * v;
+	}
+
+	// 回る速さを目標へ近づける。目標が0に近づく(離す)ときは速く止める。
+	float ApproachStickSpeed(float current, float target, float deltaSeconds)
+	{
+		const bool slowingDown = std::abs(target) < std::abs(current) || target * current < 0.0f;
+		const float rate = slowingDown ? STICK_DECEL_RATE : STICK_ACCEL_RATE;
+		const float next = current + (target - current) * ExpBlend(rate, deltaSeconds);
+		// 指数で近づけると0にいつまでも届かず、ごくわずかに回り続けるので切り捨てる。
+		return (target == 0.0f && std::abs(next) < 0.001f) ? 0.0f : next;
+	}
 
 	// プレイヤーの背後から、プレイヤーと同じ向きを見るカメラのYaw。
 	// プレイヤーの正面は (-sin, -cos)、カメラの見る向きは (-sin, cos) なので、両者が一致するのは
@@ -120,43 +167,86 @@ void ThirdPersonCamera::Update(
 	const CameraLookInput& look,
 	float deltaSeconds)
 {
+	// 壁に沿った回り込みはロックオン中だけ。次にロックオンしたとき前回の分から始まらないよう捨てる。
+	m_wallSlideYaw = 0.0f;
 	// --- 視点操作 ---
 	// マウスの右 = 画面が右へ回る。カメラの向きは (-sin, cos) を見ているので、右へ回すにはYawを減らす。
 	// マウスの下 = 見下ろす(カメラが上がる)。
-	const bool manualLook = look.active &&
+	const float dt = std::max(deltaSeconds, 0.0f);
+	const bool mouseMoved = look.active &&
 		(std::abs(look.deltaX) > 0.0f || std::abs(look.deltaY) > 0.0f);
-	if (manualLook)
+	const bool stickHeld = std::abs(look.stickX) > 0.0f || std::abs(look.stickY) > 0.0f;
+
+	// 1) マウス: 動かした量をそのまま角度にする(時間に依存しないので、fpsが揺れても回る量は同じ)。
+	float yawStep = 0.0f;
+	float pitchStep = 0.0f;
+	if (mouseMoved)
 	{
-		// 生の移動量を「これから回す分」へ足す。
-		m_pendingYaw -= look.deltaX * m_mouseSensitivity;
-		m_pendingPitch += look.deltaY * m_mouseSensitivity;
+		const float mouseYaw = -look.deltaX * m_mouseSensitivity;
+		const float mousePitch = look.deltaY * m_mouseSensitivity;
+		if (m_mouseSmoothSeconds > 0.0f)
+		{
+			m_pendingYaw += mouseYaw;
+			m_pendingPitch += mousePitch;
+		}
+		else
+		{
+			yawStep += mouseYaw;
+			pitchStep += mousePitch;
+		}
+	}
+	else if (!look.active)
+	{
+		// カーソルを出したら、溜めていた分は捨てる(出した後に視点が動かないように)。
+		m_pendingYaw = 0.0f;
+		m_pendingPitch = 0.0f;
+	}
+	if (m_mouseSmoothSeconds > 0.0f &&
+		(std::abs(m_pendingYaw) > 0.000001f || std::abs(m_pendingPitch) > 0.000001f))
+	{
+		// 慣らしを調整用に有効にした場合だけ通る。速さの上限は設けない
+		// (上限があると使い切れない分が溜まり、手を止めた後も回り続けるため)。
+		const float use = 1.0f - std::exp(-dt / m_mouseSmoothSeconds);
+		yawStep += m_pendingYaw * use;
+		pitchStep += m_pendingPitch * use;
+		m_pendingYaw *= 1.0f - use;
+		m_pendingPitch *= 1.0f - use;
+		// 残りがわずかになったら捨てる。いつまでも微小に回り続けないように。
+		if (std::abs(m_pendingYaw) < 0.0005f) m_pendingYaw = 0.0f;
+		if (std::abs(m_pendingPitch) < 0.0005f) m_pendingPitch = 0.0f;
+	}
+
+	// 2) スティック: 倒した量を回る速さにする。マウスの右と同じく、右へ倒すと画面が右へ回る。
+	//    上へ倒すと見上げる(カメラが下がる = Pitchが減る)。
+	m_stickYawSpeed = ApproachStickSpeed(
+		m_stickYawSpeed, -StickCurve(look.stickX) * STICK_YAW_SPEED, dt);
+	m_stickPitchSpeed = ApproachStickSpeed(
+		m_stickPitchSpeed, -StickCurve(look.stickY) * STICK_PITCH_SPEED, dt);
+	yawStep += m_stickYawSpeed * dt;
+	pitchStep += m_stickPitchSpeed * dt;
+
+	if (mouseMoved || stickHeld)
+	{
 		m_timeSinceManualLook = 0.0f;
+		m_autoFollowWeight = 0.0f;
 		m_recenterActive = false;
 	}
 	else
 	{
-		m_timeSinceManualLook += std::max(deltaSeconds, 0.0f);
+		m_timeSinceManualLook += dt;
 	}
 
-	// 溜めた分を少しずつ使う(慣らし)。
-	// 一度に全部使わないので、マウスを勢いよく振っても視点が飛ばず、
-	// 手を止めると残りが指数的に消えて流れるように止まる。
-	if (std::abs(m_pendingYaw) > 0.000001f || std::abs(m_pendingPitch) > 0.000001f)
+	if (yawStep != 0.0f || pitchStep != 0.0f)
 	{
-		const float use = 1.0f - std::exp(-std::max(deltaSeconds, 0.0f) / LOOK_SMOOTH_SECONDS);
-		float yawStep = m_pendingYaw * use;
-		float pitchStep = m_pendingPitch * use;
-		// 1秒あたりの回転に上限を設ける。画面が1フレームで大きく回るのを防ぐ。
-		const float limit = LOOK_MAX_SPEED * std::max(deltaSeconds, 0.0001f);
-		yawStep = std::clamp(yawStep, -limit, limit);
-		pitchStep = std::clamp(pitchStep, -limit, limit);
-		m_pendingYaw -= yawStep;
-		m_pendingPitch -= pitchStep;
 		m_cameraYaw = WrapAngle(m_cameraYaw + yawStep);
 		const float newPitch = std::clamp(m_pitch + pitchStep, MIN_PITCH, MAX_PITCH);
-		// 上下は端で止まるので、使い切れなかった分は捨てる(溜め続けると手を離した後に動く)。
+		// 上下の端で止まったら、溜めた分とスティックの速さを捨てる
+		// (残すと、手を離した後に逆向きへ動かしても端に張り付いたままになる)。
 		if (newPitch != m_pitch + pitchStep)
+		{
 			m_pendingPitch = 0.0f;
+			m_stickPitchSpeed = 0.0f;
+		}
 		m_pitch = newPitch;
 	}
 
@@ -171,6 +261,9 @@ void ThirdPersonCamera::Update(
 	}
 	else if (m_autoFollowEnabled && m_timeSinceManualLook >= AUTO_FOLLOW_DELAY)
 	{
+		m_autoFollowWeight = std::min(1.0f, m_autoFollowWeight + dt / AUTO_FOLLOW_RAMP_SECONDS);
+		// 効き始めは滑らかに(smoothstep)。
+		const float weight = m_autoFollowWeight * m_autoFollowWeight * (3.0f - 2.0f * m_autoFollowWeight);
 		// --- 自動追従 ---
 		// 走っている向きの真後ろへ、横方向の速さに比例した速さで少しずつ回す。
 		// 奥へまっすぐ走っているとき(横成分なし)はほとんど回らず、真横へ走るほど回る。
@@ -185,8 +278,7 @@ void ThirdPersonCamera::Update(
 			{
 				const float lateral = std::abs(std::sin(diff));
 				const float speedRatio = std::clamp(speed / AUTO_FOLLOW_FULL_SPEED, 0.0f, 1.0f);
-				const float step = AUTO_FOLLOW_MAX_RATE * lateral * speedRatio *
-					std::max(deltaSeconds, 0.0f);
+				const float step = AUTO_FOLLOW_MAX_RATE * weight * lateral * speedRatio * dt;
 				m_cameraYaw = WrapAngle(
 					m_cameraYaw + std::copysign(std::min(std::abs(diff), step), diff));
 			}
@@ -213,7 +305,9 @@ void ThirdPersonCamera::UpdateLockOn(
 {
 	m_recenterActive = false;
 	// ロックオン中はマウスで向きを変えないので、解除した直後に自動追従が走らないよう数え直す。
+	// ロックオンする直前の操作の残り(溜めた回転・スティックの速さ)も、解除した瞬間に効かないよう捨てる。
 	m_timeSinceManualLook = 0.0f;
+	ClearLookState();
 
 	UpdateAnchor(playerPosition, deltaSeconds);
 
@@ -224,11 +318,28 @@ void ThirdPersonCamera::UpdateLockOn(
 		? flatDelta / targetDistance
 		: Vector3(-std::sin(m_cameraYaw), 0.0f, std::cos(m_cameraYaw));
 
+	// --- 距離 ---
+	// 離れているほど引いて、自分と敵を同時に収める。
+	const float framingDistance = std::clamp(
+		targetDistance * 0.66f, 76.0f * m_framingScale, LOCK_ON_MAX_DISTANCE * m_framingScale);
+	// 攻撃中の寄り(GameSceneがm_lookDistanceを少し縮める)をロックオンにも反映する。
+	const float distanceScale = std::clamp(m_lookDistance / (70.0f * m_framingScale), 0.85f, 1.0f);
+	// 近すぎるとプレイヤーのモデルが画面いっぱいになるので下限を設ける。
+	const float desiredDistance = std::clamp(
+		framingDistance * distanceScale, LOCK_ON_MIN_DISTANCE * m_framingScale, LOCK_ON_MAX_DISTANCE * m_framingScale);
+
 	// --- 向き ---
 	// カメラをプレイヤーの「敵と反対側」に置く。重なるほど近いときは向きを変えない。
 	if (targetDistance > 2.0f)
 	{
-		const float desiredYaw = std::atan2(-toTarget.x, toTarget.z);
+		const float behindYaw = std::atan2(-toTarget.x, toTarget.z);
+		// 壁を背にしているときは、余地のある横の向きへずらす。
+		const float slideTarget = FindWallSlideYaw(behindYaw, desiredDistance * std::cos(m_pitch));
+		const float slideRate = std::abs(slideTarget) > std::abs(m_wallSlideYaw)
+			? WALL_SLIDE_ENGAGE_RATE
+			: WALL_SLIDE_RELEASE_RATE;
+		m_wallSlideYaw += (slideTarget - m_wallSlideYaw) * ExpBlend(slideRate, deltaSeconds);
+		const float desiredYaw = WrapAngle(behindYaw + m_wallSlideYaw);
 		const float diff = WrapAngle(desiredYaw - m_cameraYaw);
 		float step = diff * ExpBlend(LOCK_ON_YAW_RATE, deltaSeconds);
 		const float maxStep = LOCK_ON_MAX_YAW_SPEED * std::max(deltaSeconds, 0.0f);
@@ -246,21 +357,20 @@ void ThirdPersonCamera::UpdateLockOn(
 	const float desiredPitch = std::clamp(CAMERA_DEFAULT_PITCH - elevation * 0.75f, 0.04f, 0.55f);
 	m_pitch += (desiredPitch - m_pitch) * ExpBlend(LOCK_ON_PITCH_RATE, deltaSeconds);
 
-	// --- 距離 ---
-	// 離れているほど引いて、自分と敵を同時に収める。
-	const float framingDistance = std::clamp(
-		targetDistance * 0.66f, 76.0f, LOCK_ON_MAX_DISTANCE);
-	// 攻撃中の寄り(GameSceneがm_lookDistanceを少し縮める)をロックオンにも反映する。
-	const float distanceScale = std::clamp(m_lookDistance / 70.0f, 0.85f, 1.0f);
-	// 近すぎるとプレイヤーのモデルが画面いっぱいになるので下限を設ける。
-	const float desiredDistance = std::clamp(
-		framingDistance * distanceScale, LOCK_ON_MIN_DISTANCE, LOCK_ON_MAX_DISTANCE);
 	UpdateDistance(desiredDistance, deltaSeconds);
 
 	// --- 注視点 ---
 	// プレイヤーと敵の間へ寄せる。切り替えの瞬間に画面が跳ねないよう、追従点からの「ずれ量」を補間する。
 	// 注視点の位置そのものを補間すると、走っている間は注視点が遅れてついて来て画面が揺れる。
-	const Vector3 desiredOffset = (targetFocus - m_anchor) * LOCK_ON_LOOK_TOWARD_TARGET;
+	// 壁に沿って横へ回り込んでいる間は、寄せる量を減らす。横から見ているのに敵の方へ大きく寄せると、
+	// プレイヤーが画面の端から外れる(敵が遠いと特に。自動プレイの画面で確認)。
+	const float slideLookScale = 0.35f + 0.65f * std::max(std::cos(m_wallSlideYaw), 0.0f);
+	// 壁や敵の体でカメラが引き寄せられている間も減らす。近い位置から敵の方を見ると、
+	// プレイヤーが画面の下へ外れる(回避で壁へ飛び込み、回り込みが追いつくまでの間に起きていた)。
+	const float pulledIn = std::clamp(m_currentDistance / std::max(desiredDistance, 1.0f), 0.0f, 1.0f);
+	const float pullLookScale = 0.3f + 0.7f * pulledIn;
+	const Vector3 desiredOffset = (targetFocus - m_anchor) *
+		(LOCK_ON_LOOK_TOWARD_TARGET * slideLookScale * pullLookScale);
 	if (deltaSeconds > 0.0f)
 		m_lookOffset += (desiredOffset - m_lookOffset) * ExpBlend(LOOK_OFFSET_RATE, deltaSeconds);
 	else
@@ -286,13 +396,15 @@ void ThirdPersonCamera::Reset(const Vector3& playerPosition, float playerYaw)
 	// 初期方向はプレイヤーの後方。
 	m_cameraYaw = BehindPlayerYaw(playerYaw);
 	m_pitch = CAMERA_DEFAULT_PITCH;
-	m_lookDistance = 70.0f;
+	m_lookDistance = 70.0f * m_framingScale;
 	m_desiredDistance = m_lookDistance;
 	m_currentDistance = m_lookDistance;
 	m_collisionDistance = -1.0f;
-	m_targetHeight = 25.0f;
+	m_targetHeight = 25.0f * m_framingTargetScale;
 	m_timeSinceManualLook = 10.0f;
 	m_recenterActive = false;
+	ClearLookState();
+	m_wallSlideYaw = 0.0f;
 	// リセット時は揺れと補間の状態も初期化する。
 	// 残っていると再戦の1フレーム目に前回の揺れが乗る。
 	m_shakeStrength = 0.0f;
@@ -317,16 +429,79 @@ void ThirdPersonCamera::BeginBattleTransition(
 
 	m_cameraYaw = BehindPlayerYaw(playerYaw);
 	m_pitch = CAMERA_DEFAULT_PITCH;
-	m_lookDistance = 70.0f;
+	m_lookDistance = 70.0f * m_framingScale;
 	m_desiredDistance = m_lookDistance;
 	m_currentDistance = m_lookDistance;
 	m_collisionDistance = -1.0f;
-	m_targetHeight = 25.0f;
+	m_targetHeight = 25.0f * m_framingTargetScale;
 	m_timeSinceManualLook = 10.0f;
 	m_recenterActive = false;
+	ClearLookState();
+	m_wallSlideYaw = 0.0f;
 	m_anchorInitialized = false;
 	UpdateAnchor(playerPosition, 0.0f);
 	m_lookOffset = Vector3(0.0f, 0.0f, 0.0f);
+}
+
+float ThirdPersonCamera::HorizontalRoom(float yaw) const
+{
+	if (m_wallSafeRadius <= 0.0f)
+		return std::numeric_limits<float>::max();
+	// 追従点からカメラ側へ伸ばした水平の半直線と、壁の安全円の交点までの距離。
+	// 追従点が円の外へ出ていても必ず内側になるよう、円を追従点より少し外まで広げる。
+	const float anchorRadius = std::sqrt(m_anchor.x * m_anchor.x + m_anchor.z * m_anchor.z);
+	const float safeRadius = std::max(m_wallSafeRadius, anchorRadius + WALL_ROOM_BEYOND_ANCHOR);
+	const float dirX = std::sin(yaw);
+	const float dirZ = -std::cos(yaw);
+	const float dot = m_anchor.x * dirX + m_anchor.z * dirZ;
+	const float constant = anchorRadius * anchorRadius - safeRadius * safeRadius;
+	return -dot + std::sqrt(std::max(dot * dot - constant, 0.0f));
+}
+
+float ThirdPersonCamera::FindWallSlideYaw(float behindYaw, float wantedHorizontal) const
+{
+	if (m_wallSafeRadius <= 0.0f)
+		return 0.0f;
+	const float needed = wantedHorizontal * WALL_SLIDE_ROOM_RATIO;
+	if (HorizontalRoom(behindYaw) >= needed)
+		return 0.0f;
+	// 今回り込んでいる側を優先する(左右を行き来すると、カメラが敵の向こうを半周してしまう)。
+	// まだ回り込んでいなければ、少し回したときに余地が多い側から探す。
+	float preferred = 1.0f;
+	if (std::abs(m_wallSlideYaw) > 0.05f)
+		preferred = m_wallSlideYaw > 0.0f ? 1.0f : -1.0f;
+	else if (HorizontalRoom(behindYaw - 0.5f) > HorizontalRoom(behindYaw + 0.5f))
+		preferred = -1.0f;
+
+	// 優先する側を端まで探してから、反対側を探す。角度の小さい順に左右を交互に探すと、
+	// 反対側に少しでも近い解があるたびに乗り換え、カメラが壁の方向を横切って振れていた(自動プレイのログで確認)。
+	float bestOffset = 0.0f;
+	float bestRoom = HorizontalRoom(behindYaw);
+	for (float sign : { preferred, -preferred })
+	{
+		for (float offset = WALL_SLIDE_SEARCH_STEP; offset <= WALL_SLIDE_MAX + 0.001f; offset += WALL_SLIDE_SEARCH_STEP)
+		{
+			const float room = HorizontalRoom(behindYaw + sign * offset);
+			if (room >= needed)
+				return sign * offset;
+			if (room > bestRoom + 0.5f)
+			{
+				bestRoom = room;
+				bestOffset = sign * offset;
+			}
+		}
+	}
+	// どこにも十分な余地が無ければ、一番余地のある向き(残りは距離を縮めて収める)。
+	return bestOffset;
+}
+
+void ThirdPersonCamera::ClearLookState()
+{
+	m_pendingYaw = 0.0f;
+	m_pendingPitch = 0.0f;
+	m_stickYawSpeed = 0.0f;
+	m_stickPitchSpeed = 0.0f;
+	m_autoFollowWeight = 0.0f;
 }
 
 void ThirdPersonCamera::RequestRecenter(float playerYaw)
@@ -407,7 +582,19 @@ void ThirdPersonCamera::ApplyView(
 		}
 	}
 
-	m_camera.SetPosition(basePosition + shakeOffset);
+	Vector3 finalPosition = basePosition + shakeOffset;
+	if (m_boundaryRadius > 0.0f)
+	{
+		// 中心へ向かって押し戻す。入力に対して連続なので、円に触れても画面は跳ねない。
+		const float radius = std::sqrt(finalPosition.x * finalPosition.x + finalPosition.z * finalPosition.z);
+		if (radius > m_boundaryRadius)
+		{
+			const float scale = m_boundaryRadius / radius;
+			finalPosition.x *= scale;
+			finalPosition.z *= scale;
+		}
+	}
+	m_camera.SetPosition(finalPosition);
 	// 注視点も少しだけ揺らす。位置だけ動かすと視線が固定されたままで、
 	// 揺れというより平行移動に見えてしまう。
 	m_camera.SetLookat(baseLookat + shakeOffset * 0.35f);

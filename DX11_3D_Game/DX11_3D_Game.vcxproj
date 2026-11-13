@@ -99,6 +99,11 @@
     <ClInclude Include="..\system\AttackTimelineEditor.h" />
     <ClInclude Include="..\system\AttackTimelineFile.h" />
     <ClInclude Include="..\system\ArenaFloor.h" />
+    <ClInclude Include="..\system\MotionBlur.h" />
+    <ClInclude Include="..\system\EnemyModelProfile.h" />
+    <ClInclude Include="..\system\EnemyPreload.h" />
+    <ClInclude Include="..\system\StartupLog.h" />
+    <ClInclude Include="..\system\ShaderBlobCache.h" />
     <ClInclude Include="..\system\GameInput.h" />
     <ClInclude Include="..\system\SphereDrawer.h" />
     <ClInclude Include="..\system\stb_image.h" />
@@ -136,6 +141,7 @@
     <ClCompile Include="..\system\BoxDrawer.cpp" />
     <ClCompile Include="..\system\C3DShape.cpp" />
     <ClCompile Include="..\system\camera.cpp" />
+    <ClCompile Include="..\system\MotionBlur.cpp" />
     <ClCompile Include="..\system\ThirdPersonCamera.cpp" />
     <ClCompile Include="..\system\CAnimationData.cpp" />
     <ClCompile Include="..\system\CAnimationMesh.cpp" />

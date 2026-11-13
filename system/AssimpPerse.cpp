@@ -359,7 +359,27 @@ namespace myAssimp{
 				}
 			}
 
-			
+			// マテリアルにベースカラーのテクスチャが書かれていないモデル(Unreal Engine から書き出した FBX など)は、
+			// テクスチャ置き場にあるマテリアル名と同じ名前の画像を使う(例 M_Wyvern_Body1_Inst.jpg)。
+			if (!g_diffuseTextures[m] && !mtrlname.empty())
+			{
+				for (const char* extension : { ".png", ".jpg", ".tga", ".bmp" })
+				{
+					const std::string texname =
+						texturedirectory + std::string(1, static_cast<char>(47)) + mtrlname + extension;
+					if (!std::filesystem::exists(texname))
+						continue;
+					auto texture = std::make_unique<CTexture>();
+					if (texture->Load(texname))
+					{
+						texpaths.push_back(mtrlname + extension);
+						g_diffuseTextures[m] = std::move(texture);
+						break;
+					}
+				}
+			}
+
+
 			MATERIAL mtrl{};
 
 			mtrl.mtrlname = mtrlname;
@@ -434,6 +454,21 @@ namespace myAssimp{
 			aiMesh* mesh = pScene->mMeshes[m];
 			g_vertices[m].reserve(mesh->mNumVertices);
 
+			// 頂点カラーが全部黒(0,0,0)のメッシュは、色を持たないものとして白で扱う。
+			// Unreal Engine から書き出した FBX は、使っていない頂点カラーの層を黒で書き出す。
+			// そのまま使うとテクスチャに黒を掛けて真っ黒になる。
+			bool useVertexColors = mesh->HasVertexColors(0);
+			if (useVertexColors)
+			{
+				bool anyColor = false;
+				for (unsigned int vidx = 0; vidx < mesh->mNumVertices && !anyColor; vidx++)
+				{
+					const aiColor4D& color = mesh->mColors[0][vidx];
+					anyColor = color.r > 0.0f || color.g > 0.0f || color.b > 0.0f;
+				}
+				useVertexColors = anyColor;
+			}
+
 			// 繝｡繝・す繝･蜷榊叙蠕・
 
 			//縲鬆らせ謨ｰ蛻・Ν繝ｼ繝・
@@ -477,7 +512,7 @@ namespace myAssimp{
 				}
 
 				// 鬆らせ繧ｫ繝ｩ繝ｼ・滂ｼ茨ｼ千分逶ｮ・・
-				if (mesh->HasVertexColors(0)) {
+				if (useVertexColors) {
 					v.color = mesh->mColors[0][vidx];
 				}
 				else

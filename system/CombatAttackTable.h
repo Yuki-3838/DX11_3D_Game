@@ -35,6 +35,16 @@ namespace Tuning
 inline constexpr float PLAYER_MAX_HP = 100.0f;
 inline constexpr float ENEMY_MAX_HP = 2000.0f;
 
+// --- 回復できる体力(体力バーの赤い部分) ---
+// モンハンと同じく、被弾で減った体力の一部を赤く残し、時間が経つと緑へ戻す(実際に回復する)。
+// 以前は赤を「減った分の名残」として縮めるだけで、体力は戻らなかった(ユーザー判断 2026-11-11 で変更)。
+// 回復の速さはモンハンワールドの自然回復「1.5秒ごとに体力1」(攻略wikiの値。最大体力も同じ100)。
+// 被ダメージのうち赤になる割合は公式・攻略の数値が見つからなかったので仮の値。
+// デバッグ表示の「戦闘」タブで変えて試せる。
+inline constexpr float PLAYER_RECOVERY_DELAY_SECONDS = 1.5f;   ///< 被弾してから回復が始まるまで
+inline constexpr float PLAYER_RECOVERY_PER_SECOND = 1.0f / 1.5f;
+inline constexpr float PLAYER_RECOVERABLE_RATIO = 0.5f;        ///< 被ダメージのうち赤(回復できる分)になる割合
+
 // --- プレイヤーの攻撃の威力 ---
 // 時間(予兆・判定・硬直)はコンボの段ごとに違うので、下の PlayerComboStepOf() に持たせている。
 inline constexpr int PLAYER_WEAK_DAMAGE = 25;
@@ -865,6 +875,21 @@ inline const AttackData& EnemyAttackOf(EnemyAttackKind kind)
     case EnemyAttackKind::Slam:
     default:                     return EnemyBasicAttack();
     }
+}
+
+/**
+ * @brief 敵の大きさに合わせて、間合い・攻撃の届く距離・移動の速さを伸ばす倍率。
+ *
+ * 上の表の距離と速さは、背中の高さ約17の敵で決めた値。大型のモデル(Wyvern)は体ごと大きいので、
+ * 頭や爪が届く距離も歩幅も同じ割合で大きい。表の値はそのままにして、
+ * 敵と相手の距離をこの倍率で割り(enemy::distanceToTarget・OneVsOneCombat)、
+ * 敵が動く量をこの倍率で掛ける(enemy::moveInFacingDirection)。
+ * 時間(予兆・判定・隙)は変えない。既定の1なら従来どおり。
+ */
+inline float& EnemyReachScale()
+{
+    static float scale = 1.0f;
+    return scale;
 }
 
 /**
