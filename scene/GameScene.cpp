@@ -1,4 +1,4 @@
-#include    <memory>
+﻿#include    <memory>
 #include	<string>
 #include	<array>
 #include	<cstdint>
@@ -1149,11 +1149,28 @@ void GameScene::update(uint64_t deltatime)
 	if (m_enemies.empty() || m_combat.IsEnemyDefeated())
 		m_lockOnTarget = false;
 	// 調整・撮影用: auto_attack=1 で弱攻撃を押し続ける(最後の一撃の演出を、実際に当てて撮るため)。
-	static const bool autoAttack = GetDevSetting("auto_attack", "0") == "1";
+	// auto_attack_delay は押し始めるまでの戦闘の秒数(走り出してから押してダッシュ攻撃を撮るため)。
+	static const bool autoAttackSetting = GetDevSetting("auto_attack", "0") == "1";
+	static const float autoAttackDelay = std::stof(GetDevSetting("auto_attack_delay", "0"));
+	const bool autoAttack = autoAttackSetting && m_battleSeconds >= autoAttackDelay;
 	// 決着の後は操作を受け付けない(倒れるところを見せる時間)。
 	const bool rawAttackTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Attack) || autoAttack);
-	const bool rawHeavyAttackTriggered = !battleFinishing && gameInput.IsTriggered(GameAction::HeavyAttack);
-	const bool rawDodgeTriggered = !battleFinishing && gameInput.IsTriggered(GameAction::Dodge);
+	// 撮影用: auto_heavy=1 で強攻撃を押し続ける。auto_dodge=1 で1.5秒ごとに回避する(どちらも動きの確認用)。
+	static const bool autoHeavy = GetDevSetting("auto_heavy", "0") == "1";
+	static const bool autoDodge = GetDevSetting("auto_dodge", "0") == "1";
+	static float autoDodgeTimer = 0.0f;
+	bool autoDodgeNow = false;
+	if (autoDodge)
+	{
+		autoDodgeTimer += deltaSeconds;
+		if (autoDodgeTimer >= 1.5f)
+		{
+			autoDodgeTimer = 0.0f;
+			autoDodgeNow = true;
+		}
+	}
+	const bool rawHeavyAttackTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::HeavyAttack) || autoHeavy);
+	const bool rawDodgeTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Dodge) || autoDodgeNow);
 	const bool playerDodgeActive = m_player->isDodging();
 
 	// 先行入力。押した瞬間に出せなかった攻撃・回避を覚えておく。
@@ -2691,7 +2708,27 @@ void GameScene::UpdateFootLock(float deltaSeconds)
 		// 骨の名前から左右の脚を1度だけ探す。モデルを差し替えても名前から拾えるようにしている。
 		FootLock::LegBoneNames left{};
 		FootLock::LegBoneNames right{};
-		FootLock::FindLegBones(m_playerAnimationMesh->GetBoneNames(), left, right);
+		const std::vector<std::string> boneNames = m_playerAnimationMesh->GetBoneNames();
+		FootLock::FindLegBones(boneNames, left, right);
+		// 名前に left / right が入っていないリグ(騎士の thighl / calfr など)は、モデルの骨の表から引く。
+		// 接地(足の骨の一番低い点を地面に合わせる)もこの骨を使うので、見つからないと足が浮く。
+		{
+			const CharacterModelProfile& profile = GetPlayerModelProfile();
+			const auto fromProfile = [&](CanonicalJoint joint) -> std::string {
+				for (const std::string& alias : profile.canonicalAliases[static_cast<size_t>(joint)])
+					if (std::find(boneNames.begin(), boneNames.end(), alias) != boneNames.end())
+						return alias;
+				return {};
+			};
+			if (!left.IsValid())
+				left = { fromProfile(CanonicalJoint::LeftUpperLeg), fromProfile(CanonicalJoint::LeftLowerLeg),
+					fromProfile(CanonicalJoint::LeftFoot), fromProfile(CanonicalJoint::LeftToe) };
+			if (!right.IsValid())
+				right = { fromProfile(CanonicalJoint::RightUpperLeg), fromProfile(CanonicalJoint::RightLowerLeg),
+					fromProfile(CanonicalJoint::RightFoot), fromProfile(CanonicalJoint::RightToe) };
+			std::cout << "[Player] leg chains left=" << left.upperLeg << "/" << left.toe
+				<< " right=" << right.upperLeg << "/" << right.toe << std::endl;
+		}
 		if (left.IsValid())
 			m_leftLegChain = { left.upperLeg, left.lowerLeg, left.foot, left.toe };
 		if (right.IsValid())
@@ -4146,9 +4183,14 @@ void GameScene::init()
 	m_resultRequested = false;
 	m_paused = false;
 	SoundManager::StopBgm();
-	// Sword and Shield Pack のモデルとモーションは同じ Mixamo リグを
-	// 使用するため、別キャラクターへのリターゲットを行わない。
-	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
+	// プレイヤーのモデル。騎士(購入アセット。リポジトリに入っていない)が置いてあればそれを使い、
+	// 無ければ Sword and Shield Pack。dev_settings.ini の player_model=paladin で Sword and Shield Pack に固定できる。
+	// どちらもモデルと同じリグのクリップを使うので、別キャラクターへのリターゲットは行わない。
+	const CharacterModelProfile& playerProfile =
+		SelectPlayerModelProfile(GetDevSetting("player_model", "knight"));
+	std::cout << "[Player] model=" << playerProfile.displayName
+		<< " scale=" << playerProfile.modelScale.y << std::endl;
+	g_loadmodel[0].meshid = getfilename(playerProfile.meshPath);
 	g_loadmodel[0].filename = playerProfile.meshPath;
 	g_loadmodel[0].texdirectoryname = playerProfile.textureDirectory;
 	// 敵のモデル。Wyvern(購入アセット。リポジトリに入っていない)が置いてあればそれを使い、無ければ Cethiel のドラゴン。
@@ -4294,10 +4336,12 @@ void GameScene::init()
 	// クリップの選択はエディターへ移した(クリップを替えて、その場で判定を合わせ直せる)。
 	// 読むのは起動して最初の1回だけ。リトライでこのシーンを作り直すたびに読み直すと、
 	// エディターで調整して保存していない値が、ファイルの値で上書きされて消えてしまう。
+	// 技の既定値とファイルはプレイヤーのモデルごとに分かれている(クリップの骨格が違うため)。
+	// 騎士は assets/data/attack_timeline_knight.txt(Combat::DefaultKnightAttack)。
 	static bool attackTimelineLoaded = false;
 	if (!attackTimelineLoaded)
 	{
-		AttackTimelineFile::Load();
+		AttackTimelineFile::SelectSetAndLoad(GetPlayerModelProfile().attackSet);
 		attackTimelineLoaded = true;
 	}
 	LogStartup("game: shaders/settings done");
@@ -4469,13 +4513,14 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
-	m_playerAnimationData.LoadAnimation(
-		"assets/motion/sword and shield walk.fbx", "walk");
-	m_playerAnimationData.LoadAnimation(
-		"assets/motion/sword and shield run.fbx", "run");
-	// 待機モーション。idleクリップは4種類あるので、これもiniで差し替えられるようにする。
-	m_playerAnimationData.LoadAnimation(
-		GetDevSetting("idle", "assets/motion/sword and shield idle.fbx"), "idle");
+	// クリップはモデルごとの表(CharacterModelProfile)から引く。iniのキーで差し替えられる。
+	const auto locomotionClip = [&playerProfile](LocomotionClipSlot slot) {
+		return playerProfile.locomotionClips[static_cast<size_t>(slot)];
+	};
+	m_playerAnimationData.LoadAnimation(locomotionClip(LocomotionClipSlot::WalkForward), "walk");
+	m_playerAnimationData.LoadAnimation(locomotionClip(LocomotionClipSlot::RunForward), "run");
+	// 待機モーション。idleクリップは何種類かあるので、これもiniで差し替えられるようにする。
+	m_playerAnimationData.LoadAnimation(GetDevSetting("idle", playerProfile.idleClip), "idle");
 	m_playerWalkAnimation = m_playerAnimationData.GetAnimation("walk", 0);
 	aiAnimation* playerRunAnimation = m_playerAnimationData.GetAnimation("run", 0);
 	std::array<aiAnimation*, 3> weakAttackAnimations{};
@@ -4493,30 +4538,21 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimator.SetLocomotionAnimations(m_playerWalkAnimation, playerRunAnimation);
 
 	// 移動のブレンドツリー。前後左右 × 歩き/走り の8本を速度で混ぜる。
-	// 手持ちのクリップの腰の移動量を調べて方向を割り当てた(2026-09-15):
-	//   walk=前 / walk (2)=後ろ / run=前 / run (2)=後ろ
-	//   strafe (2)=歩き+X / strafe (3)=走り+X / strafe=歩き-X / strafe (4)=走り-X
-	// Mixamoのキャラクターは+Zを向いており、+Xがキャラクターの左になる。
-	// 左右が逆に見える場合は dev_settings.ini で差し替えられる(ビルド不要)。
+	// どのクリップをどの方向へ使うかはモデルごとの表(CharacterModelProfile::locomotionClips)。
+	// 左右が逆に見える場合は dev_settings.ini で差し替えられる(ビルド不要。キーは LocomotionClipKey)。
 	{
-		struct BlendClipFile { const char* key; const char* defaultFile; };
-		const BlendClipFile blendClipFiles[8] = {
-			{ "walk_forward",  "assets/motion/sword and shield walk.fbx" },
-			{ "run_forward",   "assets/motion/sword and shield run.fbx" },
-			{ "walk_right",    "assets/motion/sword and shield strafe.fbx" },
-			{ "run_right",     "assets/motion/sword and shield strafe (4).fbx" },
-			{ "walk_backward", "assets/motion/sword and shield walk (2).fbx" },
-			{ "run_backward",  "assets/motion/sword and shield run (2).fbx" },
-			{ "walk_left",     "assets/motion/sword and shield strafe (2).fbx" },
-			{ "run_left",      "assets/motion/sword and shield strafe (3).fbx" },
-		};
 		// 並び順は CCharacterAnimator の [方向(前,右,後,左) x 2 + 歩調(歩き,走り)] に合わせる。
 		std::array<aiAnimation*, 8> blendClips{};
+		static_assert(std::tuple_size_v<decltype(blendClips)> == static_cast<size_t>(LocomotionClipSlot::Count));
 		for (size_t index = 0; index < blendClips.size(); ++index)
 		{
-			const std::string name = std::string("blend_") + blendClipFiles[index].key;
-			m_playerAnimationData.LoadAnimation(
-				GetDevSetting(blendClipFiles[index].key, blendClipFiles[index].defaultFile), name);
+			const auto slot = static_cast<LocomotionClipSlot>(index);
+			const std::string defaultFile = locomotionClip(slot);
+			const std::string file = GetDevSetting(LocomotionClipKey(slot), defaultFile);
+			if (file.empty())
+				continue; // 無いクリップは同じ歩調の前向きクリップで代用される
+			const std::string name = std::string("blend_") + LocomotionClipKey(slot);
+			m_playerAnimationData.LoadAnimation(file, name);
 			blendClips[index] = m_playerAnimationData.GetAnimation(name.c_str(), 0);
 		}
 		m_playerAnimator.SetLocomotionBlendSpace(
@@ -4529,19 +4565,36 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimator.SetIdleAnimation(playerIdleAnimation);
 	m_playerAnimator.SetAttackAnimations(weakAttackAnimations, heavyAttackAnimations);
 	// 被弾ののけぞり。手持ちのクリップにある「impact」を使う(新規アセットは追加しない)。
-	m_playerAnimationData.LoadAnimation(
-		GetDevSetting("impact", "assets/motion/sword and shield impact.fbx"), "impact");
-	m_playerAnimator.SetImpactAnimation(m_playerAnimationData.GetAnimation("impact", 0));
+	{
+		const std::string impactFile = GetDevSetting("impact", playerProfile.impactClip);
+		if (!impactFile.empty())
+		{
+			m_playerAnimationData.LoadAnimation(impactFile, "impact");
+			m_playerAnimator.SetImpactAnimation(m_playerAnimationData.GetAnimation("impact", 0));
+		}
+	}
 	// ダッシュ攻撃(走りながら弱攻撃)。モンハンの片手剣の突進斬りの役。
 	m_playerAnimationData.LoadAnimation(Combat::PlayerDashAttackStep().clipFile, "dash_attack");
 	m_playerAnimator.SetDashAttackAnimation(m_playerAnimationData.GetAnimation("dash_attack", 0));
 	// 力尽きるモーション(決着の演出)。dev_settings.ini の death で差し替えて見比べられる。
-	m_playerAnimationData.LoadAnimation(
-		GetDevSetting("death", "assets/motion/sword and shield death.fbx"), "death");
-	m_playerAnimator.SetDeathAnimation(m_playerAnimationData.GetAnimation("death", 0));
+	// 騎士には力尽きるクリップが無いので、そのときは設定しない(立ったまま決着の演出になる)。
+	{
+		const std::string deathFile = GetDevSetting("death", playerProfile.deathClip);
+		if (!deathFile.empty())
+		{
+			m_playerAnimationData.LoadAnimation(deathFile, "death");
+			m_playerAnimator.SetDeathAnimation(m_playerAnimationData.GetAnimation("death", 0));
+			m_playerAnimator.SetDeathRootMotionScale(playerProfile.deathRootMotion ? 1.0f : 0.0f);
+		}
+		else
+		{
+			m_playerAnimator.SetDeathAnimation(nullptr);
+		}
+	}
 
 	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
-	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting("attack_hips_rotation", "1")));
+	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting(
+		"attack_hips_rotation", std::to_string(playerProfile.attackHipsRotationMode))));
 	if (playerIdleAnimation == nullptr)
 		std::cout << "[Player] idle animation not loaded" << std::endl;
 	if (m_playerWalkAnimation == nullptr)

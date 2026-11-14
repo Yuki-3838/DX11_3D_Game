@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <algorithm>
 #include <array>
@@ -492,9 +492,62 @@ inline PlayerAttackSlot PlayerAttackSlotOf(bool heavy, int comboStep, bool dash 
     return static_cast<PlayerAttackSlot>((heavy ? 3 : 0) + index);
 }
 
+/**
+ * @brief 技の既定値の組。プレイヤーのモデルごとにクリップ(骨格)が違うので組を分ける。
+ * 使う組は CharacterModelProfile::attackSet で決まり、GameScene の初期化で ActivePlayerAttackSet へ入れる。
+ */
+enum class PlayerAttackSet : unsigned char
+{
+    SwordShield,  ///< Sword and Shield Pack(Mixamo)
+    Knight,       ///< 購入した騎士(assets/model/Knight)
+};
+
+inline PlayerAttackSet& ActivePlayerAttackSet()
+{
+    static PlayerAttackSet active = PlayerAttackSet::SwordShield;
+    return active;
+}
+
+/**
+ * @brief 騎士の技の既定値。
+ *
+ * 弱攻撃は騎士の元のクリップ。combo_attack は3回振るクリップなので、その3つの振りを1段ずつに分けて使う
+ * (前の段の終わりと次の段の始まりを同じ位置にして、段の間で姿勢が飛ばないようにした)。
+ * 振っている区間は、剣先の速さが最大の50%を超える区間を Blender で測り(2026-11-13)、前後へ少し余裕を持たせた
+ * (combo_attack: 1回目 0.52-0.80 / 2回目 1.12-1.32 / 3回目 2.04-2.16。クリップは25fps。時刻はクリップの秒)。
+ * 元のクリップはその場で振る作り(腰がほぼ前へ進まない)なので、踏み込み(root_motion_scale)は0にしている。
+ *
+ * 強攻撃とダッシュ攻撃は、Sword and Shield Pack(Mixamo)の技を騎士の骨格へ移し替えたクリップ
+ * (tools/blender_export_knight.py の RETARGETS。名前の頭に mx_)。騎士の元の攻撃は3本しかなく、どれもその場で振るだけで、
+ * 強攻撃の踏み込み・回転と、ダッシュ攻撃の跳んで前へ出る動きが作れなかったため。
+ * 移し替えても秒数は変えていないので、時間と踏み込みの倍率は DefaultPlayerAttack(Sword and Shield Pack)と同じ値にした。
+ */
+inline const PlayerComboStep& DefaultKnightAttack(PlayerAttackSlot slot)
+{
+    static const char* const combo = "assets/model/Knight/anim/Knight_combo_attack.fbx";
+    static const PlayerComboStep defaults[PLAYER_ATTACK_SLOT_COUNT] = {
+        // 弱1: combo_attack の1回目。
+        { combo, 0.20f, 0.48f, 0.84f, 1.00f, 1.15f, 0.06f, 0.0f },
+        // 弱2: combo_attack の2回目(弱1の終わりから続けて再生する)。
+        { combo, 1.00f, 1.06f, 1.38f, 1.60f, 1.15f, 0.06f, 0.0f },
+        // 弱3: combo_attack の3回目。締めなので硬直を長めに残す。
+        { combo, 1.60f, 1.94f, 2.24f, 2.70f, 1.10f, 0.10f, 0.0f },
+        // 強1: slash を移したもの。高く振りかぶり、踏み込みながら振り下ろす。
+        { "assets/model/Knight/anim/Knight_mx_slash.fbx", 0.10f, 0.50f, 0.72f, 1.30f, 1.10f, 0.08f },
+        // 強2: attack (3) を移したもの。前進しながら回転して2回斬る。
+        { "assets/model/Knight/anim/Knight_mx_attack_3.fbx", 0.34f, 0.62f, 1.05f, 1.60f, 1.25f, 0.12f },
+        // 強3: slash (4) を移したもの。沈み込んで振り抜く回転斬り。締めの大技なので硬直が最も長い。
+        { "assets/model/Knight/anim/Knight_mx_slash_4.fbx", 0.84f, 1.22f, 1.50f, 2.30f, 1.25f, 0.10f },
+        // ダッシュ攻撃: attack を移したもの。跳び上がって前へ出る斬り下ろし。踏み込みは1.6倍(Sword and Shield Pack と同じ)。
+        { "assets/model/Knight/anim/Knight_mx_attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f },
+    };
+    return defaults[static_cast<int>(slot)];
+}
 /** 既定値(ファイルが無いとき・「既定に戻す」で使う)。 */
 inline const PlayerComboStep& DefaultPlayerAttack(PlayerAttackSlot slot)
 {
+    if (ActivePlayerAttackSet() == PlayerAttackSet::Knight)
+        return DefaultKnightAttack(slot);
     // 右腕の振りの計測値(クリップの秒): slash(5) 0.49-0.64 / slash 0.55-0.64 / slash(3) 0.74-0.86 /
     // attack 1.05-1.28 / attack(4) 0.17-0.55 / attack(3) 0.68-0.81 / slash(4) 1.28-1.40
     static const PlayerComboStep defaults[PLAYER_ATTACK_SLOT_COUNT] = {

@@ -78,6 +78,13 @@ protected:
 	bool m_swordEnabled = true;
 	bool m_swordUseGuaranteedProxy = true;
 	std::vector<uint32_t> m_embeddedSwordVertexIndices{};
+	// 内蔵の剣を握っている手の骨。剣の両端のうち、この骨から遠い方を剣先にする。
+	std::string m_swordHandBoneName = "mixamorig:RightHand";
+	// 内蔵の剣の両端を「剣の頂点をスキンで動かした位置」から求めるか(CharacterModelProfile::embeddedWeapon)。
+	// false のときは Sword and Shield Pack 用に手の骨から合わせた求め方を使う。
+	bool m_embeddedSwordFromSkin = false;
+	// 体の一番低い点(接地)を測るときに飛ばす頂点。内蔵の剣(CharacterModelProfile::embeddedWeapon)の頂点。
+	std::vector<bool> m_groundingIgnoredVertices{};
 
 	void LoadSwordAttachmentPreset();
 

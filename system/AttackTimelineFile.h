@@ -28,7 +28,19 @@
  */
 namespace AttackTimelineFile
 {
-inline const char* DefaultPath() { return "assets/data/attack_timeline.txt"; }
+/** 技の組(プレイヤーのモデル)ごとに別のファイルにする。クリップの骨格が違うので、値を共有できない。 */
+inline const char* DefaultPath()
+{
+    return Combat::ActivePlayerAttackSet() == Combat::PlayerAttackSet::Knight
+        ? "assets/data/attack_timeline_knight.txt"
+        : "assets/data/attack_timeline.txt";
+}
+
+/**
+ * @brief 使う技の組を切り替え、技の値をその組の既定値へ戻してから、組のファイルを読む。
+ * GameScene の初期化で1回呼ぶ(プレイヤーのモデルを選んだ直後)。
+ */
+inline bool SelectSetAndLoad(Combat::PlayerAttackSet set);
 
 /** UTF-8の文字列からパスを作る(クリップのファイル名に日本語が入っても読めるように)。 */
 inline std::filesystem::path PathFromUtf8(const std::string& text)
@@ -259,5 +271,17 @@ inline bool Save(const std::string& path = DefaultPath())
         return false;
     RememberCurrentAsSaved();
     return true;
+}
+
+inline bool SelectSetAndLoad(Combat::PlayerAttackSet set)
+{
+    Combat::ActivePlayerAttackSet() = set;
+    for (int i = 0; i < Combat::PLAYER_ATTACK_SLOT_COUNT; ++i)
+    {
+        const auto slot = static_cast<Combat::PlayerAttackSlot>(i);
+        Combat::EditablePlayerAttack(slot) = Combat::DefaultPlayerAttack(slot);
+    }
+    RememberCurrentAsSaved();
+    return Load();
 }
 } // namespace AttackTimelineFile
