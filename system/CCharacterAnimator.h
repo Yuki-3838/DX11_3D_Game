@@ -84,6 +84,8 @@ public:
 	void PlayImpactMotion();
 	// 力尽きるモーション。全身をクリップで動かし、最後の姿勢のまま止まる(立ち上がらない)。
 	void SetDeathAnimation(aiAnimation* animation) { m_deathAnimation = animation; }
+	// 力尽きるモーションの腰の水平移動を、位置の移動にする倍率(0でその場で倒れる)。
+	void SetDeathRootMotionScale(float scale) { m_deathRootMotionScale = scale; }
 	void PlayDeathMotion();
 	// 力尽きるモーションを再生中(最後の姿勢で止まっている間も含む)か。
 	bool IsDeathMotionPlaying() const { return m_holdImportedLastPose; }
@@ -207,6 +209,13 @@ private:
 	// 移動・待機クリップと、攻撃中の下半身で同じ範囲を使うため1箇所にまとめる。
 	// Hipsはゲーム側が向きを管理するため含めない。
 	const std::vector<std::string>& LowerBodyBones() const;
+	// 待機・移動のクリップを上半身側へかける骨。CharacterModelProfile::clipsDriveWholeBody で範囲が変わる。
+	const std::vector<std::string>& UpperBodyBones() const;
+	mutable std::vector<std::string> m_upperBodyBonesCache;
+	bool m_clipsDriveWholeBody = false;
+	std::vector<std::string> m_extraLowerBodyBones;
+	// 腰(pelvis)の子孫の骨(腰は含まない)。clipsDriveWholeBody のときにクリップをかける範囲の元。
+	std::vector<std::string> m_skeletonBones;
 
 	std::string m_leftArm;
 	std::string m_rightArm;
@@ -328,6 +337,7 @@ private:
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
 	aiAnimation* m_impactAnimation = nullptr;
 	aiAnimation* m_deathAnimation = nullptr;
+	float m_deathRootMotionScale = 1.0f;
 	// クリップを最後まで再生したら、最後の姿勢のまま止めておく(力尽きるモーション)。
 	bool m_holdImportedLastPose = false;
 	aiAnimation* m_dashAttackAnimation = nullptr;

@@ -32,6 +32,32 @@ namespace
 		return normalized;
 	}
 
+	/**
+	 * @brief クリップの腰の位置の変化を、キャラクターから見た「前」の量にする(クリップの単位)。
+	 *
+	 * Mixamo のクリップは Y が上で、左手系へ直した後は -Z が前。
+	 * 騎士のクリップ(Blender のリグから書き出したもの)はアーマチュアの空間で Z が上・-Y が前。
+	 * どちらの作りかは、腰の最初の位置で一番大きい成分(= 高さ)の軸で見分ける。右はどちらも -X。
+	 */
+	float ClipForwardDelta(const aiAnimation* clip, const std::string& pelvis, const Vector3& delta)
+	{
+		int upAxis = 1;
+		if (clip != nullptr)
+		{
+			for (unsigned int c = 0; c < clip->mNumChannels; ++c)
+			{
+				const aiNodeAnim* channel = clip->mChannels[c];
+				if (channel == nullptr || channel->mNumPositionKeys == 0 || pelvis != channel->mNodeName.C_Str())
+					continue;
+				const aiVector3D& first = channel->mPositionKeys[0].mValue;
+				const float ax = std::abs(first.x), ay = std::abs(first.y), az = std::abs(first.z);
+				upAxis = (az >= ax && az >= ay) ? 2 : (ay >= ax ? 1 : 0);
+				break;
+			}
+		}
+		return upAxis == 2 ? -delta.y : -delta.z;
+	}
+
 	std::string FindBone(
 		const std::vector<std::string>& boneNames,
 		std::initializer_list<std::string_view> aliases)
@@ -357,8 +383,41 @@ const std::vector<std::string>& CCharacterAnimator::LowerBodyBones() const
 			if (!name->empty())
 				m_lowerBodyBonesCache.push_back(*name);
 		}
+		for (const std::string& name : m_extraLowerBodyBones)
+		{
+			if (std::find(m_boneNames.begin(), m_boneNames.end(), name) != m_boneNames.end())
+				m_lowerBodyBonesCache.push_back(name);
+		}
 	}
 	return m_lowerBodyBonesCache;
+}
+
+const std::vector<std::string>& CCharacterAnimator::UpperBodyBones() const
+{
+	if (m_upperBodyBonesCache.empty())
+	{
+		if (m_clipsDriveWholeBody)
+		{
+			// 脚と腰以外のすべての骨(肩・手首・手・指・首・頭・剣の骨まで)。
+			// 腰は向きと高さをゲーム側が受け持つので入れない。
+			const std::vector<std::string>& lower = LowerBodyBones();
+			for (const std::string& bone : m_skeletonBones)
+			{
+				if (std::find(lower.begin(), lower.end(), bone) != lower.end())
+					continue;
+				m_upperBodyBonesCache.push_back(bone);
+			}
+		}
+		else
+		{
+			// Sword and Shield Pack: 背骨と上腕・前腕だけ(手は剣の握りを保つため入れない)。
+			m_upperBodyBonesCache = {
+				m_spine, m_spine01, m_spine02,
+				m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
+			};
+		}
+	}
+	return m_upperBodyBonesCache;
 }
 
 const std::vector<std::string>& CCharacterAnimator::WarpBones() const
@@ -420,6 +479,8 @@ void CCharacterAnimator::SetLocomotionBlendSpace(
 		clipToModel = restModelHeight / restLocalHeight;
 	const float clipToWorld = std::abs(clipToModel * modelScale);
 	m_clipToWorld = clipToWorld;
+	std::cout << "[Player] clipToWorld=" << clipToWorld << " (pelvis rest local height=" << restLocalHeight
+		<< " model height=" << restModelHeight << ")" << std::endl;
 
 	for (size_t index = 0; index < clips.size(); ++index)
 	{
@@ -866,13 +927,14 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 	// ユーザーから「浮いている」と指摘されたので戻した。
 	// この待機クリップの脚は腰が動く前提で作られていて、腰を固定したままでは姿勢が成り立たない。
 	// 待機に脚を入れるなら、腰の上下動も一緒に入れる必要がある。
-	const std::vector<std::string> upperBones = {
-		m_spine, m_spine01, m_spine02,
-		m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
-	};
+	const std::vector<std::string>& upperBones = UpperBodyBones();
 	std::vector<std::string> movingBones = upperBones;
 	const std::vector<std::string>& lowerBones = LowerBodyBones();
 	movingBones.insert(movingBones.end(), lowerBones.begin(), lowerBones.end());
+	// 全身をクリップで動かすモデル(騎士)は、腰の回転もクリップから取る(位置は下で休止姿勢へ戻す)。
+	// 騎士の構えは腰を約35度ひねった半身の姿勢で、腰を休止姿勢のままにすると剣が前を向かない。
+	if (m_clipsDriveWholeBody && !m_pelvis.empty())
+		movingBones.push_back(m_pelvis);
 
 	// --- 足運びの位相を進める ---
 	// 全移動クリップで1つの正規化時間を共有する(同期)。クリップごとに別の時間で進めると、
@@ -952,7 +1014,10 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 			const float normalized = keys > 1
 				? m_idleFrameAccumulator / static_cast<float>(keys - 1)
 				: 0.0f;
-			idlePose = mesh.SampleLocalPose(m_idleAnimation, normalized, upperBones);
+			// 全身をクリップで動かすモデル(騎士)は、待機の脚もクリップどおりにする(腰を落とした構え)。
+			// 体の高さは足の骨から接地させる(GameScene)ので、腰を固定したままでも足は地面に着く。
+			idlePose = mesh.SampleLocalPose(m_idleAnimation, normalized,
+				m_clipsDriveWholeBody ? movingBones : upperBones);
 		}
 		blendIn(idlePose, weights.idle);
 	}
@@ -971,7 +1036,17 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 	// ここへなめらかに戻す必要があるためである(入れないと腰だけ跳び、
 	// 腰は脚の親なので膝・足首・つま先がまとめて同じ量だけ平行移動する)。
 	if (!m_pelvis.empty())
-		result.try_emplace(m_pelvis, mesh.GetRestLocalMatrix(m_pelvis));
+	{
+		const Matrix4x4 restPelvis = mesh.GetRestLocalMatrix(m_pelvis);
+		const auto [pelvis, inserted] = result.try_emplace(m_pelvis, restPelvis);
+		if (!inserted)
+		{
+			// クリップから取った腰は、回転だけを使い位置は休止姿勢にする(高さは接地が合わせる)。
+			pelvis->second._41 = restPelvis._41;
+			pelvis->second._42 = restPelvis._42;
+			pelvis->second._43 = restPelvis._43;
+		}
+	}
 
 	// 攻撃・前転の終わりから移動・待機へ戻るとき。
 	// 上半身は直前の姿勢から混ぜる。脚は混ぜず、**始めた瞬間のズレを減らしていく**
@@ -1002,6 +1077,7 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 
 	mesh.ApplyLocalPose(boneComb, result, m_idlePose);
 	return true;
+
 }
 
 void CCharacterAnimator::PlayImportedComboStep(
@@ -1151,7 +1227,7 @@ bool CCharacterAnimator::SampleRootMotion(
 	// ゲームの踏み込み(Update)と同じく、ゲーム内では-Zが前・右は-X。
 	const Vector3 from = mesh.SampleBonePositionOffset(clip, normalized(fromSeconds), m_pelvis);
 	const Vector3 to = mesh.SampleBonePositionOffset(clip, normalized(toSeconds), m_pelvis);
-	forward = -(to.z - from.z) * m_clipToWorld * scale;
+	forward = ClipForwardDelta(clip, m_pelvis, to - from) * m_clipToWorld * scale;
 	right = -(to.x - from.x) * m_clipToWorld * scale;
 	return true;
 }
@@ -1204,7 +1280,7 @@ void CCharacterAnimator::PlayDeathMotion()
 	// 攻撃クリップと同じ全身の経路(脚・腰もクリップから取り、腰の水平移動は位置へ移す)で再生する。
 	// 被弾ののけぞりと違って脚まで動かさないと、立ったまま上体だけが倒れてしまう。
 	PlayImportedAttackAnimation(m_deathAnimation, "Death", ClipSeconds(m_deathAnimation), 0.0f, 0.0f);
-	m_attackRootMotionScale = 1.0f;
+	m_attackRootMotionScale = m_deathRootMotionScale;
 	m_hitStopSeconds = 0.0f;
 	m_holdImportedLastPose = true;
 }
@@ -1286,6 +1362,71 @@ void CCharacterAnimator::Initialize(const CAnimationMesh& mesh, const CharacterM
 	m_rightLeg = resolve(CanonicalJoint::RightUpperLeg);
 	m_rightKnee = resolve(CanonicalJoint::RightLowerLeg);
 	m_rightFoot = resolve(CanonicalJoint::RightFoot);
+	// 後から表に足した骨。表に無いモデルは Initialize(mesh) の名前からの推測のまま。
+	const auto resolveIfListed = [&resolve, &profile](CanonicalJoint joint, std::string& bone) {
+		if (profile.canonicalAliases[static_cast<size_t>(joint)].empty())
+			return;
+		const std::string found = resolve(joint);
+		if (!found.empty())
+			bone = found;
+	};
+	resolveIfListed(CanonicalJoint::Spine1, m_spine01);
+	resolveIfListed(CanonicalJoint::LeftToe, m_leftToe);
+	resolveIfListed(CanonicalJoint::RightToe, m_rightToe);
+
+	// クリップのかけ方。骨の名前が決まってから組み立て直す。
+	m_clipsDriveWholeBody = profile.clipsDriveWholeBody;
+	m_extraLowerBodyBones = profile.extraLowerBodyBones;
+	m_lowerBodyBonesCache.clear();
+	m_upperBodyBonesCache.clear();
+	m_warpBonesCache.clear();
+	m_skeletonBones.clear();
+	if (m_clipsDriveWholeBody && !m_pelvis.empty())
+	{
+		// 骨の一覧(GetBoneNames)には、骨以外のノード(RootNode・Armature・メッシュのノード)も入っている。
+		// それらへクリップの姿勢を入れると、クリップに無いノードが単位行列になり、
+		// アーマチュアの倍率(FBXのセンチメートル→100倍)が消えて体が1/100へ縮んだ(実機で確認)。
+		// 腰(pelvis)の子孫だけを骨とみなす。
+		const std::unordered_map<std::string, std::string> parents = mesh.GetDebugBoneParentNames();
+		for (const std::string& bone : m_boneNames)
+		{
+			std::string current = bone;
+			for (int depth = 0; depth < 64 && !current.empty(); ++depth)
+			{
+				if (current == m_pelvis)
+				{
+					if (bone != m_pelvis)
+						m_skeletonBones.push_back(bone);
+					break;
+				}
+				const auto parent = parents.find(current);
+				current = parent != parents.end() ? parent->second : std::string();
+			}
+		}
+	}
+	if (m_clipsDriveWholeBody)
+	{
+		// 攻撃クリップも、脚と腰以外のすべての骨へかける(名前の部分一致で脚・指・剣を外す作りは
+		// Mixamo の命名に合わせたもので、ほかのリグでは脚の付け根や指を取りこぼすため)。
+		m_importedAttackBones = UpperBodyBones();
+		std::cout << "[Player] whole-body clips: upper=" << UpperBodyBones().size()
+			<< " lower=" << LowerBodyBones().size() << " (";
+		for (const std::string& bone : UpperBodyBones())
+			std::cout << bone << ' ';
+		std::cout << ")" << std::endl;
+	}
+	if (!profile.useLegacyMotionFiles)
+	{
+		// Sword and Shield Pack 用の姿勢ファイルは骨格が違うと壊れた姿勢になるので使わない。
+		m_idlePose.clear();
+		m_seatedPose.clear();
+	}
+	// 骨の役割は名前から決めているので、別のリグに差し替えたときに確かめられるよう出しておく。
+	std::cout << "[Player] bones pelvis=" << m_pelvis << " spine=" << m_spine << "/" << m_spine01 << "/" << m_spine02
+		<< " armR=" << m_rightArm << "/" << m_rightElbow << "/" << m_rightHand
+		<< " armL=" << m_leftArm << "/" << m_leftElbow << "/" << m_leftHand
+		<< " legL=" << m_leftLeg << "/" << m_leftKnee << "/" << m_leftFoot << "/" << m_leftToe
+		<< " legR=" << m_rightLeg << "/" << m_rightKnee << "/" << m_rightFoot << "/" << m_rightToe << std::endl;
 }
 
 void CCharacterAnimator::PlayHeavyAttackMotion()
@@ -1697,8 +1838,10 @@ void CCharacterAnimator::Update(
 					m_importedAttackAnimation, m_rootMotionPreviousTime, m_pelvis);
 				const Vector3 current = mesh.SampleBonePositionOffset(
 					m_importedAttackAnimation, attackTime, m_pelvis);
+				// 騎士のクリップは前後の軸が違う(ClipForwardDelta)。
 				m_pendingRootMotionForward +=
-					-(current.z - previous.z) * m_clipToWorld * m_attackRootMotionScale;
+					ClipForwardDelta(m_importedAttackAnimation, m_pelvis, current - previous) *
+					m_clipToWorld * m_attackRootMotionScale;
 				m_pendingRootMotionRight +=
 					-(current.x - previous.x) * m_clipToWorld * m_attackRootMotionScale;
 				m_rootMotionPreviousTime = attackTime;
@@ -1856,7 +1999,14 @@ void CCharacterAnimator::Update(
 			for (const auto& [boneName, basePose] : m_dodgeBasePose)
 			{
 				const std::string normalized = NormalizeBoneName(boneName);
-				if (normalized.find("shoulder") != std::string::npos ||
+				// 全身をクリップで動かすモデル(騎士)は、前転のキーが無い骨をすべて構えのまま保つ。
+				// 名前で選ぶと、手首(wristr: 剣の骨の親)・鎖骨(chestR)・指が漏れて休止姿勢へ戻り、
+				// 剣の向きが崩れて丸めた体の中へ埋まった(撮影と剣・胴の距離の計測で確認)。
+				const bool holdForWholeBody = m_clipsDriveWholeBody &&
+					std::find(m_skeletonBones.begin(), m_skeletonBones.end(), boneName) != m_skeletonBones.end() &&
+					m_motionKeys.find(boneName) == m_motionKeys.end();
+				if (holdForWholeBody ||
+					normalized.find("shoulder") != std::string::npos ||
 					normalized.find("arm") != std::string::npos ||
 					normalized.find("hand") != std::string::npos)
 				{
@@ -1901,10 +2051,7 @@ void CCharacterAnimator::Update(
 		// ダウンロードした移動クリップはプレイヤーと同じMixamoスケルトンを使う。
 		// 脚に加えて背骨と腕も読み込むが、Hips・手・指は除外する。
 		// Hipsには元データのルート移動が含まれ、手はプレイヤー側の剣の握りを維持するためである。
-		const std::vector<std::string> walkUpperBones = {
-			m_spine, m_spine01, m_spine02,
-			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
-		};
+		const std::vector<std::string>& walkUpperBones = UpperBodyBones();
 		m_walkFrameAccumulator += (useRunAnimation
 			? m_runPlaybackRate
 			: m_walkPlaybackRate) * frameScale;
@@ -1941,10 +2088,7 @@ void CCharacterAnimator::Update(
 		// 攻撃中のレイヤー合成では下半身を待機・移動クリップが担当するため、
 		// 待機時に脚を止めていると、攻撃を出した瞬間に脚だけ別の姿勢へ飛んでしまう。
 		// 前後で同じクリップが脚を動かしている状態にして、継ぎ目をなくす。
-		const std::vector<std::string> idleBones = {
-			m_spine, m_spine01, m_spine02,
-			m_leftArm, m_rightArm, m_leftElbow, m_rightElbow,
-		};
+		const std::vector<std::string>& idleBones = UpperBodyBones();
 		m_idleFrameAccumulator += m_idlePlaybackRate * frameScale;
 		m_idleFrame = static_cast<int>(m_idleFrameAccumulator);
 		const float idleFrameFraction =

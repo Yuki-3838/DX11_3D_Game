@@ -388,5 +388,9 @@ dist/
 # tools/ue_export_fbx.py で書き出して置く(置き方は docs/実装ログ.md の 2026-11-12 Wyvern の項)。
 assets/model/Wyvern/
 
+# 購入した有料アセット(騎士)。公開リポジトリには入れない。
+# tools/blender_export_knight.py で .blend から書き出して置く。
+assets/model/Knight/
+
 # 実行時にコンパイルしたシェーダーのバイトコード(system/ShaderBlobCache.h)。消してもよい。
 shader_cache/

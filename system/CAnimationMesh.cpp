@@ -208,12 +208,15 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 {
 	if (m_embeddedSwordVertexIndices.size() < 2)
 		return false;
-	const auto swordBoneIt = m_BoneDictionary.find("mixamorig:Sword_joint");
+	const auto swordBoneIt = m_BoneDictionary.find(m_swordBoneName);
 
 	// 内蔵メッシュの一部はウェイトが混在・不正なため、CPU変形後の頂点を
 	// 攻撃判定の端点に使うと表示とずれる。見た目で武器を持つ右手ボーンと、
 	// 調整済みの手元ローカル方向から端点を求める。
-	const auto rightHandIt = m_DebugBoneMatrices.find("mixamorig:RightHand");
+	// (Sword and Shield Pack 専用。手の骨の軸に合わせた値なので、ほかのモデルでは下のスキンからの求め方を使う)
+	const auto rightHandIt = m_embeddedSwordFromSkin
+		? m_DebugBoneMatrices.end()
+		: m_DebugBoneMatrices.find(m_swordHandBoneName);
 	if (rightHandIt != m_DebugBoneMatrices.end())
 	{
 		Vector3 localMin = m_vertices[m_embeddedSwordVertexIndices.front()].Position;
@@ -365,7 +368,7 @@ bool CAnimationMesh::BuildEmbeddedSwordWorldSegment(
 	endpointMin /= static_cast<float>(endpointMinCount);
 	endpointMax /= static_cast<float>(endpointMaxCount);
 
-	const auto handIt = m_DebugBoneMatrices.find("mixamorig:RightHand");
+	const auto handIt = m_DebugBoneMatrices.find(m_swordHandBoneName);
 	const Vector3 hand = handIt != m_DebugBoneMatrices.end()
 		? Vector3::Transform(Vector3(0.0f, 0.0f, 0.0f), handIt->second * parentWorld)
 		: endpointMin;
@@ -404,7 +407,7 @@ void CAnimationMesh::UpdateSwordWorldTransform(const Matrix4x4& parentWorld)
 		m_swordWorldSegmentValid = true;
 		if (!m_swordTransformLogged)
 		{
-			const auto handIt = m_DebugBoneMatrices.find("mixamorig:RightHand");
+			const auto handIt = m_DebugBoneMatrices.find(m_swordHandBoneName);
 			const Vector3 rightHand = handIt != m_DebugBoneMatrices.end()
 				? Vector3::Transform(Vector3(0.0f, 0.0f, 0.0f), handIt->second * parentWorld)
 				: Vector3(0.0f, 0.0f, 0.0f);
@@ -609,7 +612,10 @@ void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::strin
 	// バインド姿勢を安定させるため休止階層から再構築する。
 	// 計算式はfinalBone = inverse(restGlobal) * currentGlobalである。
 	const std::string extension = std::filesystem::path(filename).extension().string();
-	if (extension == ".gltf" || extension == ".glb")
+	// 休止姿勢のモデル空間の行列は、どの形式でも作る(GetRestBoneModelHeight が使う)。
+	// 以前は glTF のときしか作っておらず、FBX のプレイヤー(騎士)では腰の高さが0になって
+	// クリップの単位→ゲームの単位の換算(CCharacterAnimator の m_clipToWorld)が0になり、
+	// 攻撃で腰・脚をクリップから取る経路を通らなかった(脚が休止姿勢のまま棒立ちで振っていた)。
 	{
 		const auto buildRestGlobals = [&](auto&& self,
 			CTreeNode<std::string>* node,
@@ -625,7 +631,9 @@ void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::strin
 				self(self, child.get(), global);
 		};
 		buildRestGlobals(buildRestGlobals, &m_AssimpNodeNameTree, Matrix4x4::Identity);
-
+	}
+	if (extension == ".gltf" || extension == ".glb")
+	{
 		for (auto& [name, bone] : m_BoneDictionary)
 		{
 			if (bone.weights.empty())
@@ -1031,6 +1039,9 @@ float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
 		: 1;
 	for (size_t vertexIndex = 0; vertexIndex < m_vertices.size(); vertexIndex += stride)
 	{
+		// 剣は体の一番低い点に入れない(倒れたときに剣先が床を向き、それを床に合わせて体ごと浮いた)。
+		if (vertexIndex < m_groundingIgnoredVertices.size() && m_groundingIgnoredVertices[vertexIndex])
+			continue;
 		const VERTEX_3D& vertex = m_vertices[vertexIndex];
 		Vector3 skinned{};
 		float weightSum = 0.0f;
@@ -1798,12 +1809,24 @@ Matrix4x4 CAnimationMesh::SampleHipsInPlace(
 		const float ax = std::abs(restPosition.x);
 		const float ay = std::abs(restPosition.y);
 		const float az = std::abs(restPosition.z);
-		if (az >= ax && az >= ay)
-			restPosition.z = std::copysign(now.y, restPosition.z);
-		else if (ay >= ax)
-			restPosition.y = std::copysign(now.y, restPosition.y);
+		const int restAxis = (az >= ax && az >= ay) ? 2 : (ay >= ax ? 1 : 0);
+		// クリップの高さの軸。Mixamo のクリップは Y が上で、モデルの親空間(Z が上)と違うので Y を使う。
+		// クリップとモデルが同じリグから書き出したもの(騎士: どちらも Z が上)なら、同じ軸の値を使う
+		// (Y を高さとして読むと、前後の位置を高さにしてしまい腰が床まで沈む)。
+		const aiVector3D& first = channel->mPositionKeys[0].mValue;
+		const float fx = std::abs(first.x);
+		const float fy = std::abs(first.y);
+		const float fz = std::abs(first.z);
+		const int clipAxis = (fz >= fx && fz >= fy) ? 2 : (fy >= fx ? 1 : 0);
+		const float height = clipAxis == restAxis
+			? (restAxis == 2 ? now.z : (restAxis == 1 ? now.y : now.x))
+			: now.y;
+		if (restAxis == 2)
+			restPosition.z = std::copysign(height, restPosition.z);
+		else if (restAxis == 1)
+			restPosition.y = std::copysign(height, restPosition.y);
 		else
-			restPosition.x = std::copysign(now.y, restPosition.x);
+			restPosition.x = std::copysign(height, restPosition.x);
 	}
 
 	Matrix4x4 rotation = restRotation;
@@ -1921,9 +1944,50 @@ void CAnimationMesh::ApplyModelProfile(const CharacterModelProfile& profile)
 {
 	if (!profile.weaponBone.empty())
 		m_swordBoneName = profile.weaponBone;
+	if (!profile.weaponHandBone.empty())
+		m_swordHandBoneName = profile.weaponHandBone;
 	m_swordRotationDegrees = profile.weaponRotationDegrees;
 	m_swordHandOffset = profile.weaponHandOffset;
 	m_swordScale = profile.weaponScale;
+
+	if (!profile.embeddedWeapon)
+		return;
+	// 剣はモデルの一部(weaponBone へスキンした部品)。キャラクターと一緒に描画されるので、
+	// 読み込み時に用意した別の剣(assets/model/Sword.fbx)は使わない(二重に描かれるため)。
+	// 攻撃判定・軌跡は、剣の部品の頂点をスキンで動かした位置から求める。
+	m_swordEmbeddedInPlayerAsset = true;
+	m_embeddedSwordFromSkin = true;
+	m_swordEnabled = false;
+	m_swordUsesPlayerAsset = false;
+	m_swordUseGuaranteedProxy = false;
+	m_swordMesh.reset();
+	m_swordPresetPath.clear();
+	m_swordAssetPath = "embedded:" + m_swordBoneName;
+	m_embeddedSwordVertexIndices.clear();
+	std::string keyword = profile.embeddedWeaponMeshKeyword;
+	std::transform(keyword.begin(), keyword.end(), keyword.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	for (const SUBSET& subset : GetSubsets())
+	{
+		std::string meshName = subset.MeshName;
+		std::transform(meshName.begin(), meshName.end(), meshName.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (meshName.find(keyword) == std::string::npos)
+			continue;
+		for (unsigned int i = 0; i < subset.VertexNum; ++i)
+			m_embeddedSwordVertexIndices.push_back(subset.VertexBase + i);
+		std::cout << "[Sword] embedded mesh=" << subset.MeshName
+			<< " vertices=" << subset.VertexNum << " bone=" << m_swordBoneName << std::endl;
+	}
+	if (m_embeddedSwordVertexIndices.empty())
+		std::cout << "[Sword] embedded weapon mesh not found (keyword=" << keyword << ")" << std::endl;
+	m_groundingIgnoredVertices.assign(m_vertices.size(), false);
+	for (const uint32_t index : m_embeddedSwordVertexIndices)
+	{
+		if (index < m_groundingIgnoredVertices.size())
+			m_groundingIgnoredVertices[index] = true;
+	}
+	m_swordWorldSegmentValid = false;
 }
 
 static void CollectDebugBoneParents(
