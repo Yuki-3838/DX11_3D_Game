@@ -77,6 +77,8 @@ public:
 	void PlayHeavyAttackMotion(int comboStep);
 	void TriggerHitStop(float seconds = 0.05f);
 	void PlayDodgeMotion();
+	// 回避の前転のクリップ(その場で回るもの)。nullptr ならプログラムで組んだ前転を使う。
+	void SetDodgeAnimation(aiAnimation* animation) { m_dodgeAnimation = animation; }
 	// 被弾したときの上体ののけぞり。既存の「sword and shield impact」クリップを使う。
 	// 攻撃と同じ上半身レイヤーで再生し、脚は移動・待機のまま残す
 	// (腰や脚まで取り込むと接地が崩れることが分かっているため)。
@@ -278,6 +280,8 @@ private:
 	// その1フレームだけ足が別の場所へ飛ぶ。
 	bool m_attackLowerBodyFromLocomotion = false;
 	bool m_attackLowerBodyPending = false;
+	// 動いていても脚をクリップから取る(回避の前転。歩きの脚を重ねると、転がりながら歩いてしまう)。
+	bool m_importedForceFullBody = false;
 	/**
 	 * @brief 脚の「ずらし」(モーションワープ)。骨ごとの、自分のローカル空間で足す回転。
 	 *
@@ -337,6 +341,7 @@ private:
 	std::array<aiAnimation*, 3> m_heavyAttackAnimations{};
 	aiAnimation* m_impactAnimation = nullptr;
 	aiAnimation* m_deathAnimation = nullptr;
+	aiAnimation* m_dodgeAnimation = nullptr;
 	float m_deathRootMotionScale = 1.0f;
 	// クリップを最後まで再生したら、最後の姿勢のまま止めておく(力尽きるモーション)。
 	bool m_holdImportedLastPose = false;

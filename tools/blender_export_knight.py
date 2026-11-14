@@ -42,8 +42,8 @@ while i < len(argv):
         TEXTURE_DIR = os.path.abspath(argv[i + 1])
         i += 2
         continue
-    if argv[i] == "--preview" and i + 1 < len(argv):
-        i += 2  # 下で読む(移し替えたアクションの確認画像の置き場)
+    if argv[i] in ("--preview", "--only") and i + 1 < len(argv):
+        i += 2  # 下で読む(確認画像の置き場 / 書き出す動きの絞り込み)
         continue
     positional.append(argv[i])
     i += 1
@@ -82,7 +82,24 @@ RETARGETS = {
     # idle (4) は構えたまま呼吸するだけの待機。idle・idle (2)・idle (3) と騎士の idle / idle2 は
     # 首を50〜180度振って周りを見回す動きが入っていて、戦闘中の待機に合わなかった。
     "mx_idle": os.path.join(_MOTION_DIR, "sword and shield idle (4).fbx"),
+    # 回避の前転。騎士にも Sword and Shield Pack にも前転が無いので、Unity の無料アセット
+    # 「RPG Character Mecanim Animation Pack FREE」(ExplosiveLLC)の Unarmed-DiveRoll-Forward1 を使う。
+    # 骨が Empty の階層で入っているので、tools/blender_rpg_to_mixamo.py で Mixamo の骨の名前のアーマチュアへ
+    # 焼き直したもの(その場で回る形)をここへ置く。配布元のあるアセットなのでリポジトリには入れない。
+    "roll": os.path.join(REPO_DIR, "assets", "model", "Knight", "source", "rpg_dive_roll_mx.fbx"),
 }
+# 元のクリップの使う区間(先頭からの秒数)。前転は最初の約0.1秒が構えたままの溜め、1.13秒より後は
+# 立ち上がった後の揺れなので切る(ゲームでは押した瞬間に跳び出し、移動の0.5秒に近い長さで回り切りたい)。
+RETARGET_WINDOWS = {"roll": (0.10, 1.13)}
+# 腰が休止姿勢より上がる分に掛ける倍率。元の前転は腰が身長の約2割も上がる大きな跳び込みで、
+# 重い鎧の騎士だと宙に浮いて見えたので、少し低い跳び込みにする(下がる分はそのまま)。
+# 0.4 まで下げると、着地の手前で剣が床へ0.23(騎士の身長2.16の1割)刺さった。0.6 で0.15
+# (転がる間に頭・背中が床へ入る0.11と同じくらい。ゲームでは床へ入った分だけ体が持ち上がる)。
+RETARGET_HIP_RISE_SCALE = {"roll": 0.6}
+# --only 名前,名前 で、移し替えと書き出しをその動きだけにする(確認を速く回すため)。
+ONLY = None
+if "--only" in argv:
+    ONLY = set(argv[argv.index("--only") + 1].split(","))
 # 移し替えで休止姿勢の向きをそろえない骨(胴と頭)。Mixamo の回転の変化を騎士の休止姿勢へそのまま重ねる。
 NO_ALIGN_BONES = {"pelvis", "spine", "spine1", "CHEST", "neck", "head"}
 # 上体を起こすクリップと、起こす割合。Sword and Shield Pack の移動・待機は盾を構えて前かがみになる作りで
@@ -292,6 +309,11 @@ def retarget_mixamo_clip(name, path):
     source_action = source.animation_data.action
     src_start = source_action.frame_range[0]
     src_end = source_action.frame_range[1]
+    if name in RETARGET_WINDOWS:
+        window_start, window_end = RETARGET_WINDOWS[name]
+        clip_start = src_start
+        src_start = clip_start + window_start * source_fps
+        src_end = min(src_end, clip_start + window_end * source_fps)
     # クリップの秒数を保つよう、騎士のフレーム(25fps)ごとに元のクリップの同じ時刻を取り出す。
     frame_start = 1
     frame_end = 1 + int((src_end - src_start) * knight_fps / source_fps + 1e-4)
@@ -378,6 +400,8 @@ def retarget_mixamo_clip(name, path):
             arm_rot = (target_world_inv.to_quaternion() @ world_rot).to_matrix().to_4x4()
             if bone.name == "pelvis":
                 moved = (src_world @ sp.head) - src_hips_rest
+                if moved.z > 0.0:
+                    moved.z *= RETARGET_HIP_RISE_SCALE.get(name, 1.0)
                 head = target_world_inv @ (knight_pelvis_rest + moved * height_ratio)
             else:
                 head = follow.translation
@@ -515,11 +539,11 @@ def report_retarget(action, preview_dir):
     camera = bpy.data.objects.new("preview_camera", bpy.data.cameras.new("preview_camera"))
     scene.collection.objects.link(camera)
     scene.camera = camera
-    for frame in (1, last // 3, (2 * last) // 3, last):
+    for frame in sorted({1 + round((last - 1) * k / 7) for k in range(8)}):
         scene.frame_set(frame)
-        for view, location in (("side", Vector((-4.5, -1.0, 1.2))), ("front", Vector((0.5, -4.5, 1.2)))):
+        for view, location in (("side", Vector((-7.0, -1.0, 1.4))), ("front", Vector((0.5, -7.0, 1.4)))):
             camera.location = location
-            camera.rotation_euler = (Vector((0.0, 0.3, 0.5)) - location).to_track_quat("-Z", "Y").to_euler()
+            camera.rotation_euler = (Vector((0.0, 0.0, 0.9)) - location).to_track_quat("-Z", "Y").to_euler()
             scene.render.filepath = os.path.join(preview_dir, "%s_%02d_%s.png" % (action.name, frame, view))
             bpy.ops.render.render(write_still=True)
     bpy.data.objects.remove(camera, do_unlink=True)
@@ -529,6 +553,8 @@ PREVIEW_DIR = None
 if "--preview" in argv:
     PREVIEW_DIR = os.path.abspath(argv[argv.index("--preview") + 1])
 for retarget_name, retarget_path in RETARGETS.items():
+    if ONLY is not None and retarget_name not in ONLY:
+        continue
     retargeted = retarget_mixamo_clip(retarget_name, retarget_path)
     if retargeted is not None:
         report_retarget(retargeted, PREVIEW_DIR)
@@ -546,6 +572,8 @@ for action in bpy.data.actions:
     start, end = action.frame_range
     if end - start < 1.0 or not action_moves(action):
         print("SKIP %s (動きなし)" % action.name)
+        continue
+    if ONLY is not None and clip_name(action.name) not in ONLY:
         continue
     ad.action = action
     if hasattr(ad, "action_slot") and hasattr(action, "slots") and action.slots:
