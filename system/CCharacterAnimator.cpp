@@ -1514,6 +1514,7 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 {
 	BeginAttackBlend();
 	m_holdImportedLastPose = false;
+	m_importedForceFullBody = false;
 	m_importedAttackAnimation = animation;
 	// 技(コンボの段)として再生するときだけ、PlayImportedComboStepが設定し直す。
 	m_importedClipKeysPerSecond = 0.0f;
@@ -1565,6 +1566,20 @@ void CCharacterAnimator::PlayDodgeMotion()
 	m_pendingRootMotionForward = 0.0f;
 	m_attackBlendPending = false;
 	m_locomotionBlendActive = false;
+	if (m_dodgeAnimation != nullptr)
+	{
+		// 前転のクリップを全身へ再生する(力尽きるモーションと同じ経路)。
+		// クリップはその場で回る形なので、腰の水平移動は位置へ移さない(移動は player.cpp が持つ)。
+		// 跳び込む前転で体が地面から離れるので、接地の計算で体を引き下ろさない(m_attackLeavesGround)。
+		m_dodgeMotion = false;
+		m_hitStopSeconds = 0.0f;
+		PlayImportedAttackAnimation(
+			m_dodgeAnimation, "Dodge", Combat::Tuning::PLAYER_DODGE_CLIP_SECONDS, 0.0f, 0.0f);
+		m_attackRootMotionScale = 0.0f;
+		m_attackLeavesGround = true;
+		m_importedForceFullBody = true;
+		return;
+	}
 	BuildFallbackDodgeMotion();
 	// 次のUpdateで、回避を始めた瞬間の姿勢(腕の構え)を保存する。
 	m_dodgeBasePosePending = true;
@@ -1680,7 +1695,8 @@ void CCharacterAnimator::Update(
 			{
 				m_attackLowerBodyPending = false;
 				// 力尽きるモーションは脚もクリップから取る(歩きを重ねると歩きながら倒れてしまう)。
-				m_attackLowerBodyFromLocomotion = state.walking && !m_holdImportedLastPose;
+				// 回避の前転も同じ(m_importedForceFullBody)。
+				m_attackLowerBodyFromLocomotion = state.walking && !m_holdImportedLastPose && !m_importedForceFullBody;
 			}
 			const bool useRunForAttack = state.running && m_runAnimation != nullptr;
 			aiAnimation* lowerBodyAnimation = m_attackLowerBodyFromLocomotion

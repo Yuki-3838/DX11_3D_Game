@@ -370,6 +370,10 @@ inline constexpr float ENEMY_SWEEP_KNOCKBACK_SECONDS = 0.45f;
 // 距離と時間はプレイヤーの移動(player.cpp)と前転のモーション(CCharacterAnimator)の両方がここを見る。
 inline constexpr float PLAYER_DODGE_DISTANCE = 34.0f;
 inline constexpr float PLAYER_DODGE_SECONDS = 0.50f;
+// 前転のクリップ(CharacterModelProfile::dodgeClip)を再生する長さ。移動(PLAYER_DODGE_SECONDS)より少し長く、
+// 残りは起き上がり(この間は移動しない: GameScene の attackAnimationPlaying)。
+// 騎士の前転は元が約1.0秒の跳び込み前転なので、移動と同じ0.5秒だと2倍速で慌ただしく見える。
+inline constexpr float PLAYER_DODGE_CLIP_SECONDS = 0.62f;
 } // namespace Tuning
 
 /**

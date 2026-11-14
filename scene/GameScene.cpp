@@ -4923,6 +4923,18 @@ void GameScene::LoadPlayerAssetsOnWorker()
 			m_playerAnimator.SetDeathAnimation(nullptr);
 		}
 	}
+	// 回避の前転。クリップが無い(読めない)ときはプログラムで組んだ前転になる。
+	// dev_settings.ini の dodge で差し替えて見比べられる(dodge=none でプログラムの前転)。
+	{
+		const std::string dodgeFile = GetDevSetting("dodge", playerProfile.dodgeClip);
+		aiAnimation* dodgeAnimation = nullptr;
+		if (!dodgeFile.empty() && dodgeFile != "none" && std::filesystem::exists(dodgeFile))
+		{
+			m_playerAnimationData.LoadAnimation(dodgeFile, "dodge");
+			dodgeAnimation = m_playerAnimationData.GetAnimation("dodge", 0);
+		}
+		m_playerAnimator.SetDodgeAnimation(dodgeAnimation);
+	}
 
 	// 攻撃中の腰の回転の取り込み方(調整用)。0=取り込まない / 1=バインド姿勢からの変化 / 2=クリップのまま
 	m_playerAnimator.SetAttackHipsRotationMode(std::stoi(GetDevSetting(

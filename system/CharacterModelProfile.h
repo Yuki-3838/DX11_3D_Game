@@ -99,6 +99,9 @@ struct CharacterModelProfile
 	std::string idleClip;
 	std::string impactClip;
 	std::string deathClip;   ///< 空なら力尽きるモーションなし(立ったまま)
+	/// 回避の前転。空(または読めない)ならプログラムで組んだ前転(CCharacterAnimator::BuildFallbackDodgeMotion)を使う。
+	/// その場で回るクリップにすること(回避の移動はプログラム側: player.cpp)。
+	std::string dodgeClip;
 	/// 力尽きるクリップの腰の水平移動を、キャラクターの位置の移動にするか(倒れながら後ずさる等)。
 	/// 移動量の計算は Mixamo のクリップの軸(Y が上・Z が前後)を前提にしている。
 	bool deathRootMotion = true;
@@ -233,6 +236,11 @@ inline CharacterModelProfile MakeKnightPlayerProfile()
 	value.impactClip = "assets/model/Knight/anim/Knight_impact.fbx";
 	value.deathClip = "assets/model/Knight/anim/Knight_death.fbx";
 	value.deathRootMotion = false;
+	// 回避の前転。騎士にも Sword and Shield Pack にも前転が無いので、Unity の無料アセット
+	// 「RPG Character Mecanim Animation Pack FREE」の跳び込み前転を書き出しスクリプトで移し替えたもの
+	// (tools/blender_rpg_to_mixamo.py → tools/blender_export_knight.py の "roll")。
+	// 無い環境ではプログラムで組んだ前転になる。
+	value.dodgeClip = "assets/model/Knight/anim/Knight_roll.fbx";
 	value.attackSet = Combat::PlayerAttackSet::Knight;
 	return value;
 }
