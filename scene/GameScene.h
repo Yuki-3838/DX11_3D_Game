@@ -228,6 +228,53 @@ private:
 	float m_enemyDroolTimer = 0.0f;
 	float m_droolJitter = 0.37f;
 	void UpdateEnemyDrool(float deltaSeconds);
+	// --- 尾回転の足の固定と踏み替え ---
+	// 体は半回転0.42秒で回るのに、踏み替えのクリップの足運びはその数分の1の速さなので、
+	// クリップのままだと4本の足が地面の上を流れる(審査会の指摘「回転攻撃で足が滑る」)。
+	// 地面に着いた足はワールドのその場所へIKで留め、クリップの足の位置から離れすぎたら
+	// 足を持ち上げて素早く次の場所へ踏み出す(軸足で踏ん張りながら、足を踏み鳴らして回る)。
+	struct EnemyPlantedFoot
+	{
+		bool planted = false;   // 地面に着いてその場に留まっている
+		bool stepping = false;  // 持ち上げて次の場所へ運んでいる
+		Vector3 plantWorld{};   // 着いている場所(ワールド。高さは使わない)
+		Vector3 stepFrom{};     // 踏み出した場所
+		Vector3 landWorld{};    // 着く場所(運び終えたら決まる)
+		float stepTime = 0.0f;
+		// 前足を浮かせている具合(0〜1)。体が勢いよく回る間、前足は地面から浮かせて後ろ足を軸に回り、
+		// 回り終わりの一拍で叩きつける(地面に留めたまま毎秒600°で回ると、翼の腕がねじれて翼膜が床へ刺さった)。
+		float air = 0.0f;
+		float airReach = 0.0f;  // この浮かせの間に一番浮いた具合(浮かせ始めの位置から、体についていく位置へ移す割合)
+		Vector3 airFrom{};      // 浮かせ始めたときの足の場所
+		Vector3 lastGoal{};     // 前回の更新で足を置いた場所(ワールド)
+		bool hasLastGoal = false;
+	};
+	EnemyPlantedFoot m_enemyPlantedFeet[4]{};
+	// 前の更新で足(つま先)があった場所(ワールド)。固定を始めるときにここへ留める。
+	Vector3 m_enemyFootLastWorld[4]{};
+	bool m_enemyFootLastWorldValid[4]{};
+	// 固定の効き(0〜1)。回り始めで上げ、回り終わって足を元の位置へ戻してから下げる。
+	float m_enemyFootPlantWeight = 0.0f;
+	// 回り終わってからの時間(足を戻しきれなくても、これを過ぎたら固定を外す)。
+	float m_enemyFootPlantReleaseTime = 0.0f;
+	// 前回の更新のモデル→ワールドの変換(足の位置が体の回転でどれだけ動いたかを求める)。
+	Matrix4x4 m_enemyPrevModelToWorld{};
+	bool m_enemyPrevModelToWorldValid = false;
+	// 撮影の記録用: 踏み替えた回数と、地面に着いている足がワールドで動いた速さの最大(前回の記録から)。
+	int m_enemyFootStepCount = 0;
+	float m_enemyFootSlideMax = 0.0f;
+	float m_enemyFootPlantErrorMax = 0.0f;
+	// 前の更新の接地の高さ(足を全部持ち上げている間はこれを保つ)。
+	float m_enemyHeldGroundOffsetY = 0.0f;
+	bool m_enemyHeldGroundOffsetValid = false;
+	int m_enemyFootSlideFoot = -1; // 一番速く滑った足(ENEMY_FOOT_BONES の並び)
+	Vector3 m_enemyFootPrevWorld[4]{};
+	bool m_enemyFootPrevValid = false;
+	// 足の固定を使うか(dev_settings.ini の enemy_foot_plant=0 で切って、前と比べられる)。
+	bool m_enemyFootPlantEnabled = true;
+	static constexpr float ENEMY_FOOT_STEP_SECONDS = 0.12f;
+	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float deltaSeconds);
+	void MeasureEnemyFootSlide(float deltaSeconds);
 	// 首と尾の二次的な動きを求めて構えに足す。毎更新1回だけ呼ぶ(ばねの状態を進めるため)。
 	void AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float deltaSeconds);
 	// クリップのキーの数(一番多いチャンネル)。

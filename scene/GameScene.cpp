@@ -708,7 +708,14 @@ namespace {
 			}
 
 			const float overlap = hitDistance - distance;
-			if (lockPlayerPosition)
+			if (enemyObj->isTailSpinning())
+			{
+				// 尾回転の間は敵を押し戻さない(プレイヤーだけが押し出される)。
+				// 押し合いの球は敵の位置より前寄りにあるので、体ごと回すと球の中心が円を描いてプレイヤーへ振られ、
+				// 敵が半回転で約25も押し流されていた。地面に留めた足が追いつかず、足が滑って見えた原因の一つ。
+				playerSrt.pos -= pushDir * overlap;
+			}
+			else if (lockPlayerPosition)
 			{
 				// 攻撃中はプレイヤーをアニメーションの固定根にする。
 				// めり込み補正を敵側へ集め、プレイヤーが滑って見えないようにする。
@@ -1550,11 +1557,16 @@ void GameScene::update(uint64_t deltatime)
 			nextEnemyCollisionSrt.scale, Vector3(8.0f, 8.0f, 8.0f));
 		GM31::GE::Collision::BoundingSphere nextEnemySphere =
 			transformBSphere(m_localbsenemy, nextEnemyCollisionSrt);
-		Vector3 enemyMove = nextEnemySphere.center - prevEnemySphere.center;
+		// 動いた量は位置の差で求める。当たりの球は敵の位置より前寄りにあるので、球の中心の差で求めると、
+		// その場で向きを変えただけで球の中心が円を描いた分まで「動いた」ことになり、向き直り・尾回転のたびに
+		// 敵が円を描いて流れていた(尾回転の半回転で約25。地面に留めた足が追いつかず滑って見えた)。
+		// 壁を避ける計算は、向きを変えた後の球を元の位置に置いたものから、位置の差だけ動かして行う。
+		const Vector3 enemyMove = enemySrt.pos - prevEnemySrt.pos;
+		const Vector3 turnedEnemyCenter = nextEnemySphere.center - enemyMove;
 		Vector3 adjustedEnemyMove = calcWallAvoidMove(
 			walldatas,
 			prevEnemySphere.radius,
-			prevEnemySphere.center,
+			turnedEnemyCenter,
 			enemyMove,
 			playerSrt.pos);
 
@@ -1562,7 +1574,7 @@ void GameScene::update(uint64_t deltatime)
 			auto enemyHitWalls = checkWallCollision(
 				walldatas,
 				prevEnemySphere.radius,
-				prevEnemySphere.center,
+				turnedEnemyCenter,
 				enemyMove);
 			appendHitWalls(m_hitWallObjects, enemyHitWalls);
 		}
@@ -3105,7 +3117,14 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				// 「回転台に乗せて回しているだけ」に見えていた(審査会の指摘)。踏み替えのクリップが無ければ歩きを使う。
 				// 突進は走りのクリップがあればそれを使う。
 				holdStandingPose = false;
-				if (tailSpinAttack)
+				// 足の固定(ApplyEnemyFootPlant)を使うときは、脚は立ち姿勢(待機)のままにして、
+				// 足を持ち上げて運ぶのは固定の仕組みに任せる。踏み替えのクリップのままだと、
+				// クリップが足を持ち上げてつま先を下へ向けた形のまま地面へ留めることになり、爪先が床へ刺さった。
+				if (tailSpinAttack && m_enemyFootPlantEnabled && m_enemyIdleAnimation != nullptr)
+				{
+					holdStandingPose = true;
+				}
+				else if (tailSpinAttack)
 				{
 					aiAnimation* const turnClip = m_enemies.front()->getSpinSign() > 0.0f
 						? m_enemyTurnLeftAnimation
@@ -3379,25 +3398,35 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			// 背骨はモデルの左右の軸(+X)まわりに回っている。その逆回転で、胸を動かす前のつま先の位置を求める。
 			const Matrix4x4 undo = Matrix4x4::CreateFromAxisAngle(Vector3(1.0f, 0.0f, 0.0f), -tellPose.chestHeave);
 			bool solved = false;
-			const auto plantFoot = [&](EnemyBone upper, EnemyBone lower, EnemyBone ankle, EnemyBone toe)
+			const auto plantFoot = [&](EnemyBone upper, EnemyBone lower, EnemyBone ankle, EnemyBone toe, int side)
 			{
 				Vector3 toeNow{};
 				if (!m_enemyProfile->HasBone(upper) || !m_enemyProfile->HasBone(lower) || !m_enemyProfile->HasBone(toe) ||
 					!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(toe), toeNow))
 					return;
 				const Vector3 toeBefore = pivot + Vector3::Transform(toeNow - pivot, undo);
-				const CAnimationMesh::LegIKChain chain{
+				CAnimationMesh::LegIKChain chain{
 					m_enemyProfile->Bone(upper), m_enemyProfile->Bone(lower),
 					m_enemyProfile->Bone(ankle), m_enemyProfile->Bone(toe) };
+				chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[side];
 				if (m_enemyAnimationMesh->SolveLegIK(chain, toeBefore))
 					solved = true;
 			};
-			plantFoot(EnemyBone::FrontUpperL, EnemyBone::FrontLowerL, EnemyBone::FrontAnkleL, EnemyBone::FrontFootL);
-			plantFoot(EnemyBone::FrontUpperR, EnemyBone::FrontLowerR, EnemyBone::FrontAnkleR, EnemyBone::FrontFootR);
+			plantFoot(EnemyBone::FrontUpperL, EnemyBone::FrontLowerL, EnemyBone::FrontAnkleL, EnemyBone::FrontFootL, 0);
+			plantFoot(EnemyBone::FrontUpperR, EnemyBone::FrontLowerR, EnemyBone::FrontAnkleR, EnemyBone::FrontFootR, 1);
 			if (solved)
 				m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
 		}
 	}
+	// 尾回転の間は、地面に着いた足をその場に留め、離れすぎたら踏み替える(足が床を滑らないように)。
+	// 溜め(尾を寄せて体をひねる)の間も、体の向きが変わるので固定する。
+	// 勢いよく回っている間(半回転と半回転の間の一拍を除く)は前足を浮かせ、後ろ足を軸に回る。
+	ApplyEnemyFootPlant(
+		m_enemyFootPlantEnabled && tailSpinAttack && !enemyDead &&
+			(state == enemy::MotionState::Windup || state == enemy::MotionState::Active),
+		state == enemy::MotionState::Active && m_enemies.front()->isTailSpinning() &&
+			!m_enemies.front()->isTailSpinPausing(),
+		deltaSeconds);
 	// 敵の静的AABBだけでは、スキニングで脚や胴が沈んだ姿勢のときに
 	// 実頂点の最下点を拾えない。描画専用の接地オフセットだけを現在姿勢に
 	// 合わせ、物理で使う敵のワールドSRTは変更しない。
@@ -3422,11 +3451,26 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyGroundSink = 0.0f;
 		const bool standsOnFeet = !enemyDead && m_enemyFootClearance > 0.0f &&
 			!(m_enemyIntroActive && m_enemyIntroTime < m_enemyProfile->introFallSeconds);
+		// 足を留めている間に、地面に着いた足が1本も無い(全部持ち上げている)ときは、体の高さを前の更新のまま保つ。
+		bool holdGroundOffset = false;
 		if (standsOnFeet)
 		{
 			float footLowest = (std::numeric_limits<float>::max)();
-			for (const EnemyBone footBone : ENEMY_FOOT_BONES)
+			// 尾回転で足を留めている間は、体を支えるのは地面に留めた足だけ。持ち上げて運んでいる足・浮かせた前足を
+			// 床に合わせると、その足が一番低いときに体ごと下がり、持ち上げたはずの足が床をこすって流れた。
+			bool anyPlanted = false;
+			if (m_enemyFootPlantWeight > 0.0f)
 			{
+				for (const EnemyPlantedFoot& planted : m_enemyPlantedFeet)
+					anyPlanted = anyPlanted || (planted.planted && planted.air <= 0.0f);
+				holdGroundOffset = !anyPlanted && m_enemyHeldGroundOffsetValid;
+			}
+			for (int footIndex = 0; footIndex < 4; ++footIndex)
+			{
+				const EnemyBone footBone = ENEMY_FOOT_BONES[footIndex];
+				const EnemyPlantedFoot& planted = m_enemyPlantedFeet[footIndex];
+				if (anyPlanted && !(planted.planted && planted.air <= 0.0f))
+					continue;
 				Vector3 foot{};
 				if (!m_enemyProfile->HasBone(footBone) ||
 					!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(footBone), foot))
@@ -3449,8 +3493,11 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 					m_enemyGroundSinkBone = m_enemyAnimationMesh->GetLastLowestBoneName();
 			}
 		}
-		const float visualGroundOffsetY =
-			enemyGroundY - lowestHeight * m_enemyModelScale;
+		const float visualGroundOffsetY = holdGroundOffset
+			? m_enemyHeldGroundOffsetY
+			: enemyGroundY - lowestHeight * m_enemyModelScale;
+		m_enemyHeldGroundOffsetY = visualGroundOffsetY;
+		m_enemyHeldGroundOffsetValid = true;
 		for (const auto& enemyObject : m_enemies)
 		{
 			if (enemyObject)
@@ -3458,6 +3505,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		}
 	}
 	m_enemyBoneComb.Update();
+	MeasureEnemyFootSlide(deltaSeconds);
 	UpdateEnemyMouthPosition();
 	UpdateEnemyDrool(deltaSeconds);
 	if (blendedIntroThisUpdate)
@@ -4023,7 +4071,7 @@ void GameScene::WriteCaptureLog()
 		m_captureLog = _wfsopen((m_captureDir + L"\\enemy_log.csv").c_str(), L"w", _SH_DENYNO);
 		if (!m_captureLog)
 			return;
-		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail,state_time,body_y,player_y,time_scale,camera_wall_gap,camera_yaw_deg,locked,enemy_hp,stamina,camera_slide_deg,camera_player_dist,player_on_screen,ground_sink,ground_sink_bone,inhale,breath_weight,exertion,drips,brake_lean\n");
+		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail,state_time,body_y,player_y,time_scale,camera_wall_gap,camera_yaw_deg,locked,enemy_hp,stamina,camera_slide_deg,camera_player_dist,player_on_screen,ground_sink,ground_sink_bone,inhale,breath_weight,exertion,drips,brake_lean,foot_slide,foot_steps,plant_weight,plant_err,slide_foot\n");
 	}
 	const enemy& e = *m_enemies.front();
 	const Vector3 enemyPos = e.getSRT().pos;
@@ -4076,7 +4124,7 @@ void GameScene::WriteCaptureLog()
 				y <= static_cast<float>(Application::GetHeight())) ? 1 : 0;
 		}
 	}
-	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d,%.2f,%s,%.3f,%.2f,%.2f,%zu,%.3f\n",
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d,%.2f,%s,%.3f,%.2f,%.2f,%zu,%.3f,%.1f,%d,%.2f,%.2f,%d\n",
 		m_battleSeconds,
 		static_cast<int>(e.getMotionState()),
 		static_cast<int>(e.getAttackKind()),
@@ -4108,7 +4156,15 @@ void GameScene::WriteCaptureLog()
 		m_enemyBreathWeight,
 		m_enemyExertion,
 		m_enemyMotionFx.GetDripCount(),
-		m_enemyBrakeLean);
+		m_enemyBrakeLean,
+		m_enemyFootSlideMax,
+		m_enemyFootStepCount,
+		m_enemyFootPlantWeight,
+		m_enemyFootPlantErrorMax,
+		m_enemyFootSlideFoot);
+	m_enemyFootSlideMax = 0.0f;
+	m_enemyFootSlideFoot = -1;
+	m_enemyFootPlantErrorMax = 0.0f;
 	fflush(m_captureLog);
 }
 
@@ -4710,6 +4766,8 @@ void GameScene::init()
 	// 当たって演出は出るが、体力だけ減らない。デバッグ表示の「戦闘」タブでも切り替えられる。
 	m_combat.SetEnemyDebugInvincible(GetDevSetting("enemy_invincible", "0") == "1");
 	m_combat.SetPlayerDebugInvincible(GetDevSetting("player_invincible", "0") == "1");
+	// 比較用: enemy_foot_plant=0 で尾回転の足の固定を切る(前の、足が流れる回り方に戻る)。
+	m_enemyFootPlantEnabled = GetDevSetting("enemy_foot_plant", "1") != "0";
 	// カメラ(3D)の初期匁E
 	// 剣の軌跡。刃のワールド座標だけを渡す作りなので、
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
@@ -5652,6 +5710,314 @@ void GameScene::PushEnemyBodyOutOfWalls()
 			OnEnemyChargeHitWall(e, head, forward);
 		}
 	}
+}
+
+void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float deltaSeconds)
+{
+	if (!m_enemyAnimationMesh || !m_enemyProfile || m_enemies.empty() || !m_enemies.front())
+		return;
+	const float dt = std::max(deltaSeconds, 0.0001f);
+	const Matrix4x4 modelToWorld = m_enemies.front()->getRenderSRT().GetMatrix();
+	const Matrix4x4 prevModelToWorld = m_enemyPrevModelToWorldValid ? m_enemyPrevModelToWorld : modelToWorld;
+	m_enemyPrevModelToWorld = modelToWorld;
+	m_enemyPrevModelToWorldValid = true;
+
+	// 固定の抜け(足を元の位置へ戻した後)の速さ。
+	constexpr float PLANT_FADE_OUT_SECONDS = 0.12f;
+	// 回り終わって足を戻しきれなくても、これを過ぎたら固定を外す。
+	constexpr float PLANT_RELEASE_LIMIT_SECONDS = 0.45f;
+	struct Leg { EnemyBone upper, lower, ankle, toe; };
+	// ENEMY_FOOT_BONES と同じ並び(前左・前右・後左・後右)。
+	static constexpr Leg LEGS[4] = {
+		{ EnemyBone::FrontUpperL, EnemyBone::FrontLowerL, EnemyBone::FrontAnkleL, EnemyBone::FrontFootL },
+		{ EnemyBone::FrontUpperR, EnemyBone::FrontLowerR, EnemyBone::FrontAnkleR, EnemyBone::FrontFootR },
+		{ EnemyBone::BackUpperL, EnemyBone::BackLowerL, EnemyBone::BackAnkleL, EnemyBone::BackFootL },
+		{ EnemyBone::BackUpperR, EnemyBone::BackLowerR, EnemyBone::BackAnkleR, EnemyBone::BackFootR },
+	};
+	// 足の今の位置(ワールド)を控える。固定を始めるときは、この「前の更新で足があった場所」に留める。
+	// 今の更新の位置で留めると、溜めに入った瞬間に姿勢が切り替わって足が飛んだ分(記録で1更新に約7)がそのまま見えた。
+	const auto rememberFeet = [&]()
+	{
+		for (int i = 0; i < 4; ++i)
+		{
+			Vector3 toeModel{};
+			m_enemyFootLastWorldValid[i] = m_enemyProfile->HasBone(LEGS[i].toe) &&
+				m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(LEGS[i].toe), toeModel);
+			if (m_enemyFootLastWorldValid[i])
+				m_enemyFootLastWorld[i] = Vector3::Transform(toeModel, modelToWorld);
+		}
+	};
+
+	// 入りはすぐ効かせる(留める場所が前の更新の足の位置なので、効かせても足は飛ばない)。
+	const bool starting = active && m_enemyFootPlantWeight <= 0.0f;
+	if (active)
+	{
+		m_enemyFootPlantReleaseTime = 0.0f;
+		m_enemyFootPlantWeight = 1.0f;
+	}
+	else if (m_enemyFootPlantWeight > 0.0f)
+	{
+		m_enemyFootPlantReleaseTime += dt;
+	}
+	if (m_enemyFootPlantWeight <= 0.0f)
+	{
+		for (EnemyPlantedFoot& foot : m_enemyPlantedFeet)
+			foot = EnemyPlantedFoot{};
+		rememberFeet();
+		return;
+	}
+	if (starting)
+	{
+		for (int i = 0; i < 4; ++i)
+		{
+			if (!m_enemyFootLastWorldValid[i])
+				continue;
+			m_enemyPlantedFeet[i] = EnemyPlantedFoot{};
+			m_enemyPlantedFeet[i].planted = true;
+			m_enemyPlantedFeet[i].plantWorld = m_enemyFootLastWorld[i];
+		}
+	}
+	// 踏み出すのは、クリップの足の位置から脚の長さのこの割合だけ離れたとき。
+	// 回っている間は大きめにして、着いた足がしばらく留まって見えるようにする(軸足で踏ん張る)。
+	// 回り終わった後は小さくして、ずれた足を元の位置まで踏み戻す。
+	constexpr float STEP_DISTANCE_SPINNING = 0.30f;
+	constexpr float STEP_DISTANCE_SETTLING = 0.08f;
+	// これより離れたら、ほかの足が踏み出していても踏み出す(脚が伸びきって突っ張らないように)。
+	constexpr float STEP_DISTANCE_FORCED = 0.60f;
+	// 股から留めた場所までがこの割合(脚の長さに対する)を超えたら踏み出す。IKは伸びきる手前(0.985)から
+	// 足を届かせなくなるので、その少し手前。
+	constexpr float STEP_REACH_LIMIT = 0.86f;
+	// 同時に持ち上げる足の数(4本のうち2本は必ず地面で体を支える)。
+	constexpr int MAX_STEPPING_FEET = 2;
+	// 足を持ち上げる高さ(脚の長さに対する割合と、上限のワールドの長さ)。
+	// 前脚(翼の腕)は脚が長く、割合だけだと床から17も上がって、足踏みではなく腕を振り上げて見えた。
+	// 歩きで足が上がるのは床から約8まで(撮影の記録)なので、それより低く抑える。
+	// 後脚は短いので割合だけだと約3しか上がらず、床すれすれを運んで滑って見えた。下限も決める。
+	constexpr float STEP_LIFT = 0.15f;
+	constexpr float STEP_LIFT_MIN = 4.0f;
+	constexpr float STEP_LIFT_MAX = 5.0f;
+	// 着く場所を、体が回り続ける分だけ先へ置く時間(着いた後も長く留まれるように)。上限は脚の長さの割合。
+	constexpr float STEP_LEAD_SECONDS = 0.10f;
+	// 先へ置きすぎると、着いた瞬間から脚が届かず足が引きずられた(着地直後に毎秒100ほど流れた)。
+	constexpr float STEP_LEAD_LIMIT = 0.2f;
+	// 回る間に前足を浮かせる高さ(ワールドの長さ)と、浮かせる・下ろす速さ。
+	constexpr float FRONT_AIR_HEIGHT = 6.0f;
+	constexpr float FRONT_AIR_RISE_SECONDS = 0.07f;
+	constexpr float FRONT_AIR_DROP_SECONDS = 0.09f;
+
+	// 足の高さは、クリップ(立ち姿勢)の足の高さのまま使い、留めるのは横の位置だけにする。
+	// ワールドの床の高さへ合わせると、脚が伸びきりかけたときにIKが足を届かせきれず、
+	// そのぶん接地が体を下げ、次の更新でまた届かず…と毎更新少しずつ体が沈み、首や尾が床へ入った。
+	const Matrix4x4 worldToModel = modelToWorld.Invert();
+	// ただし浮かせた前足は床から測って持ち上げる。回り出しで体が前へのめると、立ち姿勢の前足の高さは床より下になり、
+	// そこから持ち上げても床の高さにしか来ず、浮かせたつもりの前足が床の上を体と一緒に流れていた。
+	// (床の高さ = 接地の計算で一番低い足の骨を合わせる高さ。地面 -0.3 の上 m_enemyFootClearance)
+	const float groundBoneY = -0.3f + (m_enemyFootClearance + 0.01f) * m_enemyModelScale;
+
+	int steppingCount = 0;
+	for (const EnemyPlantedFoot& foot : m_enemyPlantedFeet)
+		steppingCount += foot.stepping ? 1 : 0;
+	// 前足を浮かせている間は後ろ足2本で立っているので、踏み出すのは1本ずつ(もう1本を軸足に残す)。
+	const int maxSteppingFeet = frontAirborne && active ? 1 : MAX_STEPPING_FEET;
+	bool allHome = true;
+	bool solved = false;
+	for (int i = 0; i < 4; ++i)
+	{
+		const Leg& leg = LEGS[i];
+		EnemyPlantedFoot& foot = m_enemyPlantedFeet[i];
+		if (!m_enemyProfile->HasBone(leg.upper) || !m_enemyProfile->HasBone(leg.lower) ||
+			!m_enemyProfile->HasBone(leg.ankle) || !m_enemyProfile->HasBone(leg.toe))
+			continue;
+		Vector3 upperModel{}, lowerModel{}, ankleModel{}, toeModel{};
+		if (!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.upper), upperModel) ||
+			!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.lower), lowerModel) ||
+			!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.ankle), ankleModel) ||
+			!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.toe), toeModel))
+			continue;
+		// クリップのままの足の位置(ワールド)と、体の回転・移動だけでその位置が動く速さ(クリップの足運びは含めない)。
+		const Vector3 natural = Vector3::Transform(toeModel, modelToWorld);
+		Vector3 carried = (natural - Vector3::Transform(toeModel, prevModelToWorld)) / dt;
+		carried.y = 0.0f;
+		const float legLength =
+			(Vector3::Transform(upperModel, modelToWorld) - Vector3::Transform(lowerModel, modelToWorld)).Length() +
+			(Vector3::Transform(lowerModel, modelToWorld) - Vector3::Transform(ankleModel, modelToWorld)).Length();
+		if (legLength < 0.001f)
+			continue;
+
+		// 前足(並びの0・1)は、勢いよく回っている間は地面から浮かせて体についていかせる。
+		const bool frontFoot = i < 2;
+		const float airTarget = frontFoot && frontAirborne && active ? 1.0f : 0.0f;
+		if (airTarget > foot.air)
+		{
+			if (foot.air <= 0.0f)
+			{
+				// 浮かせ始め。今いる場所(着いている場所か、運んでいる途中の場所)から体についていく位置へ移す。
+				foot.airFrom = foot.hasLastGoal ? foot.lastGoal : natural;
+				foot.airReach = 0.0f;
+				foot.planted = false;
+				foot.stepping = false;
+			}
+			foot.air = std::min(airTarget, foot.air + dt / FRONT_AIR_RISE_SECONDS);
+		}
+		else if (airTarget < foot.air)
+		{
+			foot.air = std::max(airTarget, foot.air - dt / FRONT_AIR_DROP_SECONDS);
+		}
+		if (foot.air > 0.0f)
+		{
+			foot.airReach = std::max(foot.airReach, foot.air);
+			const float reach = foot.airReach * foot.airReach * (3.0f - 2.0f * foot.airReach);
+			const Vector3 carriedTo = foot.airFrom + (natural - foot.airFrom) * reach;
+			Vector3 goal(carriedTo.x,
+				std::max(natural.y, groundBoneY) + foot.air * FRONT_AIR_HEIGHT,
+				carriedTo.z);
+			goal = natural + (goal - natural) * m_enemyFootPlantWeight;
+			foot.lastGoal = goal;
+			foot.hasLastGoal = true;
+			CAnimationMesh::LegIKChain chain{
+				m_enemyProfile->Bone(leg.upper), m_enemyProfile->Bone(leg.lower),
+				m_enemyProfile->Bone(leg.ankle), m_enemyProfile->Bone(leg.toe) };
+			chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[i];
+			if (m_enemyAnimationMesh->SolveLegIK(chain, Vector3::Transform(goal, worldToModel)))
+				solved = true;
+			allHome = false;
+			continue;
+		}
+		// 下ろしきったら、そこで地面に着く(下の処理で今の位置に留める)。
+		foot.airReach = 0.0f;
+
+		if (!foot.planted && !foot.stepping)
+		{
+			foot.planted = true;
+			foot.plantWorld = natural;
+		}
+		const float driftX = natural.x - foot.plantWorld.x;
+		const float driftZ = natural.z - foot.plantWorld.z;
+		const float drift = std::sqrt(driftX * driftX + driftZ * driftZ);
+		const float stepDistance = (active ? STEP_DISTANCE_SPINNING : STEP_DISTANCE_SETTLING) * legLength;
+		// 留めた場所が股から脚の届く長さ近くまで離れたら踏み出す(届かない分は足が引きずられて滑る)。
+		const Vector3 hipWorld = Vector3::Transform(upperModel, modelToWorld);
+		// IKが届かせるのは足首なので、留めた場所に足を置いたときの足首の位置で測る。
+		const Vector3 ankleOffset = Vector3::Transform(ankleModel, modelToWorld) - natural;
+		const Vector3 plantedAnkle = Vector3(foot.plantWorld.x, natural.y, foot.plantWorld.z) + ankleOffset;
+		const bool outOfReach = (plantedAnkle - hipWorld).Length() > STEP_REACH_LIMIT * legLength;
+		if (foot.planted &&
+			(drift > STEP_DISTANCE_FORCED * legLength ||
+			 ((outOfReach || drift > stepDistance) && steppingCount < maxSteppingFeet)))
+		{
+			foot.planted = false;
+			foot.stepping = true;
+			foot.stepFrom = foot.plantWorld;
+			foot.stepTime = 0.0f;
+			++steppingCount;
+		}
+
+		Vector3 target = foot.plantWorld;
+		float lift = 0.0f;
+		if (foot.stepping)
+		{
+			foot.stepTime += dt;
+			const float t = std::clamp(foot.stepTime / ENEMY_FOOT_STEP_SECONDS, 0.0f, 1.0f);
+			// 着く場所: 着くまでの残りの時間と、さらに少し先まで体が回る分だけ、クリップの足の位置より先へ置く。
+			Vector3 lead = active
+				? carried * (ENEMY_FOOT_STEP_SECONDS * (1.0f - t) + STEP_LEAD_SECONDS)
+				: Vector3(0.0f, 0.0f, 0.0f);
+			const float leadLength = lead.Length();
+			if (leadLength > STEP_LEAD_LIMIT * legLength)
+				lead *= STEP_LEAD_LIMIT * legLength / leadLength;
+			// 足を素早く上げながら運び始め、運び終えてから下ろす(地面すれすれで足を横へ動かすと滑って見える)。
+			// 上げきるまで元の場所に置いておくと、脚が届かなくなって踏み出した足は、その間体に引きずられて床の上を流れた。
+			const float carry = std::clamp((t - 0.05f) / 0.75f, 0.0f, 1.0f);
+			// 着く場所は運んでいる間だけ体についていかせ、運び終えたら決める。
+			// 下ろしている間も体と一緒に動かしていたので、着地の瞬間に足が床すれすれを流れていた(撮影の記録で毎秒200)。
+			if (carry < 1.0f)
+				foot.landWorld = natural + lead;
+			const Vector3 land = foot.landWorld;
+			const float s = carry * carry * (3.0f - 2.0f * carry);
+			target = foot.stepFrom + (land - foot.stepFrom) * s;
+			// 持ち上げは速く、下ろしは運び終えてから(平方根で山の両肩を立てる)。
+			lift = std::sqrt(std::max(0.0f, std::sin(t * 3.14159265f))) *
+				std::clamp(STEP_LIFT * legLength, STEP_LIFT_MIN, STEP_LIFT_MAX);
+			if (t >= 1.0f)
+			{
+				foot.stepping = false;
+				foot.planted = true;
+				foot.plantWorld = land;
+				++m_enemyFootStepCount;
+			}
+		}
+		if (foot.stepping || drift > STEP_DISTANCE_SETTLING * legLength * 1.5f)
+			allHome = false;
+
+		Vector3 goal(target.x, natural.y + lift, target.z);
+		goal = natural + (goal - natural) * m_enemyFootPlantWeight;
+		foot.lastGoal = goal;
+		foot.hasLastGoal = true;
+		CAnimationMesh::LegIKChain chain{
+			m_enemyProfile->Bone(leg.upper), m_enemyProfile->Bone(leg.lower),
+			m_enemyProfile->Bone(leg.ankle), m_enemyProfile->Bone(leg.toe) };
+		if (frontFoot)
+			chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[i];
+		if (m_enemyAnimationMesh->SolveLegIK(chain, Vector3::Transform(goal, worldToModel)))
+			solved = true;
+	}
+	if (solved)
+		m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
+	rememberFeet();
+	// 撮影の記録用: 地面に留めた足が、留めた場所からどれだけずれたか(IKが届かなかった分)。
+	if (!m_captureDir.empty())
+	{
+		for (int i = 0; i < 4; ++i)
+		{
+			const EnemyPlantedFoot& foot = m_enemyPlantedFeet[i];
+			Vector3 toeModel{};
+			if (!foot.planted || foot.air > 0.0f || !m_enemyProfile->HasBone(LEGS[i].toe) ||
+				!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(LEGS[i].toe), toeModel))
+				continue;
+			const Vector3 toe = Vector3::Transform(toeModel, modelToWorld);
+			const float ex = toe.x - foot.plantWorld.x;
+			const float ez = toe.z - foot.plantWorld.z;
+			m_enemyFootPlantErrorMax = std::max(m_enemyFootPlantErrorMax,
+				std::sqrt(ex * ex + ez * ez) * m_enemyFootPlantWeight);
+		}
+	}
+
+	// 回り終わったら、足を元の位置まで踏み戻してから固定を外す。
+	if (!active && (allHome || m_enemyFootPlantReleaseTime > PLANT_RELEASE_LIMIT_SECONDS))
+		m_enemyFootPlantWeight = std::max(0.0f, m_enemyFootPlantWeight - dt / PLANT_FADE_OUT_SECONDS);
+}
+
+void GameScene::MeasureEnemyFootSlide(float deltaSeconds)
+{
+	if (m_captureDir.empty() || deltaSeconds <= 0.0f)
+		return;
+	bool valid = true;
+	for (int i = 0; i < 4; ++i)
+	{
+		Vector3 foot{};
+		if (!GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
+		{
+			valid = false;
+			continue;
+		}
+		// 地面に着いている(前後の更新とも床から踏んだとみなす高さより下)足が、横へ動いた速さ。
+		const Vector3 previous = m_enemyFootPrevWorld[i];
+		m_enemyFootPrevWorld[i] = foot;
+		if (!m_enemyFootPrevValid)
+			continue;
+		if (foot.y - ARENA_FLOOR_TOP_Y >= ENEMY_FOOT_CONTACT_HEIGHT ||
+			previous.y - ARENA_FLOOR_TOP_Y >= ENEMY_FOOT_CONTACT_HEIGHT)
+			continue;
+		const float dx = foot.x - previous.x;
+		const float dz = foot.z - previous.z;
+		const float speed = std::sqrt(dx * dx + dz * dz) / deltaSeconds;
+		if (speed > m_enemyFootSlideMax)
+		{
+			m_enemyFootSlideMax = speed;
+			m_enemyFootSlideFoot = i;
+		}
+	}
+	m_enemyFootPrevValid = valid;
 }
 
 bool GameScene::GetEnemyBoneWorld(const char* bone, Vector3& out) const

@@ -1636,6 +1636,23 @@ bool CAnimationMesh::SolveLegIK(
 	upperIt->second.AnimationMatrix = upperGlobalNew * upperParent.Invert();
 	lowerIt->second.AnimationMatrix = lowerGlobalNew * upperGlobalNew.Invert();
 	footIt->second.AnimationMatrix = footGlobalNew * lowerGlobalNew.Invert();
+	// 膝の骨のほかの子(翼膜の付け根など)は、足首と同じく向きを元のまま残し、位置だけ脚についていかせる。
+	const Matrix4x4 lowerInverse = lowerGlobal.Invert();
+	const Matrix4x4 lowerNewInverse = lowerGlobalNew.Invert();
+	for (const std::string& childName : chain.keepOrientation)
+	{
+		auto childIt = m_BoneDictionary.find(childName);
+		const auto childGlobalIt = m_DebugBoneMatrices.find(childName);
+		if (childIt == m_BoneDictionary.end() || childGlobalIt == m_DebugBoneMatrices.end())
+			continue;
+		const Matrix4x4 childGlobal = childGlobalIt->second;
+		const Vector3 followed = MatrixPosition(childGlobal * lowerInverse * lowerGlobalNew);
+		Matrix4x4 childGlobalNew = childGlobal;
+		childGlobalNew._41 = followed.x;
+		childGlobalNew._42 = followed.y;
+		childGlobalNew._43 = followed.z;
+		childIt->second.AnimationMatrix = childGlobalNew * lowerNewInverse;
+	}
 	return true;
 }
 

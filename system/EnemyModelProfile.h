@@ -55,6 +55,8 @@ enum class EnemyBone : unsigned char
     FrontAnkleL, ///< 前脚の足首(胸を上下させても前足を地面に残すIKで使う)。無いモデルは空
     FrontAnkleR,
     ChestTwist,  ///< 胸から前を左右へひねる背骨(BreathSpine より先)。無いモデルはひねらない
+    BackAnkleL,  ///< 後脚の足首(かかと。尾回転で後ろ足を地面に固定するIKで使う)。無いモデルは空
+    BackAnkleR,
     Count
 };
 
@@ -142,6 +144,9 @@ struct EnemyModelProfile
     float weakWalkGroundSpeed = 0.0f; ///< 瀕死の歩きで地面に着いた足が後ろへ流れる速さ(モデルの長さ/秒)
     /// 前脚が翼を兼ねているか(Wyvern)。true なら前脚を振り上げる手続きの構え(frontLegLift)を使わない。
     bool frontLegsAreWings = false;
+    /// 前脚のIK(足を地面に留める・浮かせる)で、向きを元のまま残す前腕の子の骨(左・右)。
+    /// 翼膜の付け根を入れる。入れないと、前腕を回したぶん膜の先が床へ振り下ろされて突き抜けた。
+    std::array<std::vector<std::string>, 2> frontLegKeepOrientation;
 
     EnemyAttackClipBinding slamClip;
     EnemyAttackClipBinding biteClip;
@@ -353,11 +358,17 @@ inline const EnemyModelProfile& GetWyvernProfile()
         set(EnemyBone::BreathSpine, "spine2");
         set(EnemyBone::FrontAnkleL, "front_Foot_L");
         set(EnemyBone::FrontAnkleR, "front_Foot_R");
+        set(EnemyBone::BackAnkleL, "back_Foot_L");
+        set(EnemyBone::BackAnkleR, "back_Foot_R");
         // 背骨のしなり: spine3 から先(胸・肩・前脚・首)を左右へひねる。
         set(EnemyBone::ChestTwist, "spine3");
         // 前脚が翼になっている(膜が前脚に付いている)。前脚を振り上げる手続きの構えは使わない
         // (突進の溜めで地面を掻く動きにすると、翼ごとばたついて見えた)。
         p.frontLegsAreWings = true;
+        // 翼膜(winger_*)は前腕(front_Shin)の子で、手首から後ろ上へ伸びている。
+        p.frontLegKeepOrientation = { {
+            { "winger_Outer_L", "winger_Inner_L" },
+            { "winger_Outer_R", "winger_Inner_R" } } };
         // 翼は前脚に付いていて、飛ぶ動きはクリップ(Fly)にある。手続きで広げる翼は使わない。
         p.mouthExtend = 2.6f;
         // tail_008 の先、尾の先端(約256cm先)までは tail_005→tail_008(約345cm)の約0.75倍。

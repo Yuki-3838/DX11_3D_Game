@@ -255,6 +255,9 @@ public:
 		std::string lowerLeg;  ///< 膝
 		std::string foot;      ///< 足首
 		std::string toe;       ///< つま先
+		/// 膝の骨の子で、IKで脚を曲げてもモデル空間での向きを元のまま残す骨(位置は脚についていく)。
+		/// 前脚に翼膜が付いたモデル(Wyvern)で、前腕を回すと膜の先が床へ振り下ろされないように使う。
+		std::vector<std::string> keepOrientation;
 	};
 
 	/**
