@@ -18,7 +18,8 @@ public:
 	// Deadは倒れた状態(倒れるクリップを再生して動かない)。
 	// Standbyはプレイヤーを倒した後に立っている状態(勝利の咆哮の後は何もしない)。
 	// 撮影のログは番号で書いているので、項目は必ず末尾へ足す。
-	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn, Dead, Standby };
+	// Threatは攻撃の合間の威嚇。うなって頭を振るだけで攻撃は来ない(大型モンスターの「挑発」。殴る好機)。
+	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn, Dead, Standby, Threat };
 
 	explicit enemy(IScene* scene);
 
@@ -149,11 +150,28 @@ public:
 		s_roarFromClip = roar;
 		s_attacksFromClip = attacks;
 	}
+	// 怯みの動きがクリップにあるモデル(Wyvern の Damage)は、手続きの前後の傾きを足さない。
+	static void setFlinchFromClip(bool fromClip) { s_flinchFromClip = fromClip; }
+	// 弱り具合(疲れ・瀕死)をクリップと息づかいで見せるモデル(Wyvern の crawl)は、
+	// 全身を丸ごと前へ傾ける手続きの姿勢(EnemyConditionPose)を足さない。
+	// 体を1枚の板のように傾けると、地面に着いた足ごと回って尾が床へ沈み、体が浮いていた。
+	static void setConditionFromClip(bool fromClip) { s_conditionFromClip = fromClip; }
+	// 威嚇のクリップがあるモデルだけ威嚇する。
+	static void setThreatEnabled(bool enabled) { s_threatEnabled = enabled; }
+	// 威嚇の長さ。クリップ(Scream2 3.5秒)はこの長さに合わせて少し速く流す。
+	static constexpr float THREAT_SECONDS = 2.8f;
 
 private:
 	static inline bool s_attackPoseEnabled = true;
 	static inline bool s_roarFromClip = false;
 	static inline bool s_attacksFromClip = false;
+	static inline bool s_flinchFromClip = false;
+	static inline bool s_conditionFromClip = false;
+	static inline bool s_threatEnabled = false;
+	// 威嚇を出す間隔を数える(隙が明けた回数)。
+	int m_threatCounter = 0;
+	// 隙が明けたときに威嚇するか(3回に1回。怒っている間・背を向けているときはしない)。
+	bool shouldThreatenAfterRecovery(const Vector3& targetPosition);
 	// クリップで動きを見せている攻撃・咆哮の最中か(上の設定と今の状態から)。
 	bool isRoarFromClip() const;
 	bool isAttackFromClip() const;
@@ -234,6 +252,12 @@ private:
 	static constexpr float LOCOMOTION_STOP_DECEL = 560.0f;
 	// 後退は飛びのく動きなので、ほかより強く蹴り出す。
 	static constexpr float RETREAT_ACCEL = 700.0f;
+	// 攻撃する・向き直ると決めたら、まず歩きながら止まる(歩く脚のまま減速するので足は滑らない)。
+	// 止まりきってから予兆へ入る。以前は予兆に入った瞬間に止めていたので「ピタッ」と止まって見えた。
+	// 周回の速さ(44)から約0.2秒・約5進んで止まる。
+	static constexpr float BRAKE_DECEL = 200.0f;
+	static constexpr float BRAKE_DONE_SPEED = 3.0f;
+	bool m_brakingForAttack = false;
 	static constexpr float MIN_CIRCLE_SECONDS = 0.55f;
 	static constexpr float MAX_CIRCLE_SECONDS = 1.40f;
 	static constexpr float MAX_DELTA_SECONDS = 0.1f;

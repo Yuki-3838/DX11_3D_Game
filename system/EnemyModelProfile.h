@@ -51,6 +51,9 @@ enum class EnemyBone : unsigned char
     WingRootR,
     WingTipL,
     WingTipR,
+    BreathSpine, ///< 息づかいで胸を上下させる背骨(腰寄り)。無いモデルは胸を動かさない
+    FrontAnkleL, ///< 前脚の足首(胸を上下させても前足を地面に残すIKで使う)。無いモデルは空
+    FrontAnkleR,
     Count
 };
 
@@ -129,6 +132,13 @@ struct EnemyModelProfile
      * 止めたままだと剥製のように固まって見えるので、足が浮かない待機のあるモデルは true にする。
      */
     bool loopIdleClip = false;
+    /// 怯みのクリップ(殴られてのけぞる)。空なら立ち姿勢に手続きで体を傾ける。
+    std::string damageClip;
+    /// 威嚇のクリップ(攻撃の合間に、うなって頭を振る)。空なら威嚇しない。
+    std::string threatClip;
+    /// 瀕死のときの歩き(足を引きずる)。空ならふだんの歩き・走りのまま。
+    std::string weakWalkClip;
+    float weakWalkGroundSpeed = 0.0f; ///< 瀕死の歩きで地面に着いた足が後ろへ流れる速さ(モデルの長さ/秒)
 
     EnemyAttackClipBinding slamClip;
     EnemyAttackClipBinding biteClip;
@@ -336,6 +346,10 @@ inline const EnemyModelProfile& GetWyvernProfile()
         set(EnemyBone::BackFootL, "back_toe_Middle1_L");
         set(EnemyBone::BackFootR, "back_toe_Middle1_R");
         set(EnemyBone::RightClaw, "front_toe_Middle3_R");
+        // 息づかい: spine2 から先(胸・肩・首・頭)を持ち上げ、前足は足首からのIKで地面に残す。
+        set(EnemyBone::BreathSpine, "spine2");
+        set(EnemyBone::FrontAnkleL, "front_Foot_L");
+        set(EnemyBone::FrontAnkleR, "front_Foot_R");
         // 翼は前脚に付いていて、飛ぶ動きはクリップ(Fly)にある。手続きで広げる翼は使わない。
         p.mouthExtend = 2.6f;
         // tail_008 の先、尾の先端(約256cm先)までは tail_005→tail_008(約345cm)の約0.75倍。
@@ -371,6 +385,14 @@ inline const EnemyModelProfile& GetWyvernProfile()
         p.turnLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_left.fbx";
         p.turnRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_right.fbx";
         p.turnClipDegreesPerSecond = 60.0f;
+        // Damage(0.53秒): 体が沈み、頭が跳ね上がり、尾が振れる。足は地面に着いたまま。
+        p.damageClip = "assets/model/Wyvern/anim/Anim_Wyvern_Damage.fbx";
+        // Scream2(3.5秒): 前半身を起こして頭を地面へ叩きつけるようにうなり、頭を左右に振って威嚇する。
+        p.threatClip = "assets/model/Wyvern/anim/Anim_Wyvern_Scream2.fbx";
+        // crawl(2.4秒): 腰を約1m落とし、頭を下げて這うように歩く。瀕死で足を引きずる歩きに使う。
+        // 地面に着いた足が流れる速さは約165cm/秒(歩きの約半分。Blenderで測った値)。
+        p.weakWalkClip = "assets/model/Wyvern/anim/Anim_Wyvern_crawl.fbx";
+        p.weakWalkGroundSpeed = 165.0f;
         // 当たる瞬間は骨の動きを測って決めた(右前脚の爪・頭・尾の先が一番前へ出る/地面を打つ時刻)。
         // 叩き付け: 右前脚を高く振り上げて(0.5秒)、前へ振り下ろす(0.72秒で爪が一番前・下)。
         p.slamClip = { "assets/model/Wyvern/anim/Anim_Wyvern_Swipe.fbx", 0.0f, 0.72f, 1.17f, EnemyStrikePart::RightClaw };

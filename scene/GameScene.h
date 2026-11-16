@@ -191,6 +191,11 @@ private:
 	// その場で足を踏み替えて回るクリップ(Wyvern)。無ければ歩きを速く回す。
 	aiAnimation* m_enemyTurnLeftAnimation = nullptr;
 	aiAnimation* m_enemyTurnRightAnimation = nullptr;
+	// 怯み(Damage)・威嚇(Scream2)・瀕死の歩き(crawl)。無いモデルは nullptr。
+	aiAnimation* m_enemyDamageAnimation = nullptr;
+	aiAnimation* m_enemyThreatAnimation = nullptr;
+	aiAnimation* m_enemyWeakWalkAnimation = nullptr;
+	static constexpr float ENEMY_DAMAGE_BLEND_SECONDS = 0.06f;
 	// 待機・歩き・走り・踏み替えの切り替えのつなぎ。攻撃の入り(0.14秒)より長く、重い体が移り変わる感じを出す。
 	static constexpr float ENEMY_LOCOMOTION_BLEND_SECONDS = 0.32f;
 	// 尾回転で脚を踏み替え始めるときのつなぎ。半回転が0.42秒と短いので、つなぎも短くする。
@@ -205,6 +210,22 @@ private:
 	float m_enemyTailLagVelocity = 0.0f;
 	float m_enemyTailTip = 0.0f;
 	float m_enemyTailTipVelocity = 0.0f;
+	// 息づかい(胸の上下・首・口)。呼吸の進み具合(0〜1)・効き・息の上がり具合(攻撃・走りで上がる)。
+	float m_enemyBreathPhase = 0.0f;
+	// 向き直りの間に尾を持ち上げる量(ならした値)。
+	float m_enemyTurnTailLift = 0.0f;
+	float m_enemyBreathWeight = 0.0f;
+	float m_enemyExertion = 0.0f;
+	// 吸い込みの深さ(0〜1。撮影の記録用)。
+	float m_enemyInhale = 0.0f;
+	// 止まる・動き出すときに胸がのめる・残る量(ばね)。
+	float m_enemyBrakeLean = 0.0f;
+	float m_enemyBrakeLeanVelocity = 0.0f;
+	float m_enemyPreviousForwardSpeed = 0.0f;
+	// よだれ。次に垂れるまでの時間と、間隔の揺らぎ。
+	float m_enemyDroolTimer = 0.0f;
+	float m_droolJitter = 0.37f;
+	void UpdateEnemyDrool(float deltaSeconds);
 	// 首と尾の二次的な動きを求めて構えに足す。毎更新1回だけ呼ぶ(ばねの状態を進めるため)。
 	void AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float deltaSeconds);
 	// クリップのキーの数(一番多いチャンネル)。

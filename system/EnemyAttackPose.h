@@ -85,6 +85,9 @@ inline constexpr float SPIN_OVERRUN_YAW = 0.18f; ///< 尾回転: 回り切って
 /// 以前は隙へ入った瞬間に流れた分(0.18)がいきなり足されて、回り終わりで体が1フレームで跳んでいた。
 /// 回っている勢いのまま行き過ぎ、踏ん張って戻る形にする(重い体の慣性)。
 inline constexpr float SPIN_OVERRUN_START = 0.72f;
+/// 尾回転: 回っている間、後ろ足に体重を乗せて前半身を起こす量(後ろへ反る)。前脚の振り上げと組で使う。
+// 前足のつま先(体の中心から約29前)が約6浮く。浮いた前脚は踏み替えのクリップで宙を掻く。
+inline constexpr float SPIN_REAR_UP_PITCH = 0.22f;
 
 // 火球: 上体を反らして首を持ち上げ(息を吸う)、吐く瞬間に前へ突き出す。
 // 叩き付けも上体を反らすので、あごを大きく開けて口の火(GameScene側の演出)を見せて区別する。
@@ -251,6 +254,9 @@ inline EnemyPoseOffset EnemyAttackPose(
                     (1.0f - PoseTuning::SPIN_OVERRUN_START));
                 offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * (1.0f - release) +
                     spin.sign * PoseTuning::SPIN_OVERRUN_YAW * overrun;
+                // 回っている間は後ろ足に体重を乗せて前半身を起こし、回り終わりで前へ踏み下ろす。
+                offset.pitch = PoseTuning::SPIN_BRACE_PITCH * 0.7f -
+                    PoseTuning::SPIN_REAR_UP_PITCH * std::sin(3.14159265f * spinPhase.segmentT);
             }
         }
         else // Recovery
@@ -495,6 +501,8 @@ struct EnemyTellPose
     float frontLegLift = 0.0f; ///< 前脚を持ち上げる
     /// 尾を持ち上げる(正で尾の先が上がる)。尾回転で尾が地面を突き抜けないようにする。
     float tailLift = 0.0f;
+    /// 胸を持ち上げる(正で胸・肩・首が上がる)。息づかいの上下。前足は足首からのIKで地面に残す。
+    float chestHeave = 0.0f;
 };
 
 namespace TellTuning
@@ -537,6 +545,12 @@ inline constexpr float SPIN_NECK_LEAD = 0.60f;
 // 床を突き抜けた尾に合わせて体ごと持ち上げていたので、4本の足が浮いて見えた。
 // 尾を浮かせて、ハンターの高さを薙ぐ形にする。
 inline constexpr float SPIN_TAIL_LIFT = 0.45f;
+// 尾回転: 前脚を振り上げる量。半回転は0.42秒と速く、4本の足で踏み替えて回る時間は無い。
+// 重い四つ足の動物が素早く向きを変えるときは、後ろ足を軸に踏ん張り、前半身を浮かせて振り回す
+// (馬のロールバックと同じ)。前脚を浮かせて振り、着地で踏み直す形にする。
+// 以前は4本の足を地面に着けたまま体ごと回していたので、「軸で回っているだけ」に見えていた(審査会の指摘)。
+// 前脚を回すと前脚に付いた翼の膜が床を突き抜けた(Wyvern)ので、脚は回さず、体を起こして前足を浮かせる。
+inline constexpr float SPIN_FRONT_LEG_SWING = 0.0f;
 // 火球: 首を高く持ち上げてあごを大きく開け、口の中の火を見せる。吐く瞬間に首を前へ突き出す。
 inline constexpr float FIREBALL_NECK_REAR = 0.85f;
 inline constexpr float FIREBALL_NECK_SPIT = -0.40f;
@@ -731,6 +745,9 @@ inline EnemyTellPose EnemyAttackTellPose(
             }
             else
             {
+                // 前脚の振り上げ(Cethiel)。Wyvern は翼の膜が前脚に付いていて、前脚を回すと膜の先が床を
+                // 15以上突き抜けた(撮影の記録)ので、表の値を0にして体を起こす量(SPIN_REAR_UP_PITCH)だけで前半身を浮かせる。
+                tell.frontLegLift = TellTuning::SPIN_FRONT_LEG_SWING * std::sin(3.14159265f * spinPhase.segmentT);
                 // 首は前半に回る側を向いて体を先導し、体が追いつく後半で正面へ戻る。
                 tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD *
                     (1.0f - Detail::SmoothStep01((spinPhase.segmentT - 0.40f) / 0.55f));

@@ -46,6 +46,7 @@ void enemy::resetEncounter()
 	m_stateTime = 0.0f;
 	m_move = Vector3(0.0f, 0.0f, 0.0f);
 	m_locomotionSpeed = 0.0f;
+	m_brakingForAttack = false;
 	m_circleDirection = 1.0f;
 	m_posture = 0.0f;
 	m_rageDamage = 0.0f;
@@ -231,6 +232,14 @@ bool enemy::canUseRangedAttack() const
 
 void enemy::requestAttack(float distance, const Vector3& targetPosition)
 {
+	// 歩いている最中なら、まず歩きながら止まる(update の m_brakingForAttack の処理)。止まりきったらここへ戻る。
+	if (!m_brakingForAttack && std::abs(m_locomotionSpeed) > BRAKE_DONE_SPEED &&
+		(m_motionState == MotionState::Approach || m_motionState == MotionState::Circle ||
+		 m_motionState == MotionState::Retreat))
+	{
+		m_brakingForAttack = true;
+		return;
+	}
 	const float facingError = facingErrorTo(targetPosition);
 	// 背後の近くにいる相手には、2回に1回は向き直らずに尾回転で応じる。
 	// 毎回向き直るだけだと「背後に回れば安全な時間がある」が確定してしまうため。
@@ -512,6 +521,21 @@ void enemy::update(uint64_t dt)
 		changeState(MotionState::Circle);
 	}
 
+	// 攻撃すると決めて、歩きながら止まっている最中。ハンターの方へ向きながら減速し、止まりきったら攻撃へ移る。
+	if (m_brakingForAttack)
+	{
+		faceTarget(targetPosition, deltaSec, 6.0f, APPROACH_TURN_SPEED * moveSpeedScale());
+		driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, BRAKE_DECEL);
+		m_srt.pos += m_move;
+		if (std::abs(m_locomotionSpeed) <= BRAKE_DONE_SPEED)
+		{
+			m_brakingForAttack = false;
+			m_locomotionSpeed = 0.0f;
+			requestAttack(distanceToTarget(targetPosition), targetPosition);
+		}
+		return;
+	}
+
 	if (m_motionState == MotionState::Approach && distance <= ATTACK_DISTANCE)
 	{
 		// 大型の敵は衝突分離によって希望距離の少し外側で止まることがあるため、
@@ -687,10 +711,13 @@ void enemy::update(uint64_t dt)
 				m_attackKind == Combat::EnemyAttackKind::TailSpin ||
 				m_attackKind == Combat::EnemyAttackKind::Charge ||
 				m_attackKind == Combat::EnemyAttackKind::Fireball;
-			changeState(
-				(isEnraged() || keepDistance)
-					? MotionState::Circle
-					: MotionState::Retreat);
+			if (shouldThreatenAfterRecovery(targetPosition))
+				changeState(MotionState::Threat);
+			else
+				changeState(
+					(isEnraged() || keepDistance)
+						? MotionState::Circle
+						: MotionState::Retreat);
 		}
 		break;
 	// 咆哮(Roar)はここへ来ない。上で早期に処理して終わりの判定も済ませている。
@@ -701,6 +728,12 @@ void enemy::update(uint64_t dt)
 		// 歩いている最中に怯んだときは、勢いでたたらを踏んで止まる。
 		driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_STOP_DECEL);
 		if (m_stateTime >= Combat::Tuning::ENEMY_FLINCH_SECONDS)
+			changeState(MotionState::Circle);
+		break;
+	case MotionState::Threat:
+		// 威嚇。その場でうなって頭を振る。攻撃は来ないので、ハンターが大きく殴れる好機になる。
+		// 体はほとんど回さない(足を地面に着けたままのクリップなので、回すと足が滑る)。
+		if (m_stateTime >= THREAT_SECONDS)
 			changeState(MotionState::Circle);
 		break;
 	case MotionState::Retreat:
@@ -717,6 +750,22 @@ void enemy::update(uint64_t dt)
 	// Scene側はupdate前後の座標差分を使って壁・他エネミーとの
 	// 衝突補正を行うため、ここでAIが決めた移動を仮適用する。
 	m_srt.pos += m_move;
+}
+
+bool enemy::shouldThreatenAfterRecovery(const Vector3& targetPosition)
+{
+	// 大型モンスターは攻撃を出し切った後、ときどき立ち止まってうなり、頭を振って威嚇する。
+	// 攻撃が来ないこの数秒が、ハンターが頭を狙って大きく殴れる好機になる(読み合いのご褒美)。
+	// 毎回だと間延びし、出ないと攻撃が途切れず息をつけない。正面を向いて隙が明けた2回に1回にする
+	// (3回に1回では、尾回転の後(背を向けている)と怒りを除くと30秒の戦闘で1度も出なかった)。
+	// 怒っている間は攻め続ける(威嚇しない)。背を向けている(尾回転の後など)ときは、向き直らずに
+	// 威嚇すると明後日の方へうなることになるので出さない。
+	if (!s_threatEnabled || m_passive || m_playerFallen || isEnraged())
+		return false;
+	if (facingErrorTo(targetPosition) > 1.05f) // 約60度
+		return false;
+	m_threatCounter = (m_threatCounter + 1) % 2;
+	return m_threatCounter == 0;
 }
 
 bool enemy::isRoarFromClip() const
@@ -762,9 +811,20 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	// 怯みは攻撃の構えより優先する。構えの途中で怯んだら、構えを捨ててのけぞる。
 	if (m_motionState == MotionState::Flinch)
 	{
-		return Combat::EnemyFlinchPose(
+		Combat::EnemyPoseOffset flinch = Combat::EnemyFlinchPose(
 			m_stateTime, Combat::Tuning::ENEMY_FLINCH_SECONDS, m_flinchYawSign);
+		// のけぞりがクリップにあるモデルは、前後の傾きはクリップに任せ、
+		// 殴られた側と反対へ顔を背ける向き(クリップには無い)だけを残す。
+		if (s_flinchFromClip)
+		{
+			flinch.pitch = 0.0f;
+			flinch.yaw *= 0.7f;
+		}
+		return flinch;
 	}
+	// 威嚇は全身の動きがクリップにある。手続きの傾きは足さない。
+	if (m_motionState == MotionState::Threat)
+		return Combat::EnemyPoseOffset{};
 	// 突進で壁にぶつかったよろめき。怯みと同じ動きを、隙の長さいっぱいに引き伸ばして使う。
 	if (isChargeStunned())
 		return Combat::EnemyFlinchPose(m_stateTime, recoverySeconds(), m_flinchYawSign);
@@ -776,7 +836,8 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	// 息で頭が上下すると構えの形が崩れ、「何が来るか」が読みにくくなるため。
 	// 予兆の読みやすさは、弱り具合の表現より優先する。
 	const Combat::EnemyAttackPhase phase = currentAttackPhase();
-	if (phase == Combat::EnemyAttackPhase::None || phase == Combat::EnemyAttackPhase::Recovery)
+	if (!s_conditionFromClip &&
+		(phase == Combat::EnemyAttackPhase::None || phase == Combat::EnemyAttackPhase::Recovery))
 	{
 		const bool moving =
 			m_motionState == MotionState::Approach ||
@@ -805,7 +866,8 @@ Combat::EnemyTellPose enemy::getAttackTellPose() const
 	if (m_motionState == MotionState::Roar)
 		return Combat::EnemyRoarTellPose(m_stateTime, Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS);
 	// 怯んでいる間は攻撃の構えを捨てる(全身の傾きと同じ扱い)。
-	if (m_motionState == MotionState::Flinch || m_motionState == MotionState::Dead || isChargeStunned())
+	if (m_motionState == MotionState::Flinch || m_motionState == MotionState::Dead || isChargeStunned() ||
+		m_motionState == MotionState::Threat)
 		return Combat::EnemyTellPose{};
 	return Combat::EnemyAttackTellPose(
 		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
@@ -917,6 +979,8 @@ void enemy::changeState(MotionState nextState)
 		m_attackElapsed = 0.0f;
 	// よろめきは突進で壁にぶつかった隙の間だけ。ほかの状態へ移ったら解く。
 	m_chargeStunned = false;
+	// 止まりかけの最中に怯み・咆哮などで状態が変わったら、止まる途中の攻撃は取り消す。
+	m_brakingForAttack = false;
 	m_motionState = nextState;
 	m_stateTime = 0.0f;
 }
@@ -990,6 +1054,7 @@ const char* enemy::getMotionStateName() const
 	case MotionState::Turn: return "向き直り";
 	case MotionState::Dead: return "倒れた";
 	case MotionState::Standby: return "勝ち残り";
+	case MotionState::Threat: return "威嚇";
 	default: return "不明";
 	}
 }
