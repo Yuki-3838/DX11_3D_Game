@@ -214,6 +214,8 @@ private:
 	float m_enemyBreathPhase = 0.0f;
 	// 向き直りの間に尾を持ち上げる量(ならした値)。
 	float m_enemyTurnTailLift = 0.0f;
+	// 突進の溜めで後ろ足が土を蹴った回数(揺するたびに1回。同じ揺すりで2度出さないため)。
+	int m_enemyChargeKickCount = -1;
 	float m_enemyBreathWeight = 0.0f;
 	float m_enemyExertion = 0.0f;
 	// 吸い込みの深さ(0〜1。撮影の記録用)。

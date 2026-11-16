@@ -54,6 +54,7 @@ enum class EnemyBone : unsigned char
     BreathSpine, ///< 息づかいで胸を上下させる背骨(腰寄り)。無いモデルは胸を動かさない
     FrontAnkleL, ///< 前脚の足首(胸を上下させても前足を地面に残すIKで使う)。無いモデルは空
     FrontAnkleR,
+    ChestTwist,  ///< 胸から前を左右へひねる背骨(BreathSpine より先)。無いモデルはひねらない
     Count
 };
 
@@ -139,6 +140,8 @@ struct EnemyModelProfile
     /// 瀕死のときの歩き(足を引きずる)。空ならふだんの歩き・走りのまま。
     std::string weakWalkClip;
     float weakWalkGroundSpeed = 0.0f; ///< 瀕死の歩きで地面に着いた足が後ろへ流れる速さ(モデルの長さ/秒)
+    /// 前脚が翼を兼ねているか(Wyvern)。true なら前脚を振り上げる手続きの構え(frontLegLift)を使わない。
+    bool frontLegsAreWings = false;
 
     EnemyAttackClipBinding slamClip;
     EnemyAttackClipBinding biteClip;
@@ -350,6 +353,11 @@ inline const EnemyModelProfile& GetWyvernProfile()
         set(EnemyBone::BreathSpine, "spine2");
         set(EnemyBone::FrontAnkleL, "front_Foot_L");
         set(EnemyBone::FrontAnkleR, "front_Foot_R");
+        // 背骨のしなり: spine3 から先(胸・肩・前脚・首)を左右へひねる。
+        set(EnemyBone::ChestTwist, "spine3");
+        // 前脚が翼になっている(膜が前脚に付いている)。前脚を振り上げる手続きの構えは使わない
+        // (突進の溜めで地面を掻く動きにすると、翼ごとばたついて見えた)。
+        p.frontLegsAreWings = true;
         // 翼は前脚に付いていて、飛ぶ動きはクリップ(Fly)にある。手続きで広げる翼は使わない。
         p.mouthExtend = 2.6f;
         // tail_008 の先、尾の先端(約256cm先)までは tail_005→tail_008(約345cm)の約0.75倍。

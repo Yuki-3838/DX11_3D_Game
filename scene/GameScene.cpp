@@ -3361,6 +3361,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	Combat::EnemyTellPose tellPose = clipDrivenAttack && attackBinding != nullptr
 		? Combat::EnemyTellPose{}
 		: m_enemies.front()->getAttackTellPose();
+	// 前脚が翼になっているモデルは、前脚を振り上げる構えを使わない(翼ごとばたついて見えた)。
+	if (m_enemyProfile->frontLegsAreWings)
+		tellPose.frontLegLift = 0.0f;
 	// 首でハンターを目で追い、尾は回転に遅れてついてくる(攻撃の構えの間は効かない)。
 	AddEnemySecondaryMotion(tellPose, deltaSeconds);
 	ApplyEnemyTellPose(tellPose);
@@ -3520,8 +3523,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			// 踏み替えは、体が実際に回っている速さに合わせて足を運ぶ。
 			// 尾回転は1回の半回転が0.42秒と速いので上限まで速く踏む(それでも足は追いつかず、軸足で回って見える)。
 			const float degreesPerSecond = std::abs(m_enemyYawRate) * (180.0f / PI);
+			// 3倍では脚がばたついて見えた(足を掻き回しているだけで、踏んで回っているように見えない)。
 			const float playbackRate = m_enemies.front()->isTailSpinning()
-				? 3.0f
+				? 2.0f
 				: std::clamp(degreesPerSecond / std::max(1.0f, m_enemyProfile->turnClipDegreesPerSecond), 0.7f, 2.2f);
 			const double ticksPerSecond = animation->mTicksPerSecond > 0.0 ? animation->mTicksPerSecond : 30.0;
 			keysPerUpdate = deltaSeconds * static_cast<float>(ticksPerSecond) * playbackRate;
@@ -3672,10 +3676,13 @@ void GameScene::AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float delta
 	// 攻撃の予兆・判定・咆哮の間は止める(構えの形を崩さないため)。
 	// 予兆の間も息は止めない(止めると、溜めの1秒あまり体が固まって見えた)。ただし構えの形を崩さないよう
 	// 4割に弱め、口の開け閉めは足さない(火球の「口を開ける」合図と紛れるため)。
+	// 尾回転の一拍(半回転と半回転の間)も、立ち止まってハンターを見ているので息をする。
+	const bool spinPause = e.isTailSpinPausing();
 	const bool breathAllowed = !m_enemyIntroActive &&
-		state != enemy::MotionState::Active && state != enemy::MotionState::Threat &&
+		(state != enemy::MotionState::Active || spinPause) && state != enemy::MotionState::Threat &&
 		state != enemy::MotionState::Roar && state != enemy::MotionState::Dead;
-	const float breathTarget = !breathAllowed ? 0.0f : (state == enemy::MotionState::Windup ? 0.4f : 1.0f);
+	const float breathTarget = !breathAllowed ? 0.0f :
+		(state == enemy::MotionState::Windup ? 0.4f : spinPause ? 0.6f : 1.0f);
 	m_enemyBreathWeight += std::clamp(breathTarget - m_enemyBreathWeight, -dt * 3.0f, dt * 3.0f);
 	const float jawWeight = state == enemy::MotionState::Windup ? 0.0f : 1.0f;
 	// 息の上がり具合。攻撃を振る・突進する・走ると上がり、休むと3〜4秒で戻る。
@@ -5897,6 +5904,35 @@ void GameScene::UpdateEnemyAttackEffects()
 	const float stateTime = e.getStateTime();
 	const bool active = state == enemy::MotionState::Active;
 
+	// 突進の溜め: 体重を後ろへ揺すり戻すたびに、後ろ足で土を後ろへ蹴り上げる(左右交互)。
+	// 構え(胸の上下)と同じ拍子(EnemyChargeRockPhase)で出すので、揺すりと土煙がずれない。
+	if (state == enemy::MotionState::Windup && kind == Combat::EnemyAttackKind::Charge)
+	{
+		const float windupSeconds = Combat::EnemyAttackOf(kind).frames.anticipationSeconds;
+		const int kick = static_cast<int>(
+			Combat::EnemyChargeRockPhase(stateTime, windupSeconds) / (2.0f * PI) + 0.25f);
+		if (kick != m_enemyChargeKickCount && stateTime > 0.15f)
+		{
+			m_enemyChargeKickCount = kick;
+			const EnemyBone hindFoot = (kick % 2 == 0) ? EnemyBone::BackFootL : EnemyBone::BackFootR;
+			Vector3 foot{};
+			if (GetEnemyBoneWorld(hindFoot, foot))
+			{
+				const float yaw = e.getSRT().rot.y;
+				const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+				foot.y = ARENA_FLOOR_TOP_Y;
+				const float strength = std::clamp(stateTime / windupSeconds, 0.3f, 1.0f);
+				m_enemyMotionFx.SpawnDust(foot, -forward * (30.0f + 30.0f * strength),
+					4 + static_cast<int>(5.0f * strength), 10.0f + 10.0f * strength,
+					6.0f + 3.0f * strength, 0.8f, 0.25f + 0.12f * strength);
+			}
+		}
+	}
+	else
+	{
+		m_enemyChargeKickCount = -1;
+	}
+
 	// 攻撃の通り道。判定が出ている間だけ描く(剣の軌跡と同じく「危ない時間」がそのまま見える)。
 	if (active && kind == Combat::EnemyAttackKind::TailSpin && e.isTailSpinning())
 	{
@@ -5956,7 +5992,8 @@ std::unordered_map<std::string, Matrix4x4> GameScene::BuildEnemyTellRotations(
 	if (std::abs(tell.neckPitch) < EPSILON && std::abs(tell.neckYaw) < EPSILON &&
 		std::abs(tell.jawOpen) < EPSILON && std::abs(tell.tailYaw) < EPSILON &&
 		std::abs(tell.tailWhip) < EPSILON && std::abs(tell.frontLegLift) < EPSILON &&
-		std::abs(tell.tailLift) < EPSILON && std::abs(tell.chestHeave) < EPSILON)
+		std::abs(tell.tailLift) < EPSILON && std::abs(tell.chestHeave) < EPSILON &&
+		std::abs(tell.chestYaw) < EPSILON)
 	{
 		return {};
 	}
@@ -6061,6 +6098,9 @@ std::unordered_map<std::string, Matrix4x4> GameScene::BuildEnemyTellRotations(
 	// 息づかいで胸を持ち上げる。腰寄りの背骨を左右の軸まわりに回すと、そこから前(胸・肩・首・頭)が上下する。
 	// 前に伸びる背骨は、左右の軸まわりの正の回転で先が上がる。前足は UpdateEnemyAnimation でIKにより地面へ戻す。
 	add(EnemyBone::BreathSpine, tell.chestHeave, 0.0f, upModel);
+	// 背骨のしなり。胸から前を上まわりにひねる。前へ伸びる背骨は、上まわりの正の回転で先がモデルの -X へ振れるので、
+	// 首・尾と同じ「正で +X」にそろえるため符号を反転する。
+	add(EnemyBone::ChestTwist, 0.0f, -tell.chestYaw, upModel);
 	return offsets;
 }
 

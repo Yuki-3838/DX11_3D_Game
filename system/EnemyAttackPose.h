@@ -239,7 +239,8 @@ inline EnemyPoseOffset EnemyAttackPose(
                 // 行き過ぎた分を踏ん張って戻してから(前半)、捻り直す(後半)。
                 const float settleOut =
                     1.0f - Detail::SmoothStep01(std::min(1.0f, spinPhase.segmentT / 0.25f));
-                offset.pitch = PoseTuning::SPIN_BRACE_PITCH * (0.7f + 0.5f * wind);
+                // 止まった直後は体を起こし(伏せて見えないように)、溜め直しで腰を落とす。
+                offset.pitch = PoseTuning::SPIN_BRACE_PITCH * (0.3f + 0.9f * wind);
                 offset.yaw = spin.sign * PoseTuning::SPIN_OVERRUN_YAW * settleOut -
                     spin.sign * PoseTuning::SPIN_WIND_YAW * wind;
             }
@@ -295,7 +296,9 @@ inline EnemyPoseOffset EnemyAttackPose(
         if (phase == EnemyAttackPhase::Windup)
         {
             // 頭を下げて構える。地面を掻く前脚の動きは部位の構え(EnemyAttackTellPose)が担う。
-            offset.pitch = PoseTuning::CHARGE_CROUCH_PITCH * Detail::FastOut(windupT);
+            // 低く構える形は胸を落とす構え(chestHeave)が主に作るので、全身の前傾は控えめにする
+            // (全身を1枚の板のまま傾けると、地面に着いた足ごと傾いて見える)。
+            offset.pitch = PoseTuning::CHARGE_CROUCH_PITCH * 0.45f * Detail::FastOut(windupT);
         }
         else if (phase == EnemyAttackPhase::Active)
         {
@@ -503,6 +506,9 @@ struct EnemyTellPose
     float tailLift = 0.0f;
     /// 胸を持ち上げる(正で胸・肩・首が上がる)。息づかいの上下。前足は足首からのIKで地面に残す。
     float chestHeave = 0.0f;
+    /// 胸から前(肩・前脚・首)を左右へひねる(正でモデルの +X へ)。背骨を「C」の字にしならせる。
+    /// 体を1枚の板のまま回すと回転台に乗せたように見えるので、回るときは胸が先に回り、腰が後から付いてくる。
+    float chestYaw = 0.0f;
 };
 
 namespace TellTuning
@@ -551,6 +557,9 @@ inline constexpr float SPIN_TAIL_LIFT = 0.45f;
 // 以前は4本の足を地面に着けたまま体ごと回していたので、「軸で回っているだけ」に見えていた(審査会の指摘)。
 // 前脚を回すと前脚に付いた翼の膜が床を突き抜けた(Wyvern)ので、脚は回さず、体を起こして前足を浮かせる。
 inline constexpr float SPIN_FRONT_LEG_SWING = 0.0f;
+// 尾回転: 胸から前のひねり。溜めで回る向きと逆へ巻き(COIL)、出だしで回る側へ振り出す(LEAD)。
+inline constexpr float SPIN_CHEST_COIL = 0.22f;
+inline constexpr float SPIN_CHEST_LEAD = 0.42f;
 // 火球: 首を高く持ち上げてあごを大きく開け、口の中の火を見せる。吐く瞬間に首を前へ突き出す。
 inline constexpr float FIREBALL_NECK_REAR = 0.85f;
 inline constexpr float FIREBALL_NECK_SPIT = -0.40f;
@@ -558,6 +567,14 @@ inline constexpr float FIREBALL_JAW = 0.95f;
 // 突進: 首を低く前へ伸ばし、前脚で地面を掻く(牛が走り出す前の動き)。走っている間は尾が大きく揺れる。
 inline constexpr float CHARGE_NECK_LOW = -0.55f;
 inline constexpr float CHARGE_PAW_LIFT = 0.40f;
+// 突進の溜め(前脚で地面を掻けないモデル用にも、どのモデルにも付ける)。
+// 胸と頭を低く落とし、尾を上げて左右に打ち振り、体重を前後に揺すって後ろ足で地面を蹴る。
+// 揺すりは溜めの終わりへ向けて速くなり、最後に一気に走り出す(牛が角を構えて飛び出す前と同じ)。
+inline constexpr float CHARGE_CHEST_CROUCH = -0.11f; ///< 胸を落とす量(前足はIKで地面に残る)
+inline constexpr float CHARGE_ROCK = 0.045f;         ///< 体重を前後に揺する量
+inline constexpr float CHARGE_ROCK_SPEED = 7.0f;     ///< 揺する速さ(ラジアン/秒)。終わりへ向けて最大2倍
+inline constexpr float CHARGE_TAIL_LIFT = 0.35f;     ///< 尾を持ち上げる量
+inline constexpr float CHARGE_TAIL_LASH = 0.32f;     ///< 尾を左右に打ち振る量
 inline constexpr float CHARGE_PAW_SPEED = 9.0f; ///< 地面を掻く速さ(ラジアン/秒)
 inline constexpr float CHARGE_JAW = 0.45f;
 inline constexpr float CHARGE_TAIL_SWAY = 0.35f;
@@ -638,6 +655,17 @@ inline EnemyTellPose EnemyIntroRoarTellPose(float roarTime)
     return tell;
 }
 
+/**
+ * @brief 突進の溜めで体重を前後に揺する進み具合(ラジアン)。揺する速さは溜めの終わりへ向けて2倍まで上がる。
+ * 構え(胸の上下)と、後ろ足で土を蹴る演出(GameScene)が同じ拍子で動くよう、ここで1つにまとめる。
+ */
+inline float EnemyChargeRockPhase(float windupTime, float windupSeconds)
+{
+    const float w = std::max(0.01f, windupSeconds);
+    const float t = std::clamp(windupTime, 0.0f, w);
+    return TellTuning::CHARGE_ROCK_SPEED * (t + t * t / (2.0f * w));
+}
+
 /** 攻撃の種類と段階から、部位ごとの動かし方を求める。 */
 inline EnemyTellPose EnemyAttackTellPose(
     EnemyAttackKind kind, EnemyAttackPhase phase, float phaseTime,
@@ -715,6 +743,8 @@ inline EnemyTellPose EnemyAttackTellPose(
             tell.tailLift = TellTuning::SPIN_TAIL_LIFT * windupT;
             // 首は回る側へ向けておく(体は反対へ捻っているので、頭はハンターを見据えたままになる)。
             tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD * windupT;
+            // 胸から前を、回る向きと逆へひねって溜める(背骨のばねを巻く)。
+            tell.chestYaw = spin.sign * TellTuning::SPIN_CHEST_COIL * windupT;
         }
         else if (phase == EnemyAttackPhase::Active)
         {
@@ -723,6 +753,12 @@ inline EnemyTellPose EnemyAttackTellPose(
             tell.tailLift = TellTuning::SPIN_TAIL_LIFT;
             if (spinPhase.pausing)
             {
+                // 一拍の前半は頭を上げてハンターを見る(低くたたんだまま止まると、伏せて動かないように見えた)。
+                // 後半で首をたたみ、胸を巻き直して次の半回転を溜める。
+                const float rewind = Detail::SmoothStep01(
+                    std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
+                tell.neckPitch = TellTuning::SPIN_NECK_TUCK * rewind;
+                tell.chestYaw = spin.sign * TellTuning::SPIN_CHEST_COIL * rewind;
                 // 首は、もう一度回る側へ向け直す(体の捻り直しと同じ進み方)。
                 const float neckWind = Detail::SmoothStep01(
                     std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
@@ -751,6 +787,13 @@ inline EnemyTellPose EnemyAttackTellPose(
                 // 首は前半に回る側を向いて体を先導し、体が追いつく後半で正面へ戻る。
                 tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD *
                     (1.0f - Detail::SmoothStep01((spinPhase.segmentT - 0.40f) / 0.55f));
+                // 背骨を「C」の字にしならせる。巻いていた胸が出だしで一気に回る側へ振り出し(体を先導し)、
+                // 腰が追いつく後半でまっすぐに戻る。尾は最後に遅れて振り抜く(下の tailYaw)。
+                const float swingOut = Detail::SmoothStep01(spinPhase.segmentT / 0.30f);
+                const float catchUp = Detail::SmoothStep01((spinPhase.segmentT - 0.30f) / 0.60f);
+                tell.chestYaw =
+                    (spin.sign * TellTuning::SPIN_CHEST_COIL * (1.0f - swingOut) -
+                     spin.sign * TellTuning::SPIN_CHEST_LEAD * swingOut) * (1.0f - catchUp);
                 // 回っている間、尾は体と一緒には回らない。
                 // 前半は体に引きずられて遅れ、後半で一気に追い越して振り抜く(むちの動き)。
                 // 先(tailWhip)ほど大きく遅れ、大きく追い越す。
@@ -803,11 +846,21 @@ inline EnemyTellPose EnemyAttackTellPose(
         if (phase == EnemyAttackPhase::Windup)
         {
             // 首を低く構え、前脚で地面を2〜3回掻く。掻く動きは予兆の終わりへ向けて速くなる。
+            // (前脚が翼になっているモデルは、GameScene が前脚の振り上げを0にする。翼ごとばたついて見えたため)
             const float crouch = Detail::FastOut(windupT);
             tell.neckPitch = TellTuning::CHARGE_NECK_LOW * crouch;
             const float paw = std::max(0.0f, std::sin(
                 phaseTime * TellTuning::CHARGE_PAW_SPEED * (1.0f + 0.6f * windupT)));
             tell.frontLegLift = TellTuning::CHARGE_PAW_LIFT * paw * crouch;
+            // 胸を落として前後に体重を揺すり、尾を上げて打ち振る。揺すりは終わりへ向けて速く大きく。
+            const float rock = std::sin(EnemyChargeRockPhase(phaseTime, windupSeconds));
+            tell.chestHeave = (TellTuning::CHARGE_CHEST_CROUCH + TellTuning::CHARGE_ROCK * rock * (0.5f + windupT)) * crouch;
+            tell.tailLift = TellTuning::CHARGE_TAIL_LIFT * crouch;
+            tell.tailYaw = TellTuning::CHARGE_TAIL_LASH * crouch *
+                std::sin(EnemyChargeRockPhase(phaseTime, windupSeconds) * 0.5f + 0.8f);
+            tell.tailWhip = tell.tailYaw * 0.8f;
+            // 鼻息で口が少し開く(揺するたびに)。
+            tell.jawOpen = 0.08f * crouch * std::max(0.0f, rock);
         }
         else if (phase == EnemyAttackPhase::Active)
         {
