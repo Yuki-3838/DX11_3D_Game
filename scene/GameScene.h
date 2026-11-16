@@ -181,6 +181,44 @@ private:
 	Vector3 m_enemyLocomotionPreviousPosition{};
 	bool m_enemyLocomotionPreviousValid = false;
 	float m_enemyLocomotionSpeed = 0.0f;
+	// 正面へ進んでいる速さ(後ろへ下がっているときは負)。下がる間は歩きのクリップを逆に流す。
+	float m_enemyForwardSpeed = 0.0f;
+	// 体の向きが回っている速さ(ラジアン/秒。左回りが正)。踏み替えのクリップの速さと、尾の遅れに使う。
+	float m_enemyPreviousYaw = 0.0f;
+	float m_enemyYawRate = 0.0f;
+	// 向き直りで使う踏み替えのクリップの向き(+1 左回り / -1 右回り)。回りが遅い瞬間にちらつかないよう覚えておく。
+	float m_enemyTurnClipSign = 1.0f;
+	// その場で足を踏み替えて回るクリップ(Wyvern)。無ければ歩きを速く回す。
+	aiAnimation* m_enemyTurnLeftAnimation = nullptr;
+	aiAnimation* m_enemyTurnRightAnimation = nullptr;
+	// 待機・歩き・走り・踏み替えの切り替えのつなぎ。攻撃の入り(0.14秒)より長く、重い体が移り変わる感じを出す。
+	static constexpr float ENEMY_LOCOMOTION_BLEND_SECONDS = 0.32f;
+	// 尾回転で脚を踏み替え始めるときのつなぎ。半回転が0.42秒と短いので、つなぎも短くする。
+	static constexpr float ENEMY_SPIN_LEG_BLEND_SECONDS = 0.10f;
+
+	// --- 生き物らしさの二次的な動き(首と尾) ---
+	// クリップの上から、首はハンターを目で追い、尾は体の回転に遅れてついてくる(止まると振り戻る)。
+	// 攻撃の予兆・判定の間は構え(EnemyTellPose)の形を崩さないよう、効きを0へ落とす。
+	float m_enemySecondaryWeight = 0.0f;
+	float m_enemyLookYaw = 0.0f;
+	float m_enemyTailLag = 0.0f;
+	float m_enemyTailLagVelocity = 0.0f;
+	float m_enemyTailTip = 0.0f;
+	float m_enemyTailTipVelocity = 0.0f;
+	// 首と尾の二次的な動きを求めて構えに足す。毎更新1回だけ呼ぶ(ばねの状態を進めるため)。
+	void AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float deltaSeconds);
+	// クリップのキーの数(一番多いチャンネル)。
+	static unsigned int EnemyClipKeyCount(const aiAnimation* clip);
+	// 足の骨(指の付け根)が足の裏からどれだけ上にあるか(モデルの長さ)。待機の最初のコマで測る。
+	// 0 なら足で立たせず、従来どおり一番低い頂点を床に合わせる。
+	float m_enemyFootClearance = 0.0f;
+	// 足で立たせたときに、床へ入るのを許す深さ(ワールドの長さ)。歩きで爪の先が約3〜5入る(記録で確認)。
+	static constexpr float ENEMY_MAX_GROUND_SINK = 4.0f;
+	// 足で立たせたときに、床より下へ入った頂点の深さ(ワールドの長さ。撮影の記録用)。
+	float m_enemyGroundSink = 0.0f;
+	// そのとき一番低かった頂点の骨(床へ入った部位。撮影の記録用)。
+	std::string m_enemyGroundSinkBone;
+	void MeasureEnemyFootClearance();
 	aiAnimation* EnemyAttackAnimationFor(Combat::EnemyAttackKind kind) const;
 	const EnemyAttackClipBinding* EnemyAttackBindingFor(Combat::EnemyAttackKind kind) const;
 	bool GetEnemyBoneWorld(EnemyBone role, Vector3& out) const;

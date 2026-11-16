@@ -81,6 +81,10 @@ inline constexpr float SWEEP_SWING_YAW = -0.86f; ///< 薙ぎ払い: 振り抜く
 inline constexpr float SPIN_BRACE_PITCH = 0.14f; ///< 尾回転: 腰を落として踏ん張る量
 inline constexpr float SPIN_WIND_YAW = 0.40f;    ///< 尾回転: 回る向きと逆へ捻って溜める量
 inline constexpr float SPIN_OVERRUN_YAW = 0.18f; ///< 尾回転: 回り切って体が流れる量(隙の表現)
+/// 尾回転: 半回転の終わりのどこから体が流れ始めるか(0〜1)。
+/// 以前は隙へ入った瞬間に流れた分(0.18)がいきなり足されて、回り終わりで体が1フレームで跳んでいた。
+/// 回っている勢いのまま行き過ぎ、踏ん張って戻る形にする(重い体の慣性)。
+inline constexpr float SPIN_OVERRUN_START = 0.72f;
 
 // 火球: 上体を反らして首を持ち上げ(息を吸う)、吐く瞬間に前へ突き出す。
 // 叩き付けも上体を反らすので、あごを大きく開けて口の火(GameScene側の演出)を見せて区別する。
@@ -229,15 +233,24 @@ inline EnemyPoseOffset EnemyAttackPose(
                 // ここで「まだ終わっていない」と見せることが、この攻撃の読み合いそのものになる。
                 const float wind = Detail::SmoothStep01(
                     std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
+                // 行き過ぎた分を踏ん張って戻してから(前半)、捻り直す(後半)。
+                const float settleOut =
+                    1.0f - Detail::SmoothStep01(std::min(1.0f, spinPhase.segmentT / 0.25f));
                 offset.pitch = PoseTuning::SPIN_BRACE_PITCH * (0.7f + 0.5f * wind);
-                offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * wind;
+                offset.yaw = spin.sign * PoseTuning::SPIN_OVERRUN_YAW * settleOut -
+                    spin.sign * PoseTuning::SPIN_WIND_YAW * wind;
             }
             else
             {
                 // 溜めた捻りを一気に戻す。回転そのものは物理の向きが担うので、
                 // ここは出だしの勢いを足すだけにする(足しすぎると判定の向きとずれる)。
                 const float release = Detail::FastOut(std::min(1.0f, spinPhase.segmentT * 2.5f));
-                offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * (1.0f - release);
+                // 回り終わりは勢いで少し行き過ぎる。一拍・隙の始まりの値(SPIN_OVERRUN_YAW)へ途切れずにつなぐ。
+                const float overrun = Detail::SmoothStep01(
+                    (spinPhase.segmentT - PoseTuning::SPIN_OVERRUN_START) /
+                    (1.0f - PoseTuning::SPIN_OVERRUN_START));
+                offset.yaw = -spin.sign * PoseTuning::SPIN_WIND_YAW * (1.0f - release) +
+                    spin.sign * PoseTuning::SPIN_OVERRUN_YAW * overrun;
             }
         }
         else // Recovery
@@ -480,6 +493,8 @@ struct EnemyTellPose
     /// (実機で「尻尾と体がいっしょ。もっと尻尾を動かしてほしい」と指摘された)。
     float tailWhip = 0.0f;
     float frontLegLift = 0.0f; ///< 前脚を持ち上げる
+    /// 尾を持ち上げる(正で尾の先が上がる)。尾回転で尾が地面を突き抜けないようにする。
+    float tailLift = 0.0f;
 };
 
 namespace TellTuning
@@ -512,6 +527,16 @@ inline constexpr float SPIN_TAIL_WHIP_OVERSHOOT = 0.75f;
 /// 振り抜き(追い越し)が始まる位置。半回転の何割を過ぎてから尾が追い越すか。
 inline constexpr float SPIN_TAIL_WHIP_START = 0.55f;
 inline constexpr float SPIN_NECK_TUCK = -0.35f;
+// 尾回転: 首が先に回る向きを向く量。生き物は頭から回り、胴が続き、尾が最後に遅れてついてくる。
+// 体の溜め(反対へ捻る)の間も首は回る側へ向けておくので、溜めの間はハンターを見据えたまま、
+// 回り出すと頭が先導して体が「C」の字にしなる。首の向きは回る向きの手がかりにもなる。
+// 正負は尾の遅れ(SPIN_TAIL_LAG)と同じ側(回る内側)。
+inline constexpr float SPIN_NECK_LEAD = 0.60f;
+// 尾回転: 尾を持ち上げる量。回るときの足踏み(Wyvern の left/right)は尾を地面すれすれへ下ろしていて、
+// そこへ尾を振る構えが重なると、尾の先が床を最大約15突き抜けていた(撮影の記録で確認)。
+// 床を突き抜けた尾に合わせて体ごと持ち上げていたので、4本の足が浮いて見えた。
+// 尾を浮かせて、ハンターの高さを薙ぐ形にする。
+inline constexpr float SPIN_TAIL_LIFT = 0.45f;
 // 火球: 首を高く持ち上げてあごを大きく開け、口の中の火を見せる。吐く瞬間に首を前へ突き出す。
 inline constexpr float FIREBALL_NECK_REAR = 0.85f;
 inline constexpr float FIREBALL_NECK_SPIT = -0.40f;
@@ -672,13 +697,22 @@ inline EnemyTellPose EnemyAttackTellPose(
             tell.tailYaw = -spin.sign * TellTuning::SPIN_TAIL_COIL * windupT;
             tell.tailWhip = -spin.sign * TellTuning::SPIN_TAIL_WHIP_COIL * windupT;
             tell.neckPitch = TellTuning::SPIN_NECK_TUCK * windupT;
+            // 溜めの間に尾を持ち上げておく(持ち上がった尾も「尾で来る」手がかりになる)。
+            tell.tailLift = TellTuning::SPIN_TAIL_LIFT * windupT;
+            // 首は回る側へ向けておく(体は反対へ捻っているので、頭はハンターを見据えたままになる)。
+            tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD * windupT;
         }
         else if (phase == EnemyAttackPhase::Active)
         {
             const EnemySpinPhase spinPhase = EnemySpinPhaseAt(phaseTime, spin.halfTurns);
             tell.neckPitch = TellTuning::SPIN_NECK_TUCK;
+            tell.tailLift = TellTuning::SPIN_TAIL_LIFT;
             if (spinPhase.pausing)
             {
+                // 首は、もう一度回る側へ向け直す(体の捻り直しと同じ進み方)。
+                const float neckWind = Detail::SmoothStep01(
+                    std::clamp((spinPhase.segmentT - 0.20f) / 0.55f, 0.0f, 1.0f));
+                tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD * neckWind;
                 // 一拍。ここが2回目の呼び動作になる。
                 //   前半: 振り抜いて追い越した形から戻す
                 //   後半: もう一度大きく引き寄せて溜め直し、溜めたまま待つ
@@ -697,6 +731,9 @@ inline EnemyTellPose EnemyAttackTellPose(
             }
             else
             {
+                // 首は前半に回る側を向いて体を先導し、体が追いつく後半で正面へ戻る。
+                tell.neckYaw = -spin.sign * TellTuning::SPIN_NECK_LEAD *
+                    (1.0f - Detail::SmoothStep01((spinPhase.segmentT - 0.40f) / 0.55f));
                 // 回っている間、尾は体と一緒には回らない。
                 // 前半は体に引きずられて遅れ、後半で一気に追い越して振り抜く(むちの動き)。
                 // 先(tailWhip)ほど大きく遅れ、大きく追い越す。
@@ -718,6 +755,7 @@ inline EnemyTellPose EnemyAttackTellPose(
             tell.tailYaw = spin.sign * TellTuning::SPIN_TAIL_OVERSHOOT * settle;
             tell.tailWhip = spin.sign * TellTuning::SPIN_TAIL_WHIP_OVERSHOOT * settle;
             tell.neckPitch = TellTuning::SPIN_NECK_TUCK * settle;
+            tell.tailLift = TellTuning::SPIN_TAIL_LIFT * settle;
         }
         break;
 

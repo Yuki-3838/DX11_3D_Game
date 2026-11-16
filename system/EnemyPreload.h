@@ -53,6 +53,8 @@ namespace EnemyPreload
         load(profile.biteClip.clipFile, "attack_bite");
         load(profile.sweepClip.clipFile, "attack_sweep");
         load(profile.roarClip, "roar");
+        load(profile.turnLeftClip, "turn_left");
+        load(profile.turnRightClip, "turn_right");
     }
 
     /** 読んだものを返す。読み込みの中身は GameScene と同じ。 */

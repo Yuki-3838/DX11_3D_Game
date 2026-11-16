@@ -1072,11 +1072,36 @@ float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
 		}
 
 		const float height = skinned.Dot(upAxis);
-		lowestHeight = std::min(lowestHeight, height);
+		if (height < lowestHeight)
+		{
+			lowestHeight = height;
+			// 一番強く効いている骨を控える(どの部位が一番低いかを記録に出すため)。
+			int strongest = -1;
+			float strongestWeight = 0.0f;
+			for (int slot = 0; slot < 4; ++slot)
+			{
+				if (vertex.BoneWeight[slot] > strongestWeight)
+				{
+					strongestWeight = vertex.BoneWeight[slot];
+					strongest = vertex.BoneIndex[slot];
+				}
+			}
+			m_lastLowestBoneIndex = strongest;
+		}
 		hasVertex = true;
 	}
 
 	return hasVertex ? lowestHeight : 0.0f;
+}
+
+std::string CAnimationMesh::GetLastLowestBoneName() const
+{
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx == m_lastLowestBoneIndex)
+			return name;
+	}
+	return {};
 }
 
 void CAnimationMesh::ApplyAnimationToBones(

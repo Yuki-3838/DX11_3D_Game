@@ -180,6 +180,10 @@ private:
 	// 正面とプレイヤーへの向きの差(0〜π)。
 	float facingErrorTo(const Vector3& targetPosition) const;
 	void moveInFacingDirection(float distance);
+	// 歩く速さ(m_locomotionSpeed)を目標の速さへ加速・減速で寄せ、その速さで正面へ動く。
+	// 以前は状態ごとに速さを決め打ちしていたので、0と最高速が1フレームで切り替わり、
+	// 「急に止まって急に動き出す」機械のような動きになっていた(審査会の指摘)。
+	void driveLocomotion(float targetSpeed, float deltaSec, float accel, float decel);
 	// 尾回転に入る瞬間に、回る向きと基準の向きを決める。
 	void beginTailSpin(const Vector3& targetPosition);
 
@@ -219,7 +223,17 @@ private:
 	// 移動の速さの倍率。弱っているほど遅い。攻撃の踏み込みには掛けない
 	// (掛けると攻撃の届く距離と見た目が食い違う)。
 	float moveSpeedScale() const;
-	static constexpr float RETREAT_SECONDS = 0.22f;
+	// 加速して下がるので、以前(0.22秒・最初から最高速)と同じくらい下がれるよう少し長くした。
+	static constexpr float RETREAT_SECONDS = 0.30f;
+	// 歩く速さの加速・減速(表の長さ/秒/秒)。大型の体は重いので、出だしはじわっと、止まるのも数歩かかる。
+	//   加速 230: 止まった状態から近づく速さ(84)まで約0.37秒
+	//   減速 330: 近づく速さから止まるまで約0.25秒
+	// 予兆・向き直りに入るときは早めに止める(滑りながら攻撃すると、届く距離が予兆とずれる)。
+	static constexpr float LOCOMOTION_ACCEL = 230.0f;
+	static constexpr float LOCOMOTION_DECEL = 330.0f;
+	static constexpr float LOCOMOTION_STOP_DECEL = 560.0f;
+	// 後退は飛びのく動きなので、ほかより強く蹴り出す。
+	static constexpr float RETREAT_ACCEL = 700.0f;
 	static constexpr float MIN_CIRCLE_SECONDS = 0.55f;
 	static constexpr float MAX_CIRCLE_SECONDS = 1.40f;
 	static constexpr float MAX_DELTA_SECONDS = 0.1f;
@@ -228,6 +242,8 @@ private:
 	static constexpr float RANGED_ATTACK_INTERVAL_SECONDS = 3.2f;
 
 	Vector3 m_move{0, 0, 0};
+	// いま歩いている速さ(正面へ正、後ろへ負。表の長さ/秒)。状態が変わっても途切れさせない。
+	float m_locomotionSpeed = 0.0f;
 	Vector3 m_destrot{0, 0, 0};
 	player* m_target{nullptr};
 	MotionState m_motionState = MotionState::Approach;

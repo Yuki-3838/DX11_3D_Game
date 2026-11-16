@@ -115,6 +115,20 @@ struct EnemyModelProfile
     std::string attackClip;  ///< 共通の攻撃クリップ(専用が無い攻撃に使う)
     std::string dieClip;
     std::string flyClip;     ///< 飛来の場面・登場の落下中。無ければ待機の姿勢に手続きで翼を広げる
+    /**
+     * その場で足を踏み替えて回るクリップ(左回り・右回り)。向き直りと尾回転で使う。
+     * 空なら歩きのクリップを速く回して代わりにする(前へ歩く脚のまま体だけ回るので、滑って見える)。
+     */
+    std::string turnLeftClip;
+    std::string turnRightClip;
+    /// 踏み替えのクリップを1倍で再生したときに見合う回る速さ(度/秒)。実際に回っている速さから再生の速さを決める。
+    float turnClipDegreesPerSecond = 60.0f;
+    /**
+     * 立ち止まっている間(隙・予兆・怯みなど)に待機のクリップをループで流すか。
+     * false なら待機の最初のコマで止める(Cethiel は待機の途中で上体を起こして後ろ足が浮き、影が離れるため)。
+     * 止めたままだと剥製のように固まって見えるので、足が浮かない待機のあるモデルは true にする。
+     */
+    bool loopIdleClip = false;
 
     EnemyAttackClipBinding slamClip;
     EnemyAttackClipBinding biteClip;
@@ -350,6 +364,13 @@ inline const EnemyModelProfile& GetWyvernProfile()
         p.runClip = "assets/model/Wyvern/anim/Anim_Wyvern_Run.fbx";
         p.dieClip = "assets/model/Wyvern/anim/Anim_Wyvern_Death.fbx";
         p.flyClip = "assets/model/Wyvern/anim/Anim_Wyvern_Fly.fbx";
+        // 待機(3.4秒のループ)は4本の足が地面に着いたまま、首と尾がゆっくり揺れて息をする(Blenderで足の高さを確認)。
+        p.loopIdleClip = true;
+        // left / right は腰の向きが元へ戻る1.7秒のループで、その場で足を踏み替える(回る量は体の向きで付ける)。
+        // left は頭が左(モデルの +X)へ先に振れる。
+        p.turnLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_left.fbx";
+        p.turnRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_right.fbx";
+        p.turnClipDegreesPerSecond = 60.0f;
         // 当たる瞬間は骨の動きを測って決めた(右前脚の爪・頭・尾の先が一番前へ出る/地面を打つ時刻)。
         // 叩き付け: 右前脚を高く振り上げて(0.5秒)、前へ振り下ろす(0.72秒で爪が一番前・下)。
         p.slamClip = { "assets/model/Wyvern/anim/Anim_Wyvern_Swipe.fbx", 0.0f, 0.72f, 1.17f, EnemyStrikePart::RightClaw };

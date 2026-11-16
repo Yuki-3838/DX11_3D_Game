@@ -43,6 +43,8 @@ protected:
 	CStaticMeshRenderer m_StaticMeshRenderer{};
 	bool m_hideEmbeddedShieldSubset = false;
 	size_t m_groundingSampleBudget = 0;
+	// 直前の GetAnimatedLowestAlong で一番低かった頂点を一番強く動かしている骨(調査・撮影の記録用)。
+	mutable int m_lastLowestBoneIndex = -1;
 	bool m_useAnimationScaleKeys = false;
 	std::unique_ptr<CStaticMesh> m_swordMesh{};
 	CStaticMeshRenderer m_swordRenderer{};
@@ -325,6 +327,8 @@ public:
 	float GetAnimatedLocalMinY() const;
 	// 現在のボーン行列でスキニングした頂点を、upAxis方向の成分で見たときの最小値。
 	float GetAnimatedLowestAlong(const Vector3& upAxis) const;
+	// 直前に求めた一番低い頂点がどの骨に付いているか(床に埋まる部位を突き止めるのに使う)。無ければ空。
+	std::string GetLastLowestBoneName() const;
 	// 最下点を求めるときに見る頂点の数のおおよその上限(0 = 全頂点)。
 	// 頂点が多いモデルで、毎フレームの全頂点スキニングが重くならないよう間引く。
 	void SetGroundingSampleBudget(size_t vertexBudget) { m_groundingSampleBudget = vertexBudget; }

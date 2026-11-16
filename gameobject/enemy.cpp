@@ -45,6 +45,7 @@ void enemy::resetEncounter()
 	m_motionState = MotionState::Approach;
 	m_stateTime = 0.0f;
 	m_move = Vector3(0.0f, 0.0f, 0.0f);
+	m_locomotionSpeed = 0.0f;
 	m_circleDirection = 1.0f;
 	m_posture = 0.0f;
 	m_rageDamage = 0.0f;
@@ -64,6 +65,7 @@ void enemy::beginDeath()
 	// 先に今の傾きを控える(changeStateの後では状態が変わって求められない)。
 	m_deathPoseStart = getAttackPoseOffset();
 	m_move = Vector3(0.0f, 0.0f, 0.0f);
+	m_locomotionSpeed = 0.0f;
 	changeState(MotionState::Dead);
 }
 
@@ -418,6 +420,7 @@ void enemy::init()
 	m_srt.scale = Vector3(1.0f, 1.0f, 1.0f);
 	m_srt.rot = Vector3(0, 0, 0);
 	m_move = Vector3(0, 0, 0);
+	m_locomotionSpeed = 0.0f;
 	m_motionState = MotionState::Approach;
 	m_stateTime = 0.0f;
 	m_circleDirection = 1.0f;
@@ -445,6 +448,9 @@ void enemy::update(uint64_t dt)
 		return;
 	if (m_motionState == MotionState::Standby)
 	{
+		// 歩いていた勢いは数歩で止める(その場でぴたりと止まらない)。
+		driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_DECEL);
+		m_srt.pos += m_move;
 		// 一拍おいて勝利の咆哮を上げる。咆哮の後はここへ戻り、立っているだけになる。
 		if (!m_victoryRoarDone && m_stateTime >= VICTORY_ROAR_DELAY_SECONDS)
 		{
@@ -476,6 +482,7 @@ void enemy::update(uint64_t dt)
 	{
 		if (m_motionState != MotionState::Circle)
 			changeState(MotionState::Circle);
+		m_locomotionSpeed = 0.0f;
 		faceTarget(targetPosition, deltaSec, 4.0f, APPROACH_TURN_SPEED);
 		return;
 	}
@@ -490,6 +497,8 @@ void enemy::update(uint64_t dt)
 	{
 		if (m_stateTime < Combat::Tuning::ENEMY_RAGE_ROAR_SECONDS)
 		{
+			// 歩いている最中に怒ったときは、踏みとどまってから吠える(勢いを短く殺す)。
+			driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_STOP_DECEL);
 			m_srt.pos += m_move;
 			return;
 		}
@@ -553,9 +562,15 @@ void enemy::update(uint64_t dt)
 	{
 	case MotionState::Approach:
 		// 向きは上限つきで回すので、真横や後ろの相手へは弧を描きながら近づく。
+	{
 		faceTarget(targetPosition, deltaSec, 8.0f, APPROACH_TURN_SPEED * turnScale);
-		moveInFacingDirection(APPROACH_SPEED * moveSpeedScale() * deltaSec);
+		// 間合いへ入る手前で歩みをゆるめる(獲物に詰め寄る足取り)。
+		// 攻撃の予兆に入ると足を止めるので、最高速のまま入ると「ピタッ」と止まって見える。
+		// 攻撃を決める距離の16手前から減らし始め、入る瞬間は約4割の速さにしておく。
+		const float arrive = std::clamp(0.4f + (distance - ATTACK_DISTANCE) / 16.0f * 0.6f, 0.4f, 1.0f);
+		driveLocomotion(APPROACH_SPEED * moveSpeedScale() * arrive, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_DECEL);
 		break;
+	}
 	case MotionState::Circle:
 	{
 		// 周回は「プレイヤーを向いたまま真横へ滑る」のではなく、前へ歩きながら弧を描く。
@@ -571,7 +586,7 @@ void enemy::update(uint64_t dt)
 			: 1.31f + (2.00f - 1.31f) * -t;
 		const float desiredYaw = angleToTarget(targetPosition) + m_circleDirection * offset;
 		turnTowardYaw(desiredYaw, deltaSec, 4.0f, CIRCLE_TURN_SPEED * turnScale);
-		moveInFacingDirection(CIRCLE_SPEED * moveSpeedScale() * deltaSec);
+		driveLocomotion(CIRCLE_SPEED * moveSpeedScale(), deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_DECEL);
 		break;
 	}
 	case MotionState::Turn:
@@ -579,6 +594,8 @@ void enemy::update(uint64_t dt)
 		// その場で足を踏み替えて向き直る。動かないので、この間が側面・背後を殴る機会になる。
 		// そろったら、その時の距離で攻撃を選ぶ(向き直っている間に離れられたら火球・突進になる)。
 		faceTarget(targetPosition, deltaSec, 6.0f, TURN_IN_PLACE_SPEED * turnScale);
+		// 歩いてきた勢いを数歩で殺しながら向き直る。
+		driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_STOP_DECEL);
 		if (facingErrorTo(targetPosition) <= ATTACK_ALIGN_ANGLE)
 		{
 			selectNextAttack(distance);
@@ -595,10 +612,16 @@ void enemy::update(uint64_t dt)
 		const float turnRate = windupTurnRate();
 		if (turnRate > 0.0f)
 			faceTarget(targetPosition, deltaSec, turnRate, WINDUP_TURN_SPEED);
+		// 予兆の間は動かない。攻撃のクリップは足を地面に着けた構えから始まるので、
+		// 歩いてきた勢いで滑らせると足が床を滑って見える。減速は予兆に入る前の歩きの間には付けられないので、
+		// ここではすぐ止める(止まる瞬間の姿勢の変化は、歩き→攻撃のクリップのつなぎで和らげている)。
+		m_locomotionSpeed = 0.0f;
 		if (m_stateTime >= windupSeconds())
 		{
 			if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
 				beginTailSpin(targetPosition);
+			// 攻撃の踏み込みは攻撃ごとに決めた速さで動かす。歩きの勢いは持ち越さない。
+			m_locomotionSpeed = 0.0f;
 			changeState(MotionState::Active);
 		}
 		break;
@@ -630,13 +653,17 @@ void enemy::update(uint64_t dt)
 			moveInFacingDirection(
 				Combat::Tuning::ENEMY_CHARGE_SPEED * accel * (2.0f - accel) * deltaSec);
 		}
-		else
+		else if (!isAttackFromClip())
 		{
 			// 攻撃判定中は踏み込ませ、攻撃の有効時間を動きでも分かるようにする。
 			// 速さは攻撃ごとの表から引く。判定の時間を短くしたので、以前の固定値(48/68)のままだと
 			// 踏み込む距離が1/4になり、「距離を取るだけでは避けられない」読み合いが消える。
 			moveInFacingDirection(Combat::EnemyLungeSpeedOf(m_attackKind) * deltaSec);
 		}
+		// 攻撃ごとのクリップ(Wyvern)で見せている攻撃は、体を動かさない。
+		// クリップは後ろ足を地面に着けたまま上体を前へ突き出す動き(噛みつきで約16・爪で約24前へ出る)で、
+		// そこへ踏み込みの移動を重ねると、足が地面に着いたまま床を滑って見えていた(審査会の指摘)。
+		// 前へ届く分はクリップの上体の動きが受け持つ。
 		if (m_stateTime >= activeSeconds()) changeState(MotionState::Recovery);
 		break;
 	case MotionState::Recovery:
@@ -671,12 +698,14 @@ void enemy::update(uint64_t dt)
 		// 怯んでいる間は何もしない。向き直りもしないので、背後へ回り込む機会になる。
 		// 明けたら様子見へ戻す。後退させると、反撃に踏み込んだプレイヤーから逃げてしまい、
 		// 怯ませた手応えが薄れるためである。
+		// 歩いている最中に怯んだときは、勢いでたたらを踏んで止まる。
+		driveLocomotion(0.0f, deltaSec, LOCOMOTION_ACCEL, LOCOMOTION_STOP_DECEL);
 		if (m_stateTime >= Combat::Tuning::ENEMY_FLINCH_SECONDS)
 			changeState(MotionState::Circle);
 		break;
 	case MotionState::Retreat:
 		faceTarget(targetPosition, deltaSec, 6.0f, APPROACH_TURN_SPEED * turnScale);
-		moveInFacingDirection(-RETREAT_SPEED * moveSpeedScale() * deltaSec);
+		driveLocomotion(-RETREAT_SPEED * moveSpeedScale(), deltaSec, RETREAT_ACCEL, LOCOMOTION_DECEL);
 		if (m_stateTime >= RETREAT_SECONDS || distance >= RETREAT_DISTANCE)
 		{
 			m_circleDirection = -m_circleDirection;
@@ -930,6 +959,20 @@ void enemy::moveInFacingDirection(float distance)
 {
 	// 大型のモデルは歩幅も大きいので、動く量を倍率で掛ける(Combat::EnemyReachScale)。
 	m_move = Vector3(-std::sinf(m_srt.rot.y), 0.0f, -std::cosf(m_srt.rot.y)) * (distance * Combat::EnemyReachScale());
+}
+
+void enemy::driveLocomotion(float targetSpeed, float deltaSec, float accel, float decel)
+{
+	// 速さの大きさが増える向き(同じ向きのまま速くなる)は accel、それ以外(遅くなる・向きが逆になる)は decel。
+	// 後退から前歩きへ移るときは、いったん止まってから歩き出す。
+	const bool speedingUp =
+		std::abs(targetSpeed) > std::abs(m_locomotionSpeed) && targetSpeed * m_locomotionSpeed >= 0.0f;
+	const float maxStep = (speedingUp ? accel : decel) * deltaSec;
+	m_locomotionSpeed += std::clamp(targetSpeed - m_locomotionSpeed, -maxStep, maxStep);
+	if (std::abs(m_locomotionSpeed) > 0.001f)
+		moveInFacingDirection(m_locomotionSpeed * deltaSec);
+	else
+		m_locomotionSpeed = 0.0f;
 }
 
 const char* enemy::getMotionStateName() const
