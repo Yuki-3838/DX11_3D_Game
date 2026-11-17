@@ -4844,6 +4844,10 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
+	// 前転中と倒れている間は、接地を頂点の最下点(GetAnimatedLocalMinY)で求めるので、毎フレーム全頂点をCPUで変形する。
+	// 騎士は頂点が多く、Debugビルドでは前転の間ずっと1フレームに約39msかかり、前転のたびに止まっていた(実測)。
+	// 敵と同じく、間引いた頂点で最下点を求める(間引いた後は約4.5ms)。
+	m_playerAnimationMesh->SetGroundingSampleBudget(8000);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
 	// クリップはモデルごとの表(CharacterModelProfile)から引く。iniのキーで差し替えられる。
 	const auto locomotionClip = [&playerProfile](LocomotionClipSlot slot) {
