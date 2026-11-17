@@ -291,6 +291,9 @@
     <ClInclude Include="..\system\EnemyPreload.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="..\system\ModelCache.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="..\system\StartupLog.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
@@ -423,6 +426,9 @@
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="..\system\CTexture.cpp">
+      <Filter>ソース ファイル</Filter>
+    </ClCompile>
+    <ClCompile Include="..\system\ModelCache.cpp">
       <Filter>ソース ファイル</Filter>
     </ClCompile>
     <ClCompile Include="..\system\CylinderDrawer.cpp">

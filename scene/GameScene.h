@@ -405,7 +405,6 @@ private:
 	void LoadPlayerAssetsOnWorker();
 	void FinishSceneInit();
 	std::future<void> m_loadFuture;
-	std::unique_ptr<CStaticMesh> m_pendingPlayerMesh;   ///< 裏で読んだメッシュ。登録は仕上げで行う
 	bool m_flightLoadFinished = false;
 	bool m_flightSkipRequested = false;
 	void DrawDragonFlight();

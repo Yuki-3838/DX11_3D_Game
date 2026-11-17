@@ -2332,7 +2332,7 @@ bool GameScene::ReloadAttackClip(Combat::PlayerAttackSlot slot)
 	static int reloadCount = 0;
 	const std::string name = std::string("timeline_") + Combat::PlayerAttackSlotKey(slot) +
 		"_" + std::to_string(++reloadCount);
-	if (m_playerAnimationData.LoadAnimation(file, name) == nullptr)
+	if (!m_playerAnimationData.LoadAnimation(file, name))
 		return false;
 	aiAnimation* animation = m_playerAnimationData.GetAnimation(name.c_str(), 0);
 	if (animation == nullptr)
@@ -4709,7 +4709,7 @@ void GameScene::init()
 	// ファイルが無かったクリップは読まれていないので nullptr のままにする。
 	const auto loadEnemyClip = [this](const std::string& path, const char* name) -> aiAnimation*
 	{
-		if (path.empty() || m_enemyAnimationData->GetAiScene(name) == nullptr)
+		if (path.empty() || !m_enemyAnimationData->HasAnimation(name))
 			return nullptr;
 		return m_enemyAnimationData->GetAnimation(name, 0);
 	};
@@ -4794,6 +4794,14 @@ void GameScene::init()
 		m_flightTime = 0.0f;
 		m_flightDiveTime = 0.0f;
 		m_flightFlapPhase = 0.0f;
+		// 2回目からの戦い(リトライなど)では、読み込みが終わりしだい飛来を飛ばす(決定ボタンで飛ばしたのと同じ)。
+		// 読み込みは保存ファイル(ModelCache.h)から読むので約0.5秒(Debug版)で終わり、見せ続ける理由がない。
+		// 以前は読み込みが終わっても、迫ってくる姿(約3秒)と降下(約1秒)を毎回待たされていた。
+		// 保存ファイルが無いなどで読み込みが長いときは、終わるまで今までどおり飛来を見せる。
+		// 起動して最初の1回は、戦いの始まりとして最後まで見せる。
+		static bool flightShownOnce = false;
+		m_flightSkipRequested = flightShownOnce;
+		flightShownOnce = true;
 		UpdateDragonFlight(0.0f);
 		LogStartup("game: flight scene started");
 		m_loadFuture = std::async(std::launch::async, [this]() { LoadPlayerAssetsOnWorker(); });
@@ -4836,11 +4844,6 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	}
 	m_motionBlur.SetDebugViewEnabled(GetDevSetting("motion_blur_debug", "0") == "1");
 
-	if (!MeshManager::ContainsMesh(g_loadmodel[0].meshid))
-	{
-		m_pendingPlayerMesh = std::make_unique<CStaticMesh>();
-		m_pendingPlayerMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
-	}
 	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
@@ -4954,13 +4957,6 @@ void GameScene::LoadPlayerAssetsOnWorker()
 void GameScene::FinishSceneInit()
 {
 	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
-	if (m_pendingPlayerMesh)
-	{
-		std::unique_ptr<CStaticMeshRenderer> meshrenderer = std::make_unique<CStaticMeshRenderer>();
-		meshrenderer->Init(*m_pendingPlayerMesh);
-		MeshManager::RegisterMesh<CStaticMesh>(g_loadmodel[0].meshid, std::move(m_pendingPlayerMesh));
-		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[0].meshid, std::move(meshrenderer));
-	}
 	m_playerAnimationMesh->InitRenderResources();
 
 	// 攻撃のタイムラインエディター(F6)。クリップの読み込みとイベントの再生はこのシーンが受け持つ。
@@ -5016,7 +5012,10 @@ void GameScene::FinishSceneInit()
 	StartEnemyIntro();
 	// プレイヤーのローカル境界球とモデル境界を作成する。
 	{
-	CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[0].meshid);
+		// 以前は大きさを測るためだけに、同じモデルを静的メッシュ(CStaticMesh)としてもう1回読んでいた。
+		// 中身はアニメーション用メッシュと同じ頂点(どちらも頂点を変換せずに読む)で、
+		// 騎士では1回目の読み込みが約3.5秒(Debug版)長くなっていたので、アニメーション用メッシュの頂点から求める。
+		const CStaticMesh* mesh = m_playerAnimationMesh.get();
 		const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
 
 		std::vector<Vector3> vs;
