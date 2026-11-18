@@ -14,6 +14,11 @@ public:
 	inline static float VALUE_MOVE_MODEL = 20.0f;
 	// ダッシュの速さ = 歩く速さ x この倍率(=45)。走りクリップの1倍速(約39)の約1.15倍。
 	inline static float RUN_SPEED_MULTIPLIER = 2.25f;
+	// 動き出し・止まりの加速度(単位/秒^2)。以前は押した瞬間に最高速、離した瞬間に0だったため、
+	// 足の運び(実際に進んだ距離で進める)が体に追いつかず、小刻みに押すと足が地面を滑っていた。
+	// 歩き(20)まで約0.12秒で上がり、約0.15秒で止まる。ダッシュ(45)は約0.28秒で上がる。
+	inline static float MOVE_ACCELERATION = 160.0f;
+	inline static float MOVE_DECELERATION = 140.0f;
 	inline static float VALUE_ROTATE_MODEL = PI * 0.002f;		// 蝗櫁ｻ｢驥・
 	inline static float RATE_ROTATE_MODEL = 0.4f;				// 蝗櫁ｻ｢蜑ｲ蜷・
 	inline static float RATE_MOVE_MODEL = 0.2f;					// 遘ｻ蜍墓ｸ幄｡ｰ蜑ｲ蜷・
@@ -86,6 +91,9 @@ private:
 	void readMoveInput(float& forward, float& right) const;
 
 	Vector3 m_move{0,0,0};				// 遘ｻ蜍暮㍼
+	// 入力による移動の今の速さと向き(水平・長さ1)。離しても向きを保ち、減速しながら止まる。
+	float m_moveSpeed = 0.0f;
+	Vector3 m_moveDirection{0, 0, 0};
 	Vector3 m_destrot{0,0,0};			// 逶ｮ讓吝ｧｿ蜍｢
 	MotionState m_motionState = MotionState::Idle;
 	float m_motionTime = 0.0f;

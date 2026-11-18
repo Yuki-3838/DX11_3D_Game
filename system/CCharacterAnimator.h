@@ -25,6 +25,9 @@ struct CharacterAnimationState
 	// 呼び出し側が並び順で初期化しているため、新しい項目は必ず末尾へ足すこと。
 	float velocityRight = 0.0f;
 	float velocityForward = 0.0f;
+	// 移動の入力を押しているか。moveInputKnown が false の呼び出し元では、実際の速さから判断する。
+	bool moveInputKnown = false;
+	bool moveInputHeld = false;
 };
 
 struct MotionKeyframe
@@ -395,6 +398,20 @@ private:
 	// これを使わずに位相を止めた場所で固めると、脚を開いた姿勢のまま立ち姿へ混ざり、
 	// 足の位置が最大79単位(脚の長さは約84)一気に動いていた。
 	float m_locomotionStopPhase = 0.0f;
+	// 両足がそろう瞬間は1周期に2回ある(左足が右足を追い越すときと、その逆)。もう一方の位相。
+	// 立ち姿から歩き出すときは、いまの位相に近い方から始める。
+	float m_locomotionStopPhaseAlt = 0.0f;
+	// 移動の姿勢をどれだけ出すか(0=立ち姿・1=移動のクリップだけ)。速さとは別に持つ。
+	// 速さで決めると、小刻みに押したとき速さが上がりきらず、立ち姿と歩きが半分ずつ混ざった
+	// 中途半端な姿勢が続いていた。動き出したらすぐ1にし、止まるときは足を揃えてから0へ戻す。
+	float m_locomotionPresence = 0.0f;
+	// 離してから何秒たったか(移動の姿勢を残す猶予を数える)。
+	float m_locomotionReleaseSeconds = 0.0f;
+	// 足運びの位相を進める速さ(1秒あたりの周期)を、なめらかにした値。
+	float m_smoothedCyclesPerSecond = 0.0f;
+	// 最後に動いていた向き(キャラクターから見た右・前。長さ1)。止まりかけで方向が決まらないときに使う。
+	float m_lastLocomotionRight = 0.0f;
+	float m_lastLocomotionForward = 1.0f;
 	bool m_footPhaseMeasured = false;
 	// クリップごとの足運びの位相を測り、止まる姿勢を作る。
 	void MeasureLocomotionFootPhases(CAnimationMesh& mesh);

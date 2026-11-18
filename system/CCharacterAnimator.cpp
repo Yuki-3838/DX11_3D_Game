@@ -650,28 +650,84 @@ void CCharacterAnimator::MeasureLocomotionFootPhases(CAnimationMesh& mesh)
 			static_cast<float>(bestOffset) / static_cast<float>(SAMPLES);
 	}
 
-	// 止まるときに足を収める位相は、前向き歩きで「両足が最も揃う瞬間」にする。
-	// 位相を止めた場所で固めると、脚を大きく開いた姿勢のまま立ち姿へ混ざるため、
-	// 足の位置が最大79単位(脚の長さは約84)一気に動いていた。
-	// ここへ寄せると、その差は16単位まで縮む。
+	// 立ち姿から歩き出すときの位相は、前向き歩きで「両足が揃う瞬間」にする
+	// (脚を開いた位相から始めると、混ぜ始めに足が大きく動く)。
 	//
 	// なお、この姿勢を「立ち止まった脚の姿勢」としてそのまま使うことは**できない**。
 	// 実測すると、歩きクリップの足は全位相で骨の初期姿勢より4〜12単位高い位置にある
 	// (クリップは腰が沈む前提で作られているが、腰はここでは動かしていない)。
 	// 立ち姿に使うと、止まるたびにプレイヤーが約1単位浮いて見える。
 	// 接地の基準は骨の初期姿勢の足なので、止まりきった姿勢はそちらに合わせる。
+	std::array<Vector3, SAMPLES> footDifference{};
 	float closest = 1.0e9f;
 	for (int i = 0; i < SAMPLES; ++i)
 	{
 		const float phase = static_cast<float>(i) / static_cast<float>(SAMPLES);
 		const auto pose = mesh.SampleLocalPose(reference, phase, legBones);
-		const float gap = (leftFootAt(pose) - rightFootAt(pose)).Length();
+		footDifference[i] = leftFootAt(pose) - rightFootAt(pose);
+		const float gap = footDifference[i].Length();
 		if (gap < closest)
 		{
 			closest = gap;
 			m_locomotionStopPhase = phase;
 		}
 	}
+	m_locomotionStopPhaseAlt = m_locomotionStopPhase;
+
+	// 両足が揃う瞬間は1周期に2回ある(左足が右足を前後に追い越すときと、その逆)。
+	// 上の「足の間が最も狭い位相」だけでは1回しか取れず、2回目を「その次に狭い所」で探すと、
+	// 騎士の歩きでは1回目から0.28周期しか離れていない所が選ばれた(実測。本来はほぼ半周期離れる)。
+	//
+	// そこで「前後に追い越す瞬間」を直接探す。左右の足の差のうち、1周期で最も大きく変わる向きが
+	// 前後の向き(横の開きはほとんど変わらない)。その向きの成分が0をまたぐ位相が追い越す瞬間になる。
+	Vector3 meanDifference(0.0f, 0.0f, 0.0f);
+	for (const Vector3& difference : footDifference)
+		meanDifference += difference;
+	meanDifference /= static_cast<float>(SAMPLES);
+	// 差の散らばりが最も大きい向きを、べき乗法で求める(3x3の共分散行列)。
+	float covariance[3][3] = {};
+	for (const Vector3& difference : footDifference)
+	{
+		const float v[3] = {
+			difference.x - meanDifference.x, difference.y - meanDifference.y, difference.z - meanDifference.z };
+		for (int r = 0; r < 3; ++r)
+			for (int c = 0; c < 3; ++c)
+				covariance[r][c] += v[r] * v[c];
+	}
+	Vector3 strideAxis(1.0f, 1.0f, 1.0f);
+	for (int iteration = 0; iteration < 32; ++iteration)
+	{
+		const Vector3 next(
+			covariance[0][0] * strideAxis.x + covariance[0][1] * strideAxis.y + covariance[0][2] * strideAxis.z,
+			covariance[1][0] * strideAxis.x + covariance[1][1] * strideAxis.y + covariance[1][2] * strideAxis.z,
+			covariance[2][0] * strideAxis.x + covariance[2][1] * strideAxis.y + covariance[2][2] * strideAxis.z);
+		if (next.Length() < 1.0e-8f)
+			break;
+		strideAxis = next;
+		strideAxis.Normalize();
+	}
+	std::vector<float> crossings;
+	for (int i = 0; i < SAMPLES; ++i)
+	{
+		const int next = (i + 1) % SAMPLES;
+		const float a = (footDifference[i] - meanDifference).Dot(strideAxis);
+		const float b = (footDifference[next] - meanDifference).Dot(strideAxis);
+		if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f))
+		{
+			const float t = std::fabs(a - b) > 1.0e-8f ? a / (a - b) : 0.0f;
+			float phase = (static_cast<float>(i) + t) / static_cast<float>(SAMPLES);
+			phase -= std::floor(phase);
+			crossings.push_back(phase);
+		}
+	}
+	// ちょうど2回(左右1回ずつ)のときだけ使う。波形が乱れて回数が違うクリップは、上の位相1つだけにする。
+	if (crossings.size() == 2)
+	{
+		m_locomotionStopPhase = crossings[0];
+		m_locomotionStopPhaseAlt = crossings[1];
+	}
+	std::cout << "[Locomotion] stop phases " << m_locomotionStopPhase << " / " << m_locomotionStopPhaseAlt
+		<< " (crossings " << crossings.size() << ", min gap " << closest << ")" << std::endl;
 	// --- 1周期で進む距離を、足の動く幅から測り直す ---
 	//
 	// もともとは腰の移動キーの先頭と末尾の差を使っていた。しかしその値は実際の歩幅と合っておらず、
@@ -809,13 +865,10 @@ std::unordered_map<std::string, Matrix4x4> CCharacterAnimator::LocomotionLegTarg
 {
 	// 戻り先の脚は「止まっていれば待機クリップ」「動いていれば移動クリップ」。
 	//
-	// 速さは**なめらかにした値**で見る。実際の混ぜ方がこの値で決まるからである。
-	// 技には踏み込み(ルートモーション)があるので、入力が無くても生の速度は0にならない。
-	// そこを見ると「動いている」と誤判定し、戻り先を取り違える。
-	const float speed = std::sqrt(
-		m_smoothedVelocityRight * m_smoothedVelocityRight +
-		m_smoothedVelocityForward * m_smoothedVelocityForward);
-	const bool mostlyIdle = speed < m_blendSpaceWalkSpeed * 0.5f;
+	// 判断には、実際の混ぜ方を決めている「移動の姿勢の出し具合」(m_locomotionPresence)を使う。
+	// 生の速度は使わない。技には踏み込み(ルートモーション)があるので、入力が無くても0にならず、
+	// 「動いている」と誤判定して戻り先を取り違える。
+	const bool mostlyIdle = m_locomotionPresence < 0.5f;
 	if (mostlyIdle)
 	{
 		if (m_idleAnimation == nullptr)
@@ -899,25 +952,94 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 	if (!m_blendSpaceReady)
 		return false;
 
-	// 入力の速度へなめらかに追従する。キーを押した瞬間に重みが跳ぶと、
-	// ブレンドツリーにしても歩き出しの一歩目で姿勢が飛んで見える。
-	// 指数的に追従させるので、フレームレートが変わっても追従の速さは同じ。
-	//
-	// 歩き出しと止まりで速さを分ける。歩き出しは操作の手応えのため速いほうがよいが、
-	// 止まりも同じ速さだと、前へ踏み出した足が空中で消えるように見える。
-	// 止まりを遅くすると、最後の一歩を踏み切ってから立ち姿へ収まる。
-	const float inputSpeed = std::sqrt(
+	// 実際の移動の速度へなめらかに追従する。
+	// 体の速さそのものに加減速が付いた(player.cpp)ので、ここでは壁に押し戻されたときなどの
+	// 1フレームだけの揺れを吸収する程度に、速く追従させる。
+	// (以前は押した瞬間に体が最高速になるのを、ここでゆっくり追わせていた。そのため
+	//  足の運び(この値で進める)が体に追いつかず、小刻みに押すと足が地面を滑っていた)
+	const float actualSpeed = std::sqrt(
 		state.velocityRight * state.velocityRight + state.velocityForward * state.velocityForward);
-	const float currentSpeed = std::sqrt(
-		m_smoothedVelocityRight * m_smoothedVelocityRight +
-		m_smoothedVelocityForward * m_smoothedVelocityForward);
-	const float followPerSecond = inputSpeed >= currentSpeed ? 14.0f : 6.0f;
-	const float follow = 1.0f - std::exp(-deltaSeconds * followPerSecond);
+	const float follow = 1.0f - std::exp(-deltaSeconds * 25.0f);
 	m_smoothedVelocityRight += (state.velocityRight - m_smoothedVelocityRight) * follow;
 	m_smoothedVelocityForward += (state.velocityForward - m_smoothedVelocityForward) * follow;
-	const Anim::LocomotionWeights weights = Anim::ComputeLocomotionWeights(
-		m_smoothedVelocityRight, m_smoothedVelocityForward,
+	const float speed = std::sqrt(
+		m_smoothedVelocityRight * m_smoothedVelocityRight +
+		m_smoothedVelocityForward * m_smoothedVelocityForward);
+	constexpr float MOVING_SPEED = 0.5f;
+	if (speed > MOVING_SPEED)
+	{
+		m_lastLocomotionRight = m_smoothedVelocityRight / speed;
+		m_lastLocomotionForward = m_smoothedVelocityForward / speed;
+	}
+
+	// 押していて、実際に進んでいるか。壁に向かって押し続けているとき(進んでいない)は止まる側にする
+	// (歩きの途中の姿勢で固まらないように)。
+	const bool wantsToMove = state.moveInputKnown ? state.moveInputHeld : actualSpeed > MOVING_SPEED;
+	const bool moving = wantsToMove && speed > MOVING_SPEED;
+
+	// 立ち姿から歩き出すときは、両足が揃う位相から始める(1歩目の足が自然に出る)。
+	// 歩きの姿勢がまだ残っているうちに押し直したときは、前の一歩の続きから歩く
+	// (毎回同じ位相へ戻すと「歩きのモーションが毎回最初から始まる」ように見える。ユーザーの指摘)。
+	// 揃う位相は2つ(左足が出る側・右足が出る側)あるので、いまの位相から**先にある方**を選ぶ。
+	// 近い方を選ぶと、小刻みに押すたびに毎回同じ足から歩き出してしまう(実測で毎回同じ位相だった)。
+	// 先にある方なら、前回踏み出した足の次の足から出るので、左右が交互になる。
+	if (moving && m_locomotionPresence <= 0.05f && m_footPhaseMeasured)
+	{
+		const auto aheadOf = [this](float target)
+		{
+			float d = target - m_blendSpacePhase;
+			return d - std::floor(d);
+		};
+		m_blendSpacePhase =
+			aheadOf(m_locomotionStopPhase) <= aheadOf(m_locomotionStopPhaseAlt)
+			? m_locomotionStopPhase
+			: m_locomotionStopPhaseAlt;
+	}
+
+	// --- 移動の姿勢の出し具合 ---
+	// 速さではなく「押して進んでいるか」で決める。速さで決めると、小刻みに押したときに速さが上がりきらず、
+	// 立ち姿と歩きが半分ずつ混ざった中途半端な姿勢が続いていた(ユーザーの指摘)。
+	//
+	// 離したあと「足を揃える位相まで一歩を踏み切ってから」立ち姿へ戻すのも試したが、
+	// 体が止まってからも足だけが最大で半周期以上歩き続け、連打の合間に
+	// 「入力していないのに足が動いている」ように見えた(ユーザーの指摘)。
+	// 足は体が実際に進んだ分だけ動かす(下の位相の計算)。
+	//
+	// 切り替えの速さ: 以前は押して0.1秒で歩き、離して0.15秒で立ち姿へ戻していたが、
+	// 連打すると姿勢が細かく行き来して「速すぎてぐちゃぐちゃ」に見えた(ユーザーの指摘)。
+	// アクションゲームと同じく、離してもすぐには戻さず猶予(0.15秒)を置き、
+	// その間に押し直せば立ち姿を挟まずに歩き続ける。戻すときも0.25秒かけてゆっくり戻す。
+	constexpr float PRESENCE_IN_SECONDS = 0.15f;
+	constexpr float RELEASE_GRACE_SECONDS = 0.15f;
+	constexpr float PRESENCE_OUT_SECONDS = 0.25f;
+	if (moving)
+	{
+		m_locomotionReleaseSeconds = 0.0f;
+		m_locomotionPresence = std::min(1.0f, m_locomotionPresence + deltaSeconds / PRESENCE_IN_SECONDS);
+	}
+	else
+	{
+		m_locomotionReleaseSeconds += deltaSeconds;
+		if (m_locomotionReleaseSeconds > RELEASE_GRACE_SECONDS)
+			m_locomotionPresence = std::max(0.0f, m_locomotionPresence - deltaSeconds / PRESENCE_OUT_SECONDS);
+	}
+	const float presence = m_locomotionPresence * m_locomotionPresence * (3.0f - 2.0f * m_locomotionPresence);
+
+	// 方向と歩調の重み。歩きより遅いときも歩きの姿勢で出す(遅さは足の運びの速さで表す)。
+	const float gaitSpeed = std::max(speed, m_blendSpaceWalkSpeed);
+	Anim::LocomotionWeights weights = Anim::ComputeLocomotionWeights(
+		m_lastLocomotionRight * gaitSpeed, m_lastLocomotionForward * gaitSpeed,
 		m_blendSpaceWalkSpeed, m_blendSpaceRunSpeed);
+	{
+		float movingTotal = 0.0f;
+		for (int i = 0; i < weights.movingCount; ++i)
+			movingTotal += weights.moving[i].weight;
+		for (int i = 0; i < weights.movingCount; ++i)
+			weights.moving[i].weight = movingTotal > 0.0001f
+				? weights.moving[i].weight / movingTotal * presence
+				: 0.0f;
+		weights.idle = 1.0f - presence;
+	}
 
 	// 待機は上半身だけ。脚は骨の初期姿勢のままにする。
 	//
@@ -940,40 +1062,36 @@ bool CCharacterAnimator::UpdateLocomotionBlendSpace(
 	// 全移動クリップで1つの正規化時間を共有する(同期)。クリップごとに別の時間で進めると、
 	// 混ぜたときに右足と左足が同時に前へ出るような破綻が起きる。
 	// 進める速さは「実際の速さ ÷ 1周期で進む距離」。これで足が地面を滑らない。
-	const float movingWeight = 1.0f - weights.idle;
-	if (movingWeight > 0.001f)
+	// 遅いときに下限を設けない(以前は元の0.5倍を下限にしていて、動き出しで足が体より先に流れていた)。
+	float cyclesPerSecond = 0.0f;
+	if (presence > 0.0001f)
 	{
-		float cyclesPerSecond = 0.0f;
 		for (int i = 0; i < weights.movingCount; ++i)
 		{
 			const auto& entry = weights.moving[i];
 			const BlendSpaceClip& clip = BlendSpaceClipOf(entry.direction, entry.gait);
 			const float naturalRate = 1.0f / clip.cycleSeconds;
 			float rate = clip.cycleDistance > 0.01f
-				? weights.speed / clip.cycleDistance
+				? speed / clip.cycleDistance
 				: naturalRate;
-			// 足が地面を滑らないよう、基本は実際の速さに合わせた再生速度をそのまま使う。
-			// 歩き出しのごく遅い速度で足がほぼ止まるのと、異常値だけを防ぐため、元の0.5〜4倍に収める。
+			// 異常値だけを防ぐため、元の4倍で打ち切る。
 			// (以前は2.5倍で打ち切っていたため、ダッシュで足が滑っていた)
-			rate = std::clamp(rate, naturalRate * 0.5f, naturalRate * 4.0f);
-			cyclesPerSecond += (entry.weight / movingWeight) * rate;
+			rate = std::clamp(rate, 0.0f, naturalRate * 4.0f);
+			cyclesPerSecond += (entry.weight / presence) * rate;
 		}
-		m_blendSpacePhase += cyclesPerSecond * deltaSeconds;
-		m_blendSpacePhase -= std::floor(m_blendSpacePhase);
 	}
 
-	// 止まりかけているときは、両足が揃う位相へ寄せていく。
-	// 位相を止めた場所で固めると、脚を開いたままの姿勢が立ち姿へ混ざって足が入れ替わって見える。
-	// 寄せる速さは「止まっている度合い」に比例させるので、歩いている間は影響しない。
-	if (m_footPhaseMeasured && movingWeight < 0.999f)
-	{
-		float difference = m_locomotionStopPhase - m_blendSpacePhase;
-		difference -= std::floor(difference + 0.5f); // 近い側へ回す(-0.5〜0.5)
-		const float settle = 1.0f - std::exp(-deltaSeconds * 6.0f * (1.0f - movingWeight));
-		m_blendSpacePhase += difference * settle;
-		m_blendSpacePhase -= std::floor(m_blendSpacePhase);
-	}
-
+	// 位相は体が実際に進んだ分だけ進める。止まりかけでも足だけを先に進めることはしない。
+	// (以前は止まるとき、揃う位相へ近い側から寄せていた。その寄せは歩き出しの加速中にも効き、
+	//  後ろ向きにも戻すため、小刻みに押すたびに同じ姿勢へ引き戻されていた)
+	// 歩調(位相を進める速さ)は少し遅れて追いかける。体の速さにぴったり合わせると、
+	// 連打で減速・加速を繰り返すたびに歩調が急に変わり、足がせわしなく見えた。
+	// 追いかけの速さは1秒あたり8(約0.12秒でほぼ追いつく)。この遅れの分だけ足はわずかに滑るが、
+	// 加減速が短いので目立たない。
+	const float cadenceFollow = 1.0f - std::exp(-deltaSeconds * 8.0f);
+	m_smoothedCyclesPerSecond += (cyclesPerSecond - m_smoothedCyclesPerSecond) * cadenceFollow;
+	m_blendSpacePhase += m_smoothedCyclesPerSecond * deltaSeconds;
+	m_blendSpacePhase -= std::floor(m_blendSpacePhase);
 	// --- 姿勢を取り出して重み付きで混ぜる ---
 	// 2つずつ順に補間する。k本目を混ぜるときの比率を
 	// 「k本目の重み ÷ それまでの重みの合計」にすると、全体として重み付き平均になる。
