@@ -4272,19 +4272,23 @@ void GameScene::UpdateDragonFlight(float deltaSeconds)
 		m_loadFuture.get();
 		FinishSceneInit();
 		m_flightLoadFinished = true;
+		m_flightLoadFinishedTime = m_flightTime;
 	}
-	// 決定ボタンで飛ばす。読み込みが終わるまでは覚えておき、終わったら白まで飛ばす。
-	if (m_flightTime >= FLIGHT_SKIP_ALLOWED_AFTER && GameInput::Get().IsTriggered(GameAction::Confirm))
-		m_flightSkipRequested = true;
-	// 降下は「読み込みが終わった」かつ「迫ってくる姿を見せ切った」ら始める。
-	// 読み込みが長いPCでは、終わるまで目の前で羽ばたいて待つ。
-	if (m_flightLoadFinished)
+	// 読み込みが終わったら、決定ボタンを押すまで目の前で羽ばたいて待つ(画面の右下に押すボタンを出す)。
+	// 以前は、読み込みが終わって迫ってくる姿(約3秒)を見せ切ると、自動で降下して戦いへ入っていた。
+	// 読み込みが速くなった(保存ファイル ModelCache.h)ので、入る時を遊ぶ人が決められるようにする。
+	// 数えるのは読み込みが終わってから(案内が出てから)押したものだけ。
+	// 自動で進める設定(auto_start=1。自動の通しの確認用)では、押さずに進む。
+	if (m_flightLoadFinished && !m_flightStartRequested &&
+		(GameInput::Get().IsTriggered(GameAction::Confirm) || GameFlow::autoStart))
 	{
-		if (m_flightSkipRequested && m_flightDiveTime < FLIGHT_DIVE_SECONDS)
+		m_flightStartRequested = true;
+		// 迫ってくる途中で押したら、降下は見せずに白まで飛ばす(遠くのまま降下すると不自然なため。以前の「飛ばす」と同じ)。
+		if (m_flightTime < FLIGHT_APPROACH_SECONDS)
 			m_flightDiveTime = FLIGHT_DIVE_SECONDS;
-		else if (m_flightTime >= FLIGHT_APPROACH_SECONDS || m_flightDiveTime > 0.0f)
-			m_flightDiveTime += deltaSeconds;
 	}
+	if (m_flightStartRequested)
+		m_flightDiveTime += deltaSeconds;
 	if (m_flightDiveTime >= FLIGHT_DIVE_SECONDS + FLIGHT_WHITE_SECONDS)
 	{
 		m_flightActive = false;
@@ -4390,9 +4394,21 @@ void GameScene::DrawDragonFlight()
 	drawList->AddRectFilled(ImVec2(min.x, max.y - height * 0.12f), max, IM_COL32(4, 6, 10, 255));
 
 	const float white = std::clamp((m_flightDiveTime - FLIGHT_DIVE_SECONDS) / FLIGHT_WHITE_SECONDS, 0.0f, 1.0f);
-	// 「NOW LOADING」は読み込みの間と、迫ってくる間。降下が始まると消える。
+	// 読み込みの間は「NOW LOADING」、終わったら押すボタン(「PRESS ENTER」)。降下が始まると消える。
 	const float captionFade = std::clamp(1.0f - m_flightDiveTime / 0.15f, 0.0f, 1.0f);
-	DrawNowLoadingCaption(m_flightTime, static_cast<int>(255.0f * captionFade));
+	if (!m_flightLoadFinished)
+	{
+		DrawNowLoadingCaption(m_flightTime, static_cast<int>(255.0f * captionFade));
+	}
+	else if (!m_flightStartRequested || m_flightDiveTime < 0.15f)
+	{
+		// 切り替わりで文字が飛び出さないよう、少しかけて浮かび上がらせる。
+		const float appear = std::clamp((m_flightTime - m_flightLoadFinishedTime) / 0.3f, 0.0f, 1.0f);
+		DrawPressButtonCaption(
+			GameInput::Get().GetButtonLabel(GameAction::Confirm),
+			m_flightTime - m_flightLoadFinishedTime,
+			static_cast<int>(255.0f * captionFade * appear));
+	}
 
 	const float fadeIn = std::clamp(m_flightTime / FLIGHT_FADE_IN_SECONDS, 0.0f, 1.0f);
 	if (fadeIn < 1.0f)
@@ -4794,14 +4810,6 @@ void GameScene::init()
 		m_flightTime = 0.0f;
 		m_flightDiveTime = 0.0f;
 		m_flightFlapPhase = 0.0f;
-		// 2回目からの戦い(リトライなど)では、読み込みが終わりしだい飛来を飛ばす(決定ボタンで飛ばしたのと同じ)。
-		// 読み込みは保存ファイル(ModelCache.h)から読むので約0.5秒(Debug版)で終わり、見せ続ける理由がない。
-		// 以前は読み込みが終わっても、迫ってくる姿(約3秒)と降下(約1秒)を毎回待たされていた。
-		// 保存ファイルが無いなどで読み込みが長いときは、終わるまで今までどおり飛来を見せる。
-		// 起動して最初の1回は、戦いの始まりとして最後まで見せる。
-		static bool flightShownOnce = false;
-		m_flightSkipRequested = flightShownOnce;
-		flightShownOnce = true;
 		UpdateDragonFlight(0.0f);
 		LogStartup("game: flight scene started");
 		m_loadFuture = std::async(std::launch::async, [this]() { LoadPlayerAssetsOnWorker(); });

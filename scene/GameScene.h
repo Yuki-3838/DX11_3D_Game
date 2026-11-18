@@ -406,7 +406,8 @@ private:
 	void FinishSceneInit();
 	std::future<void> m_loadFuture;
 	bool m_flightLoadFinished = false;
-	bool m_flightSkipRequested = false;
+	float m_flightLoadFinishedTime = 0.0f;  ///< 読み込みが終わった時刻(m_flightTime)。押すボタンの案内を浮かび上がらせるのに使う
+	bool m_flightStartRequested = false;  ///< 読み込みの後に決定ボタンが押された(降下して戦いへ入る)
 	void DrawDragonFlight();
 	// 飛んでいる姿勢(骨の名前 → 重ねる回転)。dive は急降下へ移る度合い(0〜1)。
 	std::unordered_map<std::string, Matrix4x4> BuildEnemyFlightRotations(float flapPhase, float dive) const;
@@ -424,11 +425,10 @@ private:
 	SRT m_flightDragonSrt{};
 	FlightBackdrop m_flightBackdrop;
 	static constexpr float FLIGHT_FADE_IN_SECONDS = 0.35f;
-	// 遠くから迫ってくる時間。読み込みが先に終わっても、ここまでは見せる。
+	// 遠くから迫ってくる時間。これより前に決定ボタンが押されたら、降下は見せずに白まで飛ばす。
 	static constexpr float FLIGHT_APPROACH_SECONDS = 3.00f;
 	static constexpr float FLIGHT_DIVE_SECONDS = 0.90f;     ///< 降下してから白くなり始めるまで
 	static constexpr float FLIGHT_WHITE_SECONDS = 0.25f;
-	static constexpr float FLIGHT_SKIP_ALLOWED_AFTER = 0.30f;
 	static constexpr float FLIGHT_CAMERA_DISTANCE_START = 1000.0f;  ///< 最初のカメラとの距離
 	static constexpr float FLIGHT_CAMERA_DISTANCE_END = 125.0f;     ///< 迫り切ったときの距離
 	static constexpr float FLIGHT_DIVE_DROP = 240.0f;               ///< 白くなるまでに下へ抜ける距離
