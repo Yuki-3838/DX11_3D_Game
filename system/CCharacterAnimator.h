@@ -384,6 +384,16 @@ private:
 	float m_blendSpacePhase = 0.0f;
 	// クリップの単位 → ゲーム内の単位。移動の足合わせと攻撃の踏み込みの両方で使う。
 	float m_clipToWorld = 0.0f;
+	// 再生中の技で、左腕にクリップの動きをどれだけ使うか(Combat::PlayerComboStep::offHandClipAmount)。
+	float m_attackOffHandClipAmount = 1.0f;
+	// 再生中の技で、右腕の付け根(肩・上腕)にクリップの動きをどれだけ使うか(swordArmClipAmount)。
+	float m_attackSwordArmClipAmount = 1.0f;
+	// 左腕として扱う骨(肩・上腕・前腕・手)と、右腕の付け根の骨(肩・上腕)。初めて使うときに骨の親子関係から作る。
+	std::vector<std::string> m_offHandBones;
+	std::vector<std::string> m_swordArmBones;
+	bool m_armBonesBuilt = false;
+	// 腕を待機の構えへ寄せる(上の2つが1未満の技の間)。
+	void DampArmsTowardGuard(CAnimationMesh& mesh, std::unordered_map<std::string, Matrix4x4>& pose);
 	// 再生中の技の踏み込みの倍率(Combat::PlayerComboStep::rootMotionScale)。
 	float m_attackRootMotionScale = 1.0f;
 	// 攻撃の踏み込み: 前回サンプルした正規化時間と、まだ取り出されていない移動量。

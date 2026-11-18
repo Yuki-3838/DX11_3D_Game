@@ -2,6 +2,7 @@
 #include "CombatAttackTable.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -1229,6 +1230,84 @@ void CCharacterAnimator::PlayImportedComboStep(
 	// 踏み込みは再生を始めた位置から数える(飛ばした溜めの分の移動は足さない)。
 	m_rootMotionPreviousTime = std::clamp(step.clipStart / clipSeconds, 0.0f, 0.9999f);
 	m_attackRootMotionScale = step.rootMotionScale;
+	m_attackOffHandClipAmount = std::clamp(step.offHandClipAmount, 0.0f, 1.0f);
+	m_attackSwordArmClipAmount = std::clamp(step.swordArmClipAmount, 0.0f, 1.0f);
+}
+
+void CCharacterAnimator::DampArmsTowardGuard(CAnimationMesh& mesh, std::unordered_map<std::string, Matrix4x4>& pose)
+{
+	const bool dampOffHand = m_attackOffHandClipAmount < 0.999f;
+	const bool dampSwordArm = m_attackSwordArmClipAmount < 0.999f;
+	if ((!dampOffHand && !dampSwordArm) || m_idleAnimation == nullptr)
+		return;
+	if (!m_armBonesBuilt)
+	{
+		m_armBonesBuilt = true;
+		// 上腕の親(鎖骨・肩)も入れる。肩がクリップのまま大きく動くと、腕だけ戻しても横へ張り出す。
+		// ただし親が背骨・胸・首なら入れない(体ごと待機の姿勢へ引き戻してしまう)。
+		const auto parents = mesh.GetDebugBoneParentNames();
+		const auto shoulderOf = [&](const std::string& upperArm) -> std::string
+		{
+			const auto parent = parents.find(upperArm);
+			if (parent == parents.end() || parent->second.empty() ||
+				parent->second == m_spine || parent->second == m_spine01 || parent->second == m_spine02 ||
+				parent->second == m_pelvis)
+				return {};
+			std::string lowered = parent->second;
+			std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (lowered.find("spine") != std::string::npos || lowered.find("chest") != std::string::npos ||
+				lowered.find("neck") != std::string::npos)
+				return {};
+			return parent->second;
+		};
+		const auto add = [](std::vector<std::string>& bones, const std::string& bone)
+		{
+			if (!bone.empty())
+				bones.push_back(bone);
+		};
+		// 左腕(剣を持たない方)は肩から手まで。
+		add(m_offHandBones, shoulderOf(m_leftArm));
+		add(m_offHandBones, m_leftArm);
+		add(m_offHandBones, m_leftElbow);
+		add(m_offHandBones, m_leftHand);
+		// 右腕(剣を持つ方)は肩と上腕だけ。前腕と手はクリップのままにして、剣の振りを残す。
+		add(m_swordArmBones, shoulderOf(m_rightArm));
+		add(m_swordArmBones, m_rightArm);
+		std::cout << "[Animator] off-hand bones:";
+		for (const std::string& bone : m_offHandBones)
+			std::cout << ' ' << bone;
+		std::cout << " / sword-arm root bones:";
+		for (const std::string& bone : m_swordArmBones)
+			std::cout << ' ' << bone;
+		std::cout << std::endl;
+	}
+
+	// 待機の構えの腕。待機クリップの、いまの再生位置の姿勢を使う(攻撃中は進まないので、技を始めた瞬間の構え)。
+	unsigned int keys = 0;
+	for (unsigned int c = 0; c < m_idleAnimation->mNumChannels; ++c)
+		keys = std::max(keys, m_idleAnimation->mChannels[c]->mNumRotationKeys);
+	float normalized = keys > 1 ? m_idleFrameAccumulator / static_cast<float>(keys - 1) : 0.0f;
+	normalized -= std::floor(normalized);
+	normalized = std::min(normalized, 0.9999f);
+	const auto dampBones = [&](const std::vector<std::string>& bones, float clipAmount)
+	{
+		if (bones.empty())
+			return;
+		const auto guard = mesh.SampleLocalPose(m_idleAnimation, normalized, bones);
+		for (const std::string& bone : bones)
+		{
+			const auto from = guard.find(bone);
+			auto to = pose.find(bone);
+			if (from == guard.end() || to == pose.end())
+				continue;
+			to->second = CAnimationMesh::BlendLocalMatrix(from->second, to->second, clipAmount);
+		}
+	};
+	if (dampOffHand)
+		dampBones(m_offHandBones, m_attackOffHandClipAmount);
+	if (dampSwordArm)
+		dampBones(m_swordArmBones, m_attackSwordArmClipAmount);
 }
 
 aiAnimation* CCharacterAnimator::GetAttackAnimation(Combat::PlayerAttackSlot slot) const
@@ -1636,6 +1715,8 @@ void CCharacterAnimator::PlayImportedAttackAnimation(
 	m_importedAttackAnimation = animation;
 	// 技(コンボの段)として再生するときだけ、PlayImportedComboStepが設定し直す。
 	m_importedClipKeysPerSecond = 0.0f;
+	m_attackOffHandClipAmount = 1.0f;
+	m_attackSwordArmClipAmount = 1.0f;
 	// 踏み込みはクリップの先頭から数える。前の攻撃の残りは持ち越さない。
 	m_rootMotionPreviousTime = 0.0f;
 	m_pendingRootMotionRight = 0.0f;
@@ -1888,6 +1969,7 @@ void CCharacterAnimator::Update(
 					mesh.SampleLocalPose(m_importedAttackAnimation, attackTime, attackBones);
 				attackPose[m_pelvis] = mesh.SampleHipsInPlace(
 					m_importedAttackAnimation, attackTime, m_pelvis, m_attackHipsRotationMode);
+				DampArmsTowardGuard(mesh, attackPose);
 
 				// 攻撃中の腰の高さは、**技を始めた瞬間の高さへそろえる**。
 				// クリップの中での腰の上下動(踏み切って跳ぶ・沈み込む)はそのまま残す。
