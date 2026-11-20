@@ -143,6 +143,7 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		// 攻撃開始フレームで移動の慣性を消し、剣を振りながら滑らないようにする。
 		m_move.x = 0.0f;
 		m_move.z = 0.0f;
+		m_moveSpeed = 0.0f;
 	}
 
 	const float deltaSec = std::clamp(static_cast<float>(dt) * 0.000001f, 0.0f, 0.1f);
@@ -157,6 +158,7 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 	// GameScene側が更新前後の差分で行うので、闘技場の外へは飛ばされない。
 	if (m_isKnockedBack)
 	{
+		m_moveSpeed = 0.0f;
 		m_knockbackTime += deltaSec;
 		m_motionState = MotionState::Knockback;
 		const float progress = std::clamp(
@@ -207,6 +209,7 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 	}
 	if (m_isDodging)
 	{
+		m_moveSpeed = 0.0f;
 		// 前転の移動。進んだ割合を「1 - (1 - 経過の割合)^2」(出だしが速く、止まり際で0になる)で決め、
 		// 前のフレームとの差だけ進める。以前は速さ180の等速で0.4秒(約72)進み、
 		// 体格に対して飛びすぎていたうえ、止まる瞬間に急停止して見えた。
@@ -290,14 +293,28 @@ void player::update(uint64_t dt, float cameraYaw, bool movementLocked, bool spri
 		const float moveX = forwardX * normalizedForward + rightX * normalizedRight;
 		const float moveZ = forwardZ * normalizedForward + rightZ * normalizedRight;
 
-		const float moveSpeed = sprinting ? VALUE_MOVE_MODEL * RUN_SPEED_MULTIPLIER : VALUE_MOVE_MODEL;
-		m_move.x = moveX * moveSpeed * deltaSec;
-		m_move.z = moveZ * moveSpeed * deltaSec;
+		m_moveDirection = Vector3(moveX, 0.0f, moveZ);
 
 		// 移動方向へプレイヤーを滑らかに振り向かせる。
 		// ロックオン中(ダッシュしていないとき)は、下で敵の方を向かせるので回さない。
 		if (!m_lockOnEnabled || sprinting)
 			m_destrot.y = std::atan2(-moveX, -moveZ);
+	}
+
+	// 速さは目標へ一定の加速度で近づける(押した瞬間に最高速・離した瞬間に0、にしない)。
+	// 向きは入力の向きをすぐ使う(方向転換で速さを落とすと、操作が重く感じる)。
+	// 離したあとは最後の向きのまま減速して止まる。足の運びはこの実際の移動から決まるので、
+	// 体が少し流れる間に、踏み出した一歩を踏み切って止まる。
+	{
+		const float targetSpeed = isMoving
+			? (sprinting ? VALUE_MOVE_MODEL * RUN_SPEED_MULTIPLIER : VALUE_MOVE_MODEL)
+			: 0.0f;
+		if (m_moveSpeed < targetSpeed)
+			m_moveSpeed = std::min(targetSpeed, m_moveSpeed + MOVE_ACCELERATION * deltaSec);
+		else
+			m_moveSpeed = std::max(targetSpeed, m_moveSpeed - MOVE_DECELERATION * deltaSec);
+		m_move.x = m_moveDirection.x * m_moveSpeed * deltaSec;
+		m_move.z = m_moveDirection.z * m_moveSpeed * deltaSec;
 	}
 
 	// ロックオン中は、移動していてもしていなくても敵の方を向く。
@@ -478,6 +495,8 @@ const char* player::getMotionStateName() const
 void player::resetMotion()
 {
 	m_move = Vector3(0, 0, 0);
+	m_moveSpeed = 0.0f;
+	m_moveDirection = Vector3(0, 0, 0);
 	m_motionState = MotionState::Idle;
 	m_motionTime = 0.0f;
 	m_jumpVelocity = 0.0f;

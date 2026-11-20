@@ -4,7 +4,7 @@
 #include	"CStaticMesh.h"
 #include	"AssimpPerse.h"
 
-void CStaticMesh::Load(std::string filename, std::string texturedirectory, bool pretransformVertices)
+void CStaticMesh::LoadWithAssimp(const std::string& filename, const std::string& texturedirectory, bool pretransformVertices)
 {
 	// The assimp loader shares global work buffers; serialize loads across threads (AssimpPerse.h LoadMutex).
 	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());

@@ -12,6 +12,8 @@
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
 #include "../system/ArenaFloor.h"
+#include "../system/ArenaOutskirts.h"
+#include "../system/ArenaWallVisual.h"
 #include "../system/AttackTimelineEditor.h"
 #include "../system/HitEffect.h"
 #include "../system/EnemyFireball.h"
@@ -357,13 +359,16 @@ private:
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ
-	std::unique_ptr<field>	m_field;						//	フィールド
+	// 闘技場の外の地面。遠くほど空の色に溶ける(以前の草の field は床とちらつき、飛来の場面で端が見えていた)。
+	ArenaOutskirts m_outskirts;
 	std::vector<std::unique_ptr<wall>>	m_walls;			//	ｗａｌｌ
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	// 見た目だけの闘技場パーツ。衝突判定はm_wallsが担当し、
 	// デバッグ編集画面とゲームプレイが同じ境界を共有する。
 	// 床はマス目付き(距離感をつかみやすくするため)。
 	ArenaFloor m_arenaFloor;
+	// 石の城壁のモデル(16枚を1つのメッシュに焼き込んだもの)。読めなかったときだけ下の一色の箱で描く。
+	ArenaWallVisual m_arenaStoneWall;
 	Box m_arenaWallVisual{1.0f, 1.0f, 1.0f};
 	Box m_arenaWallCapVisual{1.0f, 1.0f, 1.0f};
 	// 影生成パス用のシェーダー(深度だけを書き込む)。
@@ -499,6 +504,8 @@ private:
 	BufferedAction m_bufferedAction = BufferedAction::None;
 	float m_bufferedActionTime = 0.0f;
 	static constexpr float INPUT_BUFFER_SECONDS = 0.3f;
+	// 回避中に押した攻撃の予約を、回避が終わるまで保つか(false で以前の扱い。比較用)。
+	bool m_holdAttackBufferDuringDodge = true;
 	bool m_resultRequested = false;
 
 	// --- 決着の演出 ---
@@ -570,9 +577,9 @@ private:
 	void LoadPlayerAssetsOnWorker();
 	void FinishSceneInit();
 	std::future<void> m_loadFuture;
-	std::unique_ptr<CStaticMesh> m_pendingPlayerMesh;   ///< 裏で読んだメッシュ。登録は仕上げで行う
 	bool m_flightLoadFinished = false;
-	bool m_flightSkipRequested = false;
+	float m_flightLoadFinishedTime = 0.0f;  ///< 読み込みが終わった時刻(m_flightTime)。押すボタンの案内を浮かび上がらせるのに使う
+	bool m_flightStartRequested = false;  ///< 読み込みの後に決定ボタンが押された(降下して戦いへ入る)
 	void DrawDragonFlight();
 	// 飛んでいる姿勢(骨の名前 → 重ねる回転)。dive は急降下へ移る度合い(0〜1)。
 	std::unordered_map<std::string, Matrix4x4> BuildEnemyFlightRotations(float flapPhase, float dive) const;
@@ -590,11 +597,10 @@ private:
 	SRT m_flightDragonSrt{};
 	FlightBackdrop m_flightBackdrop;
 	static constexpr float FLIGHT_FADE_IN_SECONDS = 0.35f;
-	// 遠くから迫ってくる時間。読み込みが先に終わっても、ここまでは見せる。
+	// 遠くから迫ってくる時間。これより前に決定ボタンが押されたら、降下は見せずに白まで飛ばす。
 	static constexpr float FLIGHT_APPROACH_SECONDS = 3.00f;
 	static constexpr float FLIGHT_DIVE_SECONDS = 0.90f;     ///< 降下してから白くなり始めるまで
 	static constexpr float FLIGHT_WHITE_SECONDS = 0.25f;
-	static constexpr float FLIGHT_SKIP_ALLOWED_AFTER = 0.30f;
 	static constexpr float FLIGHT_CAMERA_DISTANCE_START = 1000.0f;  ///< 最初のカメラとの距離
 	static constexpr float FLIGHT_CAMERA_DISTANCE_END = 125.0f;     ///< 迫り切ったときの距離
 	static constexpr float FLIGHT_DIVE_DROP = 240.0f;               ///< 白くなるまでに下へ抜ける距離
@@ -654,6 +660,41 @@ private:
 	bool m_captureUi = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
 	float m_battleSeconds = 0.0f;
+
+	// --- 戦闘記録(比較用) ---
+	// dev_settings.ini の combat_log=ファイル名 で、一戦を通して「出来事」ごとに1行書く。
+	// 撮影用の enemy_log.csv(毎フレーム・枚数に上限)とは別に、
+	// 回避・攻撃の入力がどう扱われたか(予約・実行・期限切れ)と、
+	// 敵の攻撃がどう外れたか(前転の無敵・射程外・角度外)を後から数えるために使う。
+	// 根拠: docs/戦闘設計分析_ヒットアンドアウェイの単調化と隙をつく体験.txt の13-1・第20章。
+	void OpenCombatLog();
+	void LogCombatEvent(const char* event, const char* detail = "", float value = 0.0f, const char* note = "");
+	// 敵の攻撃の始まり・判定・出し切り・立て直しを、状態の変化から書く。
+	void LogEnemyAttackProgress();
+	FILE* m_combatLog = nullptr;
+	int m_enemyAttackSeq = 0;                ///< 一戦の中で何回目の敵の攻撃か
+	std::array<int, 6> m_enemyAttackKindCount{}; ///< 攻撃の種類ごとの回数
+	int m_enemyAttackKindTry = 0;            ///< いまの攻撃が、その種類の何回目か
+	Combat::EnemyAttackKind m_loggedEnemyAttackKind = Combat::EnemyAttackKind::Slam;
+	enemy::MotionState m_loggedEnemyState = enemy::MotionState::Standby;
+	bool m_loggedDodging = false;
+	bool m_loggedDodgeInvincible = false;
+
+	// --- 回避中の攻撃入力の自動確認 ---
+	// dev_settings.ini の input_probe=dodge_attack で、敵を動かさない状態にして
+	// 「回避を押す → input_probe_offsets 秒後に攻撃を1回だけ押す」を順に試し、戦闘記録へ結果を書く。
+	// 回避の早い時点で押した攻撃が、回避の終わりまでに予約切れで消えるかを確かめるため(分析文書の第20章)。
+	// input_probe_exit=1 なら試し終えたらゲームを終える。
+	void UpdateInputProbe(float realDeltaSeconds, bool& pressAttack, bool& pressDodge);
+	bool m_inputProbeEnabled = false;
+	bool m_inputProbeExit = false;
+	std::vector<float> m_inputProbeOffsets;
+	int m_inputProbeIndex = -1;              ///< いま試している番号。-1は開始前
+	float m_inputProbeTime = 0.0f;           ///< いまの試行を始めてからの秒(開始前は待ち時間)
+	bool m_inputProbeAttackSent = false;
+	bool m_inputProbeDodgeSent = false;
+	static constexpr float INPUT_PROBE_START_DELAY = 1.5f;  ///< 戦闘開始から最初の試行までの秒
+	static constexpr float INPUT_PROBE_TRIAL_SECONDS = 2.5f; ///< 1回の試行の長さ(攻撃が終わり、スタミナが戻るまで)
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系

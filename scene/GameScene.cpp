@@ -171,6 +171,56 @@ namespace {
 	}
 	const Color ARENA_WALL_COLOR(0.38f, 0.27f, 0.19f, 1.0f);
 
+	/**
+	 * @brief 球(中心と半径)を闘技場の内側へ戻すための移動量を返す。内側にいれば0。
+	 *
+	 * 壁の処理(calcWallSlideMove)は「動いた先」が壁に触れているかしか見ないので、
+	 * 次の2つで壁の外へ出られてしまっていた。
+	 * - プレイヤーと敵の体の押し合い(resolvePlayerEnemyCollisions)は壁を見ずに位置をずらす。
+	 *   壁際で大きな敵に押されると、壁の向こうへ押し出された。
+	 * - 1フレームの移動が大きい(処理落ちしたフレームの回避など)と、動いた先がもう壁の向こうで、
+	 *   壁に触れていないとみなされた。
+	 * 闘技場は凸の多角形なので、16枚の壁の平面すべての内側にいれば闘技場の中にいる。
+	 * 外にはみ出した分だけ、壁の向き(中心から外向き)と逆へ戻す。角では2枚に掛かるので2回くり返す。
+	 */
+	/**
+	 * @brief プレイヤーの壁の判定に使う半径。
+	 *
+	 * モデルの頂点から求めた境界球(m_localbsplayer)は、騎士のモデルでは半径が約0.1しかない。
+	 * 壁の判定は「動いた先が壁から半径以内か」を見るので、半径がほぼ0だと1歩で壁の面を越え、
+	 * 壁を素通りして闘技場の外へ出られた。体の太さ(PLAYER_BODY_RADIUS)を下回らないようにする。
+	 * さらに壁の平面は壁パネルの中心(厚みの真ん中)を通るので、厚みの半分を足して、
+	 * 体が見た目の壁の内側の面で止まるようにする。
+	 */
+	float PlayerWallRadius(float sphereRadius)
+	{
+		return std::max(sphereRadius, PLAYER_BODY_RADIUS) + ARENA_WALL_DEPTH * 0.5f;
+	}
+
+	Vector3 arenaContainmentPush(const Vector3& center, float radius)
+	{
+		Vector3 push(0.0f, 0.0f, 0.0f);
+		// 壁の処理と同じく、壁パネルの中心を通る平面から半径だけ内側までを動ける範囲にする。
+		const float limit = ARENA_RADIUS - radius;
+		for (int iteration = 0; iteration < 2; ++iteration)
+		{
+			for (int i = 0; i < ARENA_WALL_SEGMENTS; ++i)
+			{
+				const float angle = (2.0f * PI * static_cast<float>(i)) /
+					static_cast<float>(ARENA_WALL_SEGMENTS);
+				const float outwardX = std::sinf(angle);
+				const float outwardZ = std::cosf(angle);
+				const float distance = outwardX * (center.x + push.x) + outwardZ * (center.z + push.z);
+				if (distance > limit)
+				{
+					push.x -= outwardX * (distance - limit);
+					push.z -= outwardZ * (distance - limit);
+				}
+			}
+		}
+		return push;
+	}
+
 	std::array<Vector3, 8> GetAabbCorners(
 		const GM31::GE::Collision::BoundingBoxAABB& box)
 	{
@@ -962,6 +1012,7 @@ void GameScene::UpdateEnemyIntro(float deltaSeconds)
 		m_enemyIntroTime = battleStartTime;
 		m_enemies.front()->setSRT(enemySrt);
 		m_enemies.front()->resetEncounter();
+		LogCombatEvent("battle_start");
 		m_camera.BeginBattleTransition(
 			m_player->getSRT().pos,
 			m_player->getSRT().rot.y);
@@ -1098,9 +1149,32 @@ void GameScene::update(uint64_t deltatime)
 	if (m_player)
 	{
 		static const std::string autoWalk = GetDevSetting("auto_walk", "0");
+		// auto_walk_tap=押す秒数,離す秒数 で、移動を小刻みに入れたり切ったりする
+		// (連打したときに歩きが途切れず続くかを、キー入力を送らずに確かめるため)。
+		static const std::string autoWalkTap = GetDevSetting("auto_walk_tap", "");
+		static float tapOnSeconds = 0.0f;
+		static float tapOffSeconds = 0.0f;
+		static bool tapParsed = false;
+		if (!tapParsed)
+		{
+			tapParsed = true;
+			const size_t comma = autoWalkTap.find(',');
+			if (comma != std::string::npos)
+			{
+				tapOnSeconds = std::stof(autoWalkTap.substr(0, comma));
+				tapOffSeconds = std::stof(autoWalkTap.substr(comma + 1));
+			}
+		}
+		bool tapHeld = true;
+		if (tapOnSeconds > 0.0f && tapOffSeconds > 0.0f)
+		{
+			const float cycle = tapOnSeconds + tapOffSeconds;
+			tapHeld = std::fmod(m_battleSeconds, cycle) < tapOnSeconds;
+		}
+		const float tap = tapHeld ? 1.0f : 0.0f;
 		m_player->setDebugForcedMove(
-			autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f),
-			autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f));
+			tap * (autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f)),
+			tap * (autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f)));
 	}
 	// 飛来の場面(ローディング画面)の間は、ほかの更新を通さない。
 	// 終わったフレームは下へ進み、そのまま登場演出の最初のコマを作る(白の下で姿勢が切り替わる)。
@@ -1202,8 +1276,14 @@ void GameScene::update(uint64_t deltatime)
 	static const bool autoAttackSetting = GetDevSetting("auto_attack", "0") == "1";
 	static const float autoAttackDelay = std::stof(GetDevSetting("auto_attack_delay", "0"));
 	const bool autoAttack = autoAttackSetting && m_battleSeconds >= autoAttackDelay;
+	// 調整用: input_probe で、回避と攻撃を決まった時刻に押したことにする(戦闘記録で結果を見る)。
+	bool probeAttack = false;
+	bool probeDodge = false;
+	if (!battleFinishing)
+		UpdateInputProbe(realDeltaSeconds, probeAttack, probeDodge);
 	// 決着の後は操作を受け付けない(倒れるところを見せる時間)。
-	const bool rawAttackTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Attack) || autoAttack);
+	const bool attackPressed = gameInput.IsTriggered(GameAction::Attack) || probeAttack;
+	const bool rawAttackTriggered = !battleFinishing && (attackPressed || autoAttack);
 	// 撮影用: auto_heavy=1 で強攻撃を押し続ける。auto_dodge=1 で1.5秒ごとに回避する(どちらも動きの確認用)。
 	static const bool autoHeavy = GetDevSetting("auto_heavy", "0") == "1";
 	static const bool autoDodge = GetDevSetting("auto_dodge", "0") == "1";
@@ -1219,27 +1299,71 @@ void GameScene::update(uint64_t deltatime)
 		}
 	}
 	const bool rawHeavyAttackTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::HeavyAttack) || autoHeavy);
-	const bool rawDodgeTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Dodge) || autoDodgeNow);
+	const bool rawDodgeTriggered = !battleFinishing && (gameInput.IsTriggered(GameAction::Dodge) || probeDodge || autoDodgeNow);
 	const bool playerDodgeActive = m_player->isDodging();
+
+	// 戦闘記録: 押した瞬間に、そのときプレイヤーが何をしていたかを書く。
+	// auto_attack は毎フレーム押したことになるので記録しない。
+	const auto bufferedName = [](BufferedAction action) {
+		switch (action)
+		{
+		case BufferedAction::Attack: return "attack";
+		case BufferedAction::HeavyAttack: return "heavy";
+		case BufferedAction::Dodge: return "dodge";
+		default: return "none";
+		}
+	};
+	if (m_combatLog && !battleFinishing)
+	{
+		const char* context = m_player->isKnockedBack() ? "knocked_back"
+			: playerDodgeActive ? "dodging"
+			: m_combat.IsPlayerAttacking() ? "attacking"
+			: "free";
+		if (attackPressed)
+			LogCombatEvent("press_attack", context);
+		if (rawHeavyAttackTriggered)
+			LogCombatEvent("press_heavy", context);
+		if (rawDodgeTriggered)
+			LogCombatEvent("press_dodge", context);
+	}
 
 	// 先行入力。押した瞬間に出せなかった攻撃・回避を覚えておく。
 	// 以前は回避中のクリックや、攻撃の振り始め(回避で切れない区間)のスペースを捨てていたため、
 	// 「押したのに出ない」と感じる場面があった。
 	if (m_bufferedAction != BufferedAction::None)
 	{
-		m_bufferedActionTime -= deltaSeconds;
+		// 回避中に押した攻撃は、回避が終わるまで期限を減らさない。
+		// 以前は回避(0.50秒)の最中も0.30秒の期限が減っていたため、回避を押して0.22秒以内に
+		// 押した攻撃は回避の終わりまでに消えて出なかった(input_probe の戦闘記録で確認)。
+		// 「回避の途中で敵の空振りを見て押したのに出ない」と、隙を突けないと誤って学んでしまう。
+		// 待つのは回避の長さまでなので、忘れた頃に勝手に殴ることにはならない。
+		// 比較用に、デバッグ表示の「戦闘」タブ・dev_settings.ini の dodge_attack_buffer_hold=0 で以前の扱いに戻せる。
+		const bool holdDuringDodge = m_holdAttackBufferDuringDodge && playerDodgeActive &&
+			(m_bufferedAction == BufferedAction::Attack || m_bufferedAction == BufferedAction::HeavyAttack);
+		if (!holdDuringDodge)
+			m_bufferedActionTime -= deltaSeconds;
 		if (m_bufferedActionTime <= 0.0f)
+		{
+			LogCombatEvent("buffer_expired", bufferedName(m_bufferedAction));
 			m_bufferedAction = BufferedAction::None;
+		}
 	}
 	// 吹き飛ばされている間の入力は覚えない(飛ばされ終わった瞬間に勝手に動くと、被弾の代償が薄れる)。
 	if (m_player->isKnockedBack())
+	{
+		if (m_bufferedAction != BufferedAction::None)
+			LogCombatEvent("buffer_cleared", bufferedName(m_bufferedAction), 0.0f, "knocked_back");
 		m_bufferedAction = BufferedAction::None;
+	}
 	else
 	{
 		// 攻撃中の攻撃は戦闘側がコンボの予約として受け付けるので、ここで覚えるのは回避中だけ。
-		const auto remember = [this](BufferedAction action) {
+		const auto remember = [this, &bufferedName](BufferedAction action) {
+			if (m_bufferedAction != BufferedAction::None && m_bufferedAction != action)
+				LogCombatEvent("buffer_replaced", bufferedName(m_bufferedAction), 0.0f, bufferedName(action));
 			m_bufferedAction = action;
 			m_bufferedActionTime = INPUT_BUFFER_SECONDS;
+			LogCombatEvent("buffer_set", bufferedName(action), m_bufferedActionTime);
 		};
 		if (playerDodgeActive && rawHeavyAttackTriggered)
 			remember(BufferedAction::HeavyAttack);
@@ -1253,7 +1377,10 @@ void GameScene::update(uint64_t deltatime)
 		// 回避を覚えた後に攻撃を押し直したら、後から押した方(攻撃=コンボの予約)を優先する。
 		else if (!playerDodgeActive && (rawAttackTriggered || rawHeavyAttackTriggered) &&
 			m_bufferedAction == BufferedAction::Dodge)
+		{
+			LogCombatEvent("buffer_cleared", "dodge", 0.0f, "attack_pressed_later");
 			m_bufferedAction = BufferedAction::None;
+		}
 	}
 	// 覚えていた入力を、出せる状態になったら今押したものとして扱う。
 	const bool bufferedAttack = !playerDodgeActive && m_bufferedAction == BufferedAction::Attack;
@@ -1277,6 +1404,14 @@ void GameScene::update(uint64_t deltatime)
 	const bool heavyAttackInput = heavyAttackTriggered && !playerDodgeActive && !playerKnockedBack;
 	const bool attackStarted = (attackInput || heavyAttackInput) &&
 		m_combat.CanStartPlayerAttack();
+	if (bufferedAttack || bufferedHeavyAttack)
+		LogCombatEvent("buffer_used", bufferedHeavyAttack ? "heavy" : "attack", attackStarted ? 1.0f : 0.0f,
+			attackStarted ? "attack_started" : "passed_to_combo");
+	if (attackStarted)
+		LogCombatEvent("player_attack_start",
+			heavyAttackInput ? "heavy" : (playerWasRunning ? "dash" : "weak"),
+			(bufferedAttack || bufferedHeavyAttack) ? 1.0f : 0.0f,
+			(bufferedAttack || bufferedHeavyAttack) ? "from_buffer" : "direct");
 	if (attackStarted)
 	{
 		AimPlayerAttack();
@@ -1306,8 +1441,22 @@ void GameScene::update(uint64_t deltatime)
 	const bool canDodge = dodgeTriggered && m_playerStamina >= 25.0f &&
 		!attackStarted && !m_player->isDodging() && !playerKnockedBack &&
 		(!m_combat.IsPlayerAttacking() || canCancelAttack);
+	if (rawDodgeTriggered && !canDodge && m_combatLog)
+	{
+		// 押した回避が今は出なかった理由。回避中・攻撃の振り始めなら上で予約されている。
+		const char* reason = playerKnockedBack ? "knocked_back"
+			: m_player->isDodging() ? "dodging_buffered"
+			: m_playerStamina < 25.0f ? "stamina"
+			: attackStarted ? "attack_started"
+			: "attack_not_cancelable_buffered";
+		LogCombatEvent("dodge_not_started", reason, m_playerStamina);
+	}
 	if (canDodge)
 	{
+		LogCombatEvent("dodge_start",
+			m_bufferedAction == BufferedAction::Dodge && !rawDodgeTriggered ? "from_buffer" : "direct",
+			m_playerStamina,
+			m_combat.IsPlayerAttacking() ? "cancel_attack" : "");
 		if (m_bufferedAction == BufferedAction::Dodge)
 			m_bufferedAction = BufferedAction::None;
 		m_playerStamina -= 25.0f;
@@ -1353,16 +1502,18 @@ void GameScene::update(uint64_t deltatime)
 	Vector3 playerMove = nextPlayerSphere.center - prevPlayerSphere.center;
 	// 壁に当たったら止めずに、壁に沿って滑らせる。
 	// 歩き・回避・吹き飛ばし・攻撃の踏み込みのどれも、ここを通る。
+	// 壁の判定に使う太さは PlayerWallRadius を参照(モデルの境界球のままだと細すぎて壁を素通りした)。
+	const float playerWallRadius = PlayerWallRadius(prevPlayerSphere.radius);
 	Vector3 adjustedPlayerMove = calcWallSlideMove(
 		walldatas,
-		prevPlayerSphere.radius,
+		playerWallRadius,
 		prevPlayerSphere.center,
 		playerMove);
 
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		auto playerHitWalls = checkWallCollision(
 			walldatas,
-			prevPlayerSphere.radius,
+			playerWallRadius,
 			prevPlayerSphere.center,
 			playerMove);
 		appendHitWalls(m_hitWallObjects, playerHitWalls);
@@ -1419,7 +1570,12 @@ void GameScene::update(uint64_t deltatime)
 				m_player->getMotionTime(),
 				deltaSeconds,
 				velocityRight,
-				velocityForward
+				velocityForward,
+				true,
+				// 移動を押しているか。離したあとの減速中は「止まろうとしている」として、
+				// 一歩を踏み切って足を揃えにいく(CCharacterAnimator::UpdateLocomotionBlendSpace)。
+				m_player->getMotionState() == player::MotionState::Walk ||
+				m_player->getMotionState() == player::MotionState::Run
 			});
 
 
@@ -1653,6 +1809,33 @@ void GameScene::update(uint64_t deltatime)
 		m_localbsplayer,
 		m_localbsenemy,
 		lockPlayerMovement);
+	// 動きと押し合いがすべて終わった後で、プレイヤーと敵を闘技場の内側へ戻す(壁の外へ出られないように)。
+	{
+		SRT playerSrtAfterPush = m_player->getSRT();
+		const GM31::GE::Collision::BoundingSphere playerSphere =
+			transformBSphere(m_localbsplayer, playerSrtAfterPush);
+		const Vector3 playerPush = arenaContainmentPush(
+			playerSphere.center, PlayerWallRadius(playerSphere.radius));
+		if (playerPush.LengthSquared() > 0.0f)
+		{
+			playerSrtAfterPush.pos += playerPush;
+			m_player->setSRT(playerSrtAfterPush);
+		}
+		for (auto& e : m_enemies)
+		{
+			if (!e)
+				continue;
+			SRT enemySrtAfterPush = e->getSRT();
+			const GM31::GE::Collision::BoundingSphere enemySphere =
+				transformBSphere(m_localbsenemy, enemySrtAfterPush);
+			const Vector3 enemyPush = arenaContainmentPush(enemySphere.center, enemySphere.radius);
+			if (enemyPush.LengthSquared() > 0.0f)
+			{
+				enemySrtAfterPush.pos += enemyPush;
+				e->setSRT(enemySrtAfterPush);
+			}
+		}
+	}
 	// 命中演出の残り時間を減らす。
 	m_enemyHitFlashTime = std::max(0.0f, m_enemyHitFlashTime - deltaSeconds);
 	m_playerDamageFlashTime = std::max(0.0f, m_playerDamageFlashTime - deltaSeconds);
@@ -1755,6 +1938,8 @@ void GameScene::update(uint64_t deltatime)
 			const bool heavyHit = m_combat.IsPlayerHeavyAttack();
 			const bool punishHit = m_enemies.front()->isInRecovery();
 			const float hitScale = (heavyHit ? 1.5f : 1.0f) * (punishHit ? 1.4f : 1.0f);
+			LogCombatEvent("player_hit", heavyHit ? "heavy" : "weak", punishHit ? 1.0f : 0.0f,
+				punishHit ? "enemy_recovery" : "");
 
 			m_playerAnimator.TriggerHitStop(std::min(0.05f * hitScale, 0.12f));
 			m_camera.TriggerShake(1.1f * hitScale, 0.22f);
@@ -1831,6 +2016,33 @@ void GameScene::update(uint64_t deltatime)
 			}
 		}
 
+		// 戦闘記録: 敵の攻撃判定の結果。どの理由で当たらなかったかを分けて書く(分析文書の3-9・13-1)。
+		// 当たらなかった理由は、判定の瞬間の位置で決まる。前転で動いて射程外へ出た場合は
+		// 「無敵で受けた」ではなく「射程外」になる。被弾の吹き飛ばしより前に書き、行の状態を判定時にそろえる。
+		if (m_combatLog)
+		{
+			const OneVsOneCombat::EnemyHitCheck& check = m_combat.GetEnemyHitCheck();
+			if (check.checked)
+			{
+				const char* result = "avoided_out_of_arc";
+				if (check.inRange && check.inArc)
+				{
+					if (!check.playerInvincible)
+						result = check.playerDebugInvincible ? "hit_debug_invincible" : "hit";
+					else
+						result = m_player->isKnockedBack() ? "avoided_knockback_invincible" : "avoided_dodge_invincible";
+				}
+				else if (!check.inRange)
+				{
+					result = check.distance > check.maxRange ? "avoided_out_of_range" : "avoided_inside_min_range";
+				}
+				char note[128];
+				std::snprintf(note, sizeof(note), "angle %.1f/%.1f range %.1f-%.1f",
+					check.angleDegrees, check.halfAngleDegrees, check.minRange, check.maxRange);
+				LogCombatEvent("enemy_hit_check", result, check.distance, note);
+			}
+		}
+
 		if (m_combat.DidEnemyHitLand())
 		{
 			m_camera.TriggerShake(2.6f, 0.35f);
@@ -1857,6 +2069,9 @@ void GameScene::update(uint64_t deltatime)
 			m_player->applyKnockback(awayFromEnemy, knockback.speed, knockback.seconds);
 			m_playerAnimator.PlayImpactMotion();
 		}
+
+		// 戦闘記録: 敵の攻撃の始まり・出し切り・立て直し、前転の終わり。
+		LogEnemyAttackProgress();
 
 		// 火球。吐いた後も敵の攻撃の段階とは関係なく飛び続けるので、ここで別に進める。
 		UpdateEnemyFireballs(deltaSeconds, playerInvincible);
@@ -2351,7 +2566,7 @@ bool GameScene::ReloadAttackClip(Combat::PlayerAttackSlot slot)
 	static int reloadCount = 0;
 	const std::string name = std::string("timeline_") + Combat::PlayerAttackSlotKey(slot) +
 		"_" + std::to_string(++reloadCount);
-	if (m_playerAnimationData.LoadAnimation(file, name) == nullptr)
+	if (!m_playerAnimationData.LoadAnimation(file, name))
 		return false;
 	aiAnimation* animation = m_playerAnimationData.GetAnimation(name.c_str(), 0);
 	if (animation == nullptr)
@@ -4106,7 +4321,8 @@ void GameScene::draw(uint64_t deltatime)
 		}
 	}
 
-	m_field->draw(deltatime);
+	// 闘技場の外の地面。床より十分下に置いてあり、闘技場の内側では床に隠れる。
+	m_outskirts.Draw();
 
 	// 闘技場に石の床と外周ブロックを描画する。
 	// 実際の衝突平面は後で描画し、ここでは見た目だけの外殻として
@@ -4115,15 +4331,24 @@ void GameScene::draw(uint64_t deltatime)
 	m_arenaFloor.Draw();
 
 	Renderer::DisableCulling(false);
-	m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
-	m_arenaWallCapVisual.SetSize(ARENA_WALL_WIDTH + 6.0f, 8.0f, ARENA_WALL_DEPTH + 8.0f);
-	for (const auto& arenaWall : m_walls)
+	if (m_arenaStoneWall.IsReady())
 	{
-		SRT wallSrt = arenaWall->getSRT();
-		// 壁は全周を同じ色で見せるため、照明による面ごとの明暗を付けない。
-		m_arenaWallVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
-		wallSrt.pos.y = ARENA_WALL_HEIGHT + 4.0f;
-		m_arenaWallCapVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+		// 胸壁の付いた石の城壁(Poly Haven「Modular Fort 01」のモデルを16枚並べたもの)。
+		m_arenaStoneWall.Draw();
+	}
+	else
+	{
+		// 石の写真が読めなかったときは、以前の一色の箱で描く。
+		m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
+		m_arenaWallCapVisual.SetSize(ARENA_WALL_WIDTH + 6.0f, 8.0f, ARENA_WALL_DEPTH + 8.0f);
+		for (const auto& arenaWall : m_walls)
+		{
+			SRT wallSrt = arenaWall->getSRT();
+			// 壁は全周を同じ色で見せるため、照明による面ごとの明暗を付けない。
+			m_arenaWallVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+			wallSrt.pos.y = ARENA_WALL_HEIGHT + 4.0f;
+			m_arenaWallCapVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+		}
 	}
 	Renderer::DisableCulling(true);
 
@@ -4408,6 +4633,203 @@ void GameScene::WriteCaptureLog()
 	m_enemyFootSlideFoot = -1;
 	m_enemyFootPlantErrorMax = 0.0f;
 	fflush(m_captureLog);
+}
+
+namespace
+{
+// 戦闘記録の名前。表計算ソフトで文字化けしないよう英字で書く。
+const char* EnemyAttackLogName(Combat::EnemyAttackKind kind)
+{
+	switch (kind)
+	{
+	case Combat::EnemyAttackKind::Bite: return "bite";
+	case Combat::EnemyAttackKind::Sweep: return "sweep";
+	case Combat::EnemyAttackKind::TailSpin: return "tail_spin";
+	case Combat::EnemyAttackKind::Fireball: return "fireball";
+	case Combat::EnemyAttackKind::Charge: return "charge";
+	case Combat::EnemyAttackKind::Slam:
+	default: return "slam";
+	}
+}
+
+const char* EnemyStateLogName(enemy::MotionState state)
+{
+	switch (state)
+	{
+	case enemy::MotionState::Approach: return "approach";
+	case enemy::MotionState::Circle: return "circle";
+	case enemy::MotionState::Windup: return "windup";
+	case enemy::MotionState::Active: return "active";
+	case enemy::MotionState::Recovery: return "recovery";
+	case enemy::MotionState::Retreat: return "retreat";
+	case enemy::MotionState::Flinch: return "flinch";
+	case enemy::MotionState::Roar: return "roar";
+	case enemy::MotionState::Turn: return "turn";
+	case enemy::MotionState::Dead: return "dead";
+	case enemy::MotionState::Standby:
+	default: return "standby";
+	}
+}
+}
+
+void GameScene::OpenCombatLog()
+{
+	if (m_combatLog)
+		return;
+	const std::string path = GetDevSetting("combat_log", "");
+	if (path.empty())
+		return;
+	const std::wstring widePath(path.begin(), path.end()); // 英数字のパスだけを想定している
+	_wfopen_s(&m_combatLog, widePath.c_str(), L"w");
+	if (!m_combatLog)
+	{
+		// 前回の記録をほかのソフトが開いたままだと上書きできない(実際に起きた)。
+		// 記録が黙って残らないのを避けるため、起動時刻を付けた別の名前へ書く。
+		const std::wstring fallback = widePath + L"." + std::to_wstring(GetTickCount64()) + L".csv";
+		_wfopen_s(&m_combatLog, fallback.c_str(), L"w");
+		if (!m_combatLog)
+			return;
+	}
+	// 1行 = 1つの出来事。time は戦闘開始(登場演出の終わり)からの実時間の秒。
+	// detail・value・note の意味は event ごとに違う(docs/実装ログ.md の該当日を参照)。
+	fprintf(m_combatLog,
+		"time,event,detail,value,note,attack_seq,attack,attack_try,enemy_state,distance,"
+		"player_x,player_z,enemy_x,enemy_z,dodging,dodge_frame,invincible,stamina,player_hp,enemy_hp\n");
+	fflush(m_combatLog);
+}
+
+void GameScene::LogCombatEvent(const char* event, const char* detail, float value, const char* note)
+{
+	if (!m_combatLog || !m_player)
+		return;
+	const bool haveEnemy = !m_enemies.empty() && m_enemies.front();
+	const Vector3 playerPos = m_player->getSRT().pos;
+	const Vector3 enemyPos = haveEnemy ? m_enemies.front()->getSRT().pos : Vector3(0.0f, 0.0f, 0.0f);
+	const float dx = playerPos.x - enemyPos.x;
+	const float dz = playerPos.z - enemyPos.z;
+	const bool dodging = m_player->isDodging();
+	const int dodgeFrame = dodging ? m_player->getDodgeFrame() : -1;
+	const bool invincible = m_player->isKnockedBack() ||
+		(dodging && dodgeFrame >= m_dodgeInvincibleStartFrame && dodgeFrame <= m_dodgeInvincibleEndFrame);
+	fprintf(m_combatLog,
+		"%.3f,%s,%s,%.3f,%s,%d,%s,%d,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%.1f,%.1f,%.1f\n",
+		m_battleSeconds,
+		event,
+		detail ? detail : "",
+		value,
+		note ? note : "",
+		m_enemyAttackSeq,
+		EnemyAttackLogName(m_loggedEnemyAttackKind),
+		m_enemyAttackKindTry,
+		haveEnemy ? EnemyStateLogName(m_enemies.front()->getMotionState()) : "none",
+		std::sqrt(dx * dx + dz * dz),
+		playerPos.x, playerPos.z, enemyPos.x, enemyPos.z,
+		dodging ? 1 : 0,
+		dodgeFrame,
+		invincible ? 1 : 0,
+		m_playerStamina,
+		m_combat.GetPlayerHp(),
+		m_combat.GetEnemyHp());
+	fflush(m_combatLog);
+}
+
+void GameScene::LogEnemyAttackProgress()
+{
+	if (!m_combatLog || m_enemies.empty() || !m_enemies.front() || !m_player)
+		return;
+	const enemy& e = *m_enemies.front();
+
+	// 前転の始まりは入力の処理で書くので、ここでは無敵の終わりと前転の終わりだけを書く。
+	const bool dodging = m_player->isDodging();
+	const bool dodgeInvincible = dodging &&
+		m_player->getDodgeFrame() >= m_dodgeInvincibleStartFrame &&
+		m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame;
+	if (m_loggedDodgeInvincible && !dodgeInvincible && dodging)
+		LogCombatEvent("dodge_invincible_end");
+	if (m_loggedDodging && !dodging)
+		LogCombatEvent("dodge_end");
+	m_loggedDodging = dodging;
+	m_loggedDodgeInvincible = dodgeInvincible;
+
+	const enemy::MotionState state = e.getMotionState();
+	if (state == m_loggedEnemyState)
+		return;
+	if (state == enemy::MotionState::Windup)
+	{
+		// 構え始め = 1回の攻撃の始まり。攻撃に通し番号と「その種類の何回目か」を付ける。
+		m_loggedEnemyAttackKind = e.getAttackKind();
+		const size_t kindIndex = std::min(static_cast<size_t>(m_loggedEnemyAttackKind), m_enemyAttackKindCount.size() - 1);
+		++m_enemyAttackSeq;
+		m_enemyAttackKindTry = ++m_enemyAttackKindCount[kindIndex];
+	}
+	char note[96] = "";
+	float value = 0.0f;
+	if (state == enemy::MotionState::Recovery)
+	{
+		// 出し切った瞬間。口(頭の先)の位置と、プレイヤーからの水平距離を残す。
+		// 「頭の横へ残ったか」を、敵の中心ではなく攻撃した部位の位置で比べるため。
+		const Vector3 playerPos = m_player->getSRT().pos;
+		const float hx = m_enemyMouthPosition.x - playerPos.x;
+		const float hz = m_enemyMouthPosition.z - playerPos.z;
+		value = std::sqrt(hx * hx + hz * hz);
+		std::snprintf(note, sizeof(note), "head %.1f %.1f %.1f",
+			m_enemyMouthPosition.x, m_enemyMouthPosition.y, m_enemyMouthPosition.z);
+	}
+	LogCombatEvent("enemy_state", EnemyStateLogName(state), value, note);
+	m_loggedEnemyState = state;
+}
+
+void GameScene::UpdateInputProbe(float realDeltaSeconds, bool& pressAttack, bool& pressDodge)
+{
+	pressAttack = false;
+	pressDodge = false;
+	if (!m_inputProbeEnabled || m_enemyIntroActive || !m_player)
+		return;
+
+	m_inputProbeTime += realDeltaSeconds;
+	if (m_inputProbeIndex < 0)
+	{
+		// 戦闘が始まってすぐは、登場演出から切り替わった直後の動きが残るので少し待つ。
+		if (m_inputProbeTime < INPUT_PROBE_START_DELAY)
+			return;
+		m_inputProbeIndex = 0;
+		m_inputProbeTime = 0.0f;
+		m_inputProbeAttackSent = false;
+		m_inputProbeDodgeSent = false;
+	}
+	if (m_inputProbeIndex >= static_cast<int>(m_inputProbeOffsets.size()))
+		return;
+
+	const float offset = m_inputProbeOffsets[m_inputProbeIndex];
+	if (!m_inputProbeDodgeSent)
+	{
+		// 試行の最初のフレームで回避を押し、ここから時間を数える。
+		pressDodge = true;
+		m_inputProbeDodgeSent = true;
+		m_inputProbeTime = 0.0f;
+		LogCombatEvent("probe_trial", "dodge_then_attack", offset);
+	}
+	else if (!m_inputProbeAttackSent && m_inputProbeTime >= offset)
+	{
+		// 回避を押してから offset 秒後(を越えた最初のフレーム)に、攻撃を1回だけ押す。
+		pressAttack = true;
+		m_inputProbeAttackSent = true;
+		LogCombatEvent("probe_attack", "", m_inputProbeTime);
+	}
+
+	if (m_inputProbeTime >= INPUT_PROBE_TRIAL_SECONDS)
+	{
+		++m_inputProbeIndex;
+		m_inputProbeTime = 0.0f;
+		m_inputProbeAttackSent = false;
+		m_inputProbeDodgeSent = false;
+		if (m_inputProbeIndex >= static_cast<int>(m_inputProbeOffsets.size()))
+		{
+			LogCombatEvent("probe_done");
+			if (m_inputProbeExit)
+				PostQuitMessage(0);
+		}
+	}
 }
 
 void GameScene::CaptureFrameIfRequested()
@@ -4742,19 +5164,23 @@ void GameScene::UpdateDragonFlight(float deltaSeconds)
 		m_loadFuture.get();
 		FinishSceneInit();
 		m_flightLoadFinished = true;
+		m_flightLoadFinishedTime = m_flightTime;
 	}
-	// 決定ボタンで飛ばす。読み込みが終わるまでは覚えておき、終わったら白まで飛ばす。
-	if (m_flightTime >= FLIGHT_SKIP_ALLOWED_AFTER && GameInput::Get().IsTriggered(GameAction::Confirm))
-		m_flightSkipRequested = true;
-	// 降下は「読み込みが終わった」かつ「迫ってくる姿を見せ切った」ら始める。
-	// 読み込みが長いPCでは、終わるまで目の前で羽ばたいて待つ。
-	if (m_flightLoadFinished)
+	// 読み込みが終わったら、決定ボタンを押すまで目の前で羽ばたいて待つ(画面の右下に押すボタンを出す)。
+	// 以前は、読み込みが終わって迫ってくる姿(約3秒)を見せ切ると、自動で降下して戦いへ入っていた。
+	// 読み込みが速くなった(保存ファイル ModelCache.h)ので、入る時を遊ぶ人が決められるようにする。
+	// 数えるのは読み込みが終わってから(案内が出てから)押したものだけ。
+	// 自動で進める設定(auto_start=1。自動の通しの確認用)では、押さずに進む。
+	if (m_flightLoadFinished && !m_flightStartRequested &&
+		(GameInput::Get().IsTriggered(GameAction::Confirm) || GameFlow::autoStart))
 	{
-		if (m_flightSkipRequested && m_flightDiveTime < FLIGHT_DIVE_SECONDS)
+		m_flightStartRequested = true;
+		// 迫ってくる途中で押したら、降下は見せずに白まで飛ばす(遠くのまま降下すると不自然なため。以前の「飛ばす」と同じ)。
+		if (m_flightTime < FLIGHT_APPROACH_SECONDS)
 			m_flightDiveTime = FLIGHT_DIVE_SECONDS;
-		else if (m_flightTime >= FLIGHT_APPROACH_SECONDS || m_flightDiveTime > 0.0f)
-			m_flightDiveTime += deltaSeconds;
 	}
+	if (m_flightStartRequested)
+		m_flightDiveTime += deltaSeconds;
 	if (m_flightDiveTime >= FLIGHT_DIVE_SECONDS + FLIGHT_WHITE_SECONDS)
 	{
 		m_flightActive = false;
@@ -4860,9 +5286,21 @@ void GameScene::DrawDragonFlight()
 	drawList->AddRectFilled(ImVec2(min.x, max.y - height * 0.12f), max, IM_COL32(4, 6, 10, 255));
 
 	const float white = std::clamp((m_flightDiveTime - FLIGHT_DIVE_SECONDS) / FLIGHT_WHITE_SECONDS, 0.0f, 1.0f);
-	// 「NOW LOADING」は読み込みの間と、迫ってくる間。降下が始まると消える。
+	// 読み込みの間は「NOW LOADING」、終わったら押すボタン(「PRESS ENTER」)。降下が始まると消える。
 	const float captionFade = std::clamp(1.0f - m_flightDiveTime / 0.15f, 0.0f, 1.0f);
-	DrawNowLoadingCaption(m_flightTime, static_cast<int>(255.0f * captionFade));
+	if (!m_flightLoadFinished)
+	{
+		DrawNowLoadingCaption(m_flightTime, static_cast<int>(255.0f * captionFade));
+	}
+	else if (!m_flightStartRequested || m_flightDiveTime < 0.15f)
+	{
+		// 切り替わりで文字が飛び出さないよう、少しかけて浮かび上がらせる。
+		const float appear = std::clamp((m_flightTime - m_flightLoadFinishedTime) / 0.3f, 0.0f, 1.0f);
+		DrawPressButtonCaption(
+			GameInput::Get().GetButtonLabel(GameAction::Confirm),
+			m_flightTime - m_flightLoadFinishedTime,
+			static_cast<int>(255.0f * captionFade * appear));
+	}
 
 	const float fadeIn = std::clamp(m_flightTime / FLIGHT_FADE_IN_SECONDS, 0.0f, 1.0f);
 	if (fadeIn < 1.0f)
@@ -5048,7 +5486,17 @@ void GameScene::init()
 	// 床。以前の床(厚さ0.6の箱を-0.59に置いたもの)と上面の高さをそろえる(-0.29)。
 	// 色は試遊での指摘(距離感が分かりにくい)を受けて、まずはトレーニングステージ風にする。
 	// デバッグ表示の「撮影・調整用」から石の色合いへ切り替えられる。
-	m_arenaFloor.Initialize(ARENA_RADIUS * 2.0f, -0.29f, ArenaFloor::TrainingPalette());
+	// 形は壁の多角形に合わせる(壁の外へはみ出さない)。
+	m_arenaFloor.Initialize(
+		ARENA_RADIUS, ARENA_WALL_SEGMENTS, ARENA_WALL_DEPTH, ARENA_FLOOR_TOP_Y, ArenaFloor::TrainingPalette());
+	// 床の見た目(既定は砂+薄い線)。撮影・比較用に dev_settings.ini の floor=sand / grid でも選べる。
+	{
+		const std::string floorSetting = GetDevSetting("floor", "sand_lines");
+		if (floorSetting == "sand")
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Sand);
+		else if (floorSetting == "grid")
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+	}
 
 	// 大型の敵は、戦闘カメラを引いて注視点を上げ、頭が画面の上で切れないようにする。
 	// 倍率2(背丈がプレイヤーの約1.8倍)で距離1.5倍・注視点1.35倍がちょうど頭まで収まった(撮影で確認)ので、
@@ -5116,6 +5564,33 @@ void GameScene::init()
 			m_captureUi = GetDevSetting("capture_ui", "0") == "1";
 		}
 	}
+	// 戦闘記録と、回避中の攻撃入力の自動確認(GameScene.h の OpenCombatLog・UpdateInputProbe を参照)。
+	OpenCombatLog();
+	m_holdAttackBufferDuringDodge = GetDevSetting("dodge_attack_buffer_hold", "1") != "0";
+	{
+		m_inputProbeEnabled = GetDevSetting("input_probe", "") == "dodge_attack";
+		m_inputProbeExit = GetDevSetting("input_probe_exit", "0") == "1";
+		m_inputProbeOffsets.clear();
+		m_inputProbeIndex = -1;
+		m_inputProbeTime = 0.0f;
+		m_inputProbeAttackSent = false;
+		if (m_inputProbeEnabled)
+		{
+			// 既定は回避の前半・後半・終わった後。回避は0.50秒、予約は0.30秒。
+			std::string offsets = GetDevSetting("input_probe_offsets", "0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,0.55");
+			size_t begin = 0;
+			while (begin < offsets.size())
+			{
+				const size_t comma = offsets.find(',', begin);
+				const std::string item = offsets.substr(begin, comma == std::string::npos ? std::string::npos : comma - begin);
+				if (!item.empty())
+					m_inputProbeOffsets.push_back(std::stof(item));
+				if (comma == std::string::npos)
+					break;
+				begin = comma + 1;
+			}
+		}
+	}
 	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep|spin|fireball|charge)。
 	// 3種類の構えを見比べるとき、通常の選択では狙った攻撃が出るまで待つことになるため。
 	// 未指定なら通常どおり敵AIが選ぶ。デバッグ表示のチェックボックスからも切り替えられる。
@@ -5179,7 +5654,7 @@ void GameScene::init()
 	// ファイルが無かったクリップは読まれていないので nullptr のままにする。
 	const auto loadEnemyClip = [this](const std::string& path, const char* name) -> aiAnimation*
 	{
-		if (path.empty() || m_enemyAnimationData->GetAiScene(name) == nullptr)
+		if (path.empty() || !m_enemyAnimationData->HasAnimation(name))
 			return nullptr;
 		return m_enemyAnimationData->GetAnimation(name, 0);
 	};
@@ -5273,8 +5748,7 @@ void GameScene::init()
 				m_enemyProfile->bodyCollisionRadius };
 		}
 	}
-	m_field = std::make_unique<field>(this);
-	m_field->init();
+	m_outskirts.Initialize();
 
 	m_flightBackdrop.Initialize();
 
@@ -5331,14 +5805,13 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	}
 	m_motionBlur.SetDebugViewEnabled(GetDevSetting("motion_blur_debug", "0") == "1");
 
-	if (!MeshManager::ContainsMesh(g_loadmodel[0].meshid))
-	{
-		m_pendingPlayerMesh = std::make_unique<CStaticMesh>();
-		m_pendingPlayerMesh->Load(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
-	}
 	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
+	// 前転中と倒れている間は、接地を頂点の最下点(GetAnimatedLocalMinY)で求めるので、毎フレーム全頂点をCPUで変形する。
+	// 騎士は頂点が多く、Debugビルドでは前転の間ずっと1フレームに約39msかかり、前転のたびに止まっていた(実測)。
+	// 敵と同じく、間引いた頂点で最下点を求める(間引いた後は約4.5ms)。
+	m_playerAnimationMesh->SetGroundingSampleBudget(8000);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
 	// クリップはモデルごとの表(CharacterModelProfile)から引く。iniのキーで差し替えられる。
 	const auto locomotionClip = [&playerProfile](LocomotionClipSlot slot) {
@@ -5449,13 +5922,6 @@ void GameScene::LoadPlayerAssetsOnWorker()
 void GameScene::FinishSceneInit()
 {
 	const CharacterModelProfile& playerProfile = GetPlayerModelProfile();
-	if (m_pendingPlayerMesh)
-	{
-		std::unique_ptr<CStaticMeshRenderer> meshrenderer = std::make_unique<CStaticMeshRenderer>();
-		meshrenderer->Init(*m_pendingPlayerMesh);
-		MeshManager::RegisterMesh<CStaticMesh>(g_loadmodel[0].meshid, std::move(m_pendingPlayerMesh));
-		MeshManager::RegisterMeshRenderer<CStaticMeshRenderer>(g_loadmodel[0].meshid, std::move(meshrenderer));
-	}
 	m_playerAnimationMesh->InitRenderResources();
 
 	// 攻撃のタイムラインエディター(F6)。クリップの読み込みとイベントの再生はこのシーンが受け持つ。
@@ -5502,6 +5968,8 @@ void GameScene::FinishSceneInit()
 		arenaWall->calcEqation();
 		m_walls.push_back(std::move(arenaWall));
 	}
+	// 見た目の石の壁。m_walls と同じ並び・大きさで作る(衝突は m_walls のまま)。
+	m_arenaStoneWall.Initialize(ARENA_RADIUS, ARENA_WALL_SEGMENTS, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
 
 	m_enemies.reserve(INITIAL_ENEMYNUM);
 	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos = m_enemyIntroLandingPosition; 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, m_enemyModelScale)); 	}
@@ -5511,7 +5979,10 @@ void GameScene::FinishSceneInit()
 	StartEnemyIntro();
 	// プレイヤーのローカル境界球とモデル境界を作成する。
 	{
-	CStaticMesh* mesh = MeshManager::getMesh<CStaticMesh>(g_loadmodel[0].meshid);
+		// 以前は大きさを測るためだけに、同じモデルを静的メッシュ(CStaticMesh)としてもう1回読んでいた。
+		// 中身はアニメーション用メッシュと同じ頂点(どちらも頂点を変換せずに読む)で、
+		// 騎士では1回目の読み込みが約3.5秒(Debug版)長くなっていたので、アニメーション用メッシュの頂点から求める。
+		const CStaticMesh* mesh = m_playerAnimationMesh.get();
 		const std::vector<VERTEX_3D>& vertices = mesh->GetVertices();
 
 		std::vector<Vector3> vs;
@@ -5635,6 +6106,11 @@ void GameScene::dispose()
 	{
 		fclose(m_captureLog);
 		m_captureLog = nullptr;
+	}
+	if (m_combatLog)
+	{
+		fclose(m_combatLog);
+		m_combatLog = nullptr;
 	}
 }
 
@@ -5884,6 +6360,8 @@ void GameScene::UpdateEnemyFireballs(float deltaSeconds, bool playerInvincible)
 		if (closeness > 0.0f)
 			m_camera.TriggerShake(0.6f + 1.4f * closeness, 0.25f);
 
+		LogCombatEvent("fireball_impact", impact.hitPlayer ? "hit" : "no_hit",
+			(impact.position - playerFeet).Length(), playerInvincible ? "player_invincible" : "");
 		if (!impact.hitPlayer ||
 			!m_combat.ApplyEnemyProjectileHit(static_cast<float>(Combat::Tuning::ENEMY_FIREBALL_DAMAGE)))
 		{
@@ -7553,14 +8031,26 @@ void GameScene::DebugCombat()
 	// 撮影・調整用。動画を撮るときに、倒れない的を置いたり、自分が倒れないようにしたりする。
 	ImGui::SeparatorText("撮影・調整用");
 	{
-		// 床の色合い。マス目の大きさは同じ(1マス10単位=約1m、太線は4マスごと)。
-		ImGui::TextUnformatted("床の色");
+		// 床の見た目。目盛りの大きさはどれも同じ(1マス10単位=約1m、太線は4マスごと)。
+		ImGui::TextUnformatted("床");
 		ImGui::SameLine();
-		if (ImGui::Button("トレーニングステージ風"))
+		if (ImGui::RadioButton("砂+薄い線", m_arenaFloor.GetSurface() == ArenaFloor::Surface::SandWithLines))
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::SandWithLines);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("砂だけ", m_arenaFloor.GetSurface() == ArenaFloor::Surface::Sand))
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Sand);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("マス目(トレーニングステージ風)", false))
+		{
 			m_arenaFloor.SetPalette(ArenaFloor::TrainingPalette());
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+		}
 		ImGui::SameLine();
-		if (ImGui::Button("闘技場の石"))
+		if (ImGui::RadioButton("マス目(石)", false))
+		{
 			m_arenaFloor.SetPalette(ArenaFloor::StonePalette());
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+		}
 		ImGui::Checkbox("操作説明を画面の右下に出す", &m_showControlGuide);
 		const GameInput& gameInput = GameInput::Get();
 		ImGui::Text("ゲームパッド: %s / 操作説明: %s",
@@ -7623,6 +8113,8 @@ void GameScene::DebugCombat()
 		m_dodgeInvincibleEndFrame = m_dodgeInvincibleStartFrame;
 	ImGui::Text("無敵の区間: %d 〜 %d フレーム目",
 		m_dodgeInvincibleStartFrame, m_dodgeInvincibleEndFrame);
+	ImGui::Checkbox("回避中に押した攻撃を、回避の終わりまで覚えておく", &m_holdAttackBufferDuringDodge);
+	ImGui::TextDisabled("切ると以前の扱い(押してから0.3秒で消える。回避の前半に押すと出ない)");
 	ImGui::SeparatorText("攻撃中の移動・回避キャンセル (60フレーム/秒)");
 	ImGui::SliderInt("回避キャンセルの終了", &m_attackCancelEndFrame, 0, 60);
 	ImGui::Text("攻撃中の移動: 不可  /  回避キャンセル: 0 〜 %d フレーム目",

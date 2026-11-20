@@ -264,6 +264,7 @@ void OneVsOneCombat::Update(
     const float distance = DistanceXZ(playerPosition, enemyPosition) / Combat::EnemyReachScale();
 	m_playerHitLanded = false;
 	m_enemyHitLanded = false;
+	m_enemyHitCheck.checked = false;
 
     m_collisionDebug = EvaluateSwordCollision(
         swordBase,
@@ -394,7 +395,20 @@ void OneVsOneCombat::Update(
 				// 突進も同じで、走っている間に体がプレイヤーへ届いたときだけ使い切る。
 				// 前転の無敵で受けたときも使い切る(尾回転と同じく、合わせてくぐり抜けたら成功)。
 				if (!continuous || wouldHit)
+				{
 					++m_enemyAttack.hitCount;
+					m_enemyHitCheck.checked = true;
+					m_enemyHitCheck.distance = distance;
+					m_enemyHitCheck.angleDegrees = angleToPlayer * (180.0f / HALF_TURN);
+					m_enemyHitCheck.minRange = minHitRange;
+					m_enemyHitCheck.maxRange = hitRange;
+					m_enemyHitCheck.halfAngleDegrees =
+						Combat::EnemyHitHalfAngleOf(m_enemyAttackKind) * (180.0f / HALF_TURN);
+					m_enemyHitCheck.inRange = inHitRange;
+					m_enemyHitCheck.inArc = inHitArc;
+					m_enemyHitCheck.playerInvincible = playerInvincible;
+					m_enemyHitCheck.playerDebugInvincible = m_playerDebugInvincible;
+				}
 			}
             if (m_enemyAttack.elapsed >= enemyActive)
             {

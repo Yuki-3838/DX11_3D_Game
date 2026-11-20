@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
 #include	"meshmanager.h"
@@ -557,18 +558,12 @@ void CAnimationMesh::InitRenderResources()
 		m_swordRenderer.Init(*m_swordMesh);
 }
 
-void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
+/**
+ * @brief Assimp の作業領域(AssimpPerse)から、ボーン辞書・ボーン名ツリー・休止姿勢を受け取る。
+ * CStaticMesh::LoadWithAssimp の直後に呼ぶ(作業領域は次の読み込みで上書きされる)。
+ */
+void CAnimationMesh::TakeSkeletonFromAssimp()
 {
-	// 読み込みの作業領域(AssimpPerse)は共有なので、取り出し終わるまで排他する(敵の先読みが裏のスレッドで読むため)。
-	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
-	// メッシュ読み込み
-	// アニメーション用メッシュはボーン変換を後段で適用するため、
-	// Assimp の静的頂点変換は行わない。
-	CStaticMesh::Load(filename, texturedirectory, false);
-	m_BoneDictionary.clear();
-	m_RestLocalMatrices.clear();
-	m_RestGlobalMatrices.clear();
-
 	// アニメーションデータ(ASSIMP用）
 	std::unordered_map<std::string, GM31::GE::myAssimp::BONE> assimp_BoneDictionary{};	// 20240714 DX化
 
@@ -607,6 +602,177 @@ void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::strin
 	{
 		m_RestLocalMatrices[name] = utility::aiMtxToDxMtx(matrix);
 	}
+}
+
+namespace
+{
+	// 保存ファイル(ModelCache.h)の構造体の大きさ。どれかが変わったら古い保存ファイルは使わない。
+	std::vector<uint32_t> SkinnedMeshCacheLayout()
+	{
+		return {
+			static_cast<uint32_t>(sizeof(VERTEX_3D)),
+			static_cast<uint32_t>(sizeof(MATERIAL)),
+			static_cast<uint32_t>(sizeof(Matrix4x4)) };
+	}
+
+	void WriteNameTree(ModelCache::Writer& writer, const CTreeNode<std::string>& node)
+	{
+		writer.String(node.m_nodedata);
+		writer.U32(static_cast<uint32_t>(node.m_children.size()));
+		for (const auto& child : node.m_children)
+			WriteNameTree(writer, *child);
+	}
+
+	bool ReadNameTree(ModelCache::Reader& reader, CTreeNode<std::string>& node, int depth)
+	{
+		if (depth > 512)
+			return false; // 壊れた保存ファイルで止まらないように
+		node.m_nodedata = reader.String();
+		node.m_children.clear();
+		const uint32_t childCount = reader.U32();
+		for (uint32_t i = 0; i < childCount && reader.Ok(); ++i)
+		{
+			auto child = std::make_unique<CTreeNode<std::string>>();
+			child->m_parent = &node;
+			if (!ReadNameTree(reader, *child, depth + 1))
+				return false;
+			node.Addchild(std::move(child));
+		}
+		return reader.Ok();
+	}
+}
+
+/** 保存ファイルへ、ボーン辞書・ボーン名ツリー・休止姿勢を書く(頂点などの後ろへ続ける)。 */
+void CAnimationMesh::WriteSkeletonCache(ModelCache::Writer& writer) const
+{
+	writer.U32(static_cast<uint32_t>(m_BoneDictionary.size()));
+	for (const auto& [key, bone] : m_BoneDictionary)
+	{
+		writer.String(key);
+		writer.String(bone.bonename);
+		writer.String(bone.meshname);
+		writer.String(bone.armaturename);
+		writer.Pod(bone.Matrix);
+		writer.Pod(bone.AnimationMatrix);
+		writer.Pod(bone.OffsetMatrix);
+		writer.Pod(static_cast<int32_t>(bone.idx));
+		writer.U32(static_cast<uint32_t>(bone.weights.size()));
+		for (const WEIGHT& weight : bone.weights)
+		{
+			writer.String(weight.bonename);
+			writer.String(weight.meshname);
+			writer.Pod(weight.weight);
+			writer.Pod(static_cast<int32_t>(weight.vertexindex));
+		}
+	}
+	WriteNameTree(writer, m_AssimpNodeNameTree);
+	writer.U32(static_cast<uint32_t>(m_RestLocalMatrices.size()));
+	for (const auto& [name, matrix] : m_RestLocalMatrices)
+	{
+		writer.String(name);
+		writer.Pod(matrix);
+	}
+}
+
+/** WriteSkeletonCache で書いたものを読む。 */
+bool CAnimationMesh::ReadSkeletonCache(ModelCache::Reader& reader)
+{
+	m_BoneDictionary.clear();
+	m_RestLocalMatrices.clear();
+	const uint32_t boneCount = reader.U32();
+	m_BoneDictionary.reserve(boneCount);
+	for (uint32_t i = 0; i < boneCount && reader.Ok(); ++i)
+	{
+		const std::string key = reader.String();
+		BONE bone;
+		bone.bonename = reader.String();
+		bone.meshname = reader.String();
+		bone.armaturename = reader.String();
+		bone.Matrix = reader.Pod<Matrix4x4>();
+		bone.AnimationMatrix = reader.Pod<Matrix4x4>();
+		bone.OffsetMatrix = reader.Pod<Matrix4x4>();
+		bone.idx = reader.Pod<int32_t>();
+		const uint32_t weightCount = reader.U32();
+		for (uint32_t w = 0; w < weightCount && reader.Ok(); ++w)
+		{
+			WEIGHT weight;
+			weight.bonename = reader.String();
+			weight.meshname = reader.String();
+			weight.weight = reader.Pod<float>();
+			weight.vertexindex = reader.Pod<int32_t>();
+			bone.weights.push_back(std::move(weight));
+		}
+		m_BoneDictionary[key] = std::move(bone);
+	}
+	m_AssimpNodeNameTree = CTreeNode<std::string>{};
+	if (!reader.Ok() || !ReadNameTree(reader, m_AssimpNodeNameTree, 0))
+		return false;
+	const uint32_t matrixCount = reader.U32();
+	m_RestLocalMatrices.reserve(matrixCount);
+	for (uint32_t i = 0; i < matrixCount && reader.Ok(); ++i)
+	{
+		std::string name = reader.String();
+		m_RestLocalMatrices[std::move(name)] = reader.Pod<Matrix4x4>();
+	}
+	return reader.Ok();
+}
+
+void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
+{
+	// 読み込みの作業領域(AssimpPerse)は共有なので、取り出し終わるまで排他する(敵の先読みが裏のスレッドで読むため)。
+	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
+	m_BoneDictionary.clear();
+	m_RestLocalMatrices.clear();
+	m_RestGlobalMatrices.clear();
+
+	// 保存ファイル(ModelCache.h)が使えれば、頂点・テクスチャ・ボーン・休止姿勢をそこから読む(Assimp を通らない)。
+	// 無い・古いときは Assimp で読み、次から使えるよう保存する。
+	ModelCache::Header cacheHeader;
+	const bool useCache = ModelCache::Enabled() &&
+		ModelCache::MakeHeader("anim", filename, texturedirectory, SkinnedMeshCacheLayout(), cacheHeader);
+	const std::filesystem::path cachePath = useCache
+		? ModelCache::PathFor(cacheHeader.kind, filename, texturedirectory)
+		: std::filesystem::path();
+	bool loadedFromCache = false;
+	if (useCache)
+	{
+		ModelCache::Reader reader;
+		loadedFromCache = reader.Open(cachePath) && ModelCache::ReadAndCheckHeader(reader, cacheHeader) &&
+			ReadMeshCache(reader) && ReadSkeletonCache(reader) && reader.AtEnd();
+		if (!loadedFromCache)
+		{
+			m_BoneDictionary.clear();
+			m_RestLocalMatrices.clear();
+		}
+	}
+	if (!loadedFromCache)
+	{
+		{
+			std::optional<ModelCache::KeepPixelsScope> keepPixels;
+			if (useCache)
+				keepPixels.emplace();
+			// メッシュ読み込み
+			// アニメーション用メッシュはボーン変換を後段で適用するため、
+			// Assimp の静的頂点変換は行わない。
+			CStaticMesh::LoadWithAssimp(filename, texturedirectory, false);
+		}
+		TakeSkeletonFromAssimp();
+		if (useCache)
+		{
+			cacheHeader.dependencies = TextureDependencies();
+			ModelCache::Writer writer;
+			ModelCache::WriteHeader(writer, cacheHeader);
+			const bool written = WriteMeshCache(writer);
+			ReleaseTexturePixels();
+			if (written)
+			{
+				WriteSkeletonCache(writer);
+				if (writer.SaveTo(cachePath))
+					std::cout << "[ModelCache] saved " << cachePath.string() << std::endl;
+			}
+		}
+	}
+
 
 	// glTFの逆バインド行列は従来のPMX/FBX経路と読み込み規約が異なる。
 	// バインド姿勢を安定させるため休止階層から再構築する。

@@ -91,6 +91,10 @@ protected:
 	std::vector<bool> m_groundingIgnoredVertices{};
 
 	void LoadSwordAttachmentPreset();
+	// 読み込みの部品。Assimp の作業領域からボーンを受け取る/保存ファイル(ModelCache.h)へ書く・から読む。
+	void TakeSkeletonFromAssimp();
+	void WriteSkeletonCache(ModelCache::Writer& writer) const;
+	bool ReadSkeletonCache(ModelCache::Reader& reader);
 
 	// 1本のクリップを、指定したボーンだけへ適用する。
 	// ボーン辞書を休止姿勢へ戻す処理は呼び出し側で行う(複数回重ねられるようにするため)。

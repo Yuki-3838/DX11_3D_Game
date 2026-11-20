@@ -33,6 +33,8 @@ bool CTexture::Load(const std::u8string& filename)
 		std::cerr << "Failed to decode image: " << m_texname << std::endl;
 		return false;
 	}
+	if (s_keepPixels)
+		m_pixels.assign(pixels, pixels + static_cast<size_t>(m_width) * m_height * 4);
 
 	ComPtr<ID3D11Texture2D> pTexture;
 	D3D11_TEXTURE2D_DESC desc{};
@@ -140,6 +142,8 @@ bool CTexture::LoadFromFemory(const unsigned char* Data,int len) {
 		&m_height, 
 		&m_bpp, 
 		STBI_rgb_alpha);
+	if (pixels != nullptr && s_keepPixels)
+		m_pixels.assign(pixels, pixels + static_cast<size_t>(m_width) * m_height * 4);
 
 	// テクスチャ2Dリソース生成
 	ComPtr<ID3D11Texture2D> pTexture;

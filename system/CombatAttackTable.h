@@ -460,6 +460,14 @@ struct PlayerComboStep
     float trailEnd = -1.0f;
     /// 途中で起こすイベント(効果音・カメラの揺れ・火花)。
     std::vector<TimelineEvent> events;
+    /// 剣を持たない方の腕(左腕)に、クリップの動きをどれだけ使うか(1 = クリップどおり、0 = 待機の構えのまま)。
+    /// クリップによっては、振るたびに左腕を体の横へ大きく投げ出す(騎士の combo_attack。ユーザーから
+    /// 「左腕があまりにぶらんぶらん」と指摘)。小さくすると、待機の構えの腕へ寄せて振りの勢いだけを少し残す。
+    float offHandClipAmount = 1.0f;
+    /// 剣を持つ腕(右腕)の付け根(肩・上腕)に、クリップの動きをどれだけ使うか(1 = クリップどおり)。
+    /// 前腕と手はクリップのままなので、剣の振りは残して腕の開きだけを小さくできる
+    /// (騎士の弱1は右腕を体の真横へ伸ばして振るので「開きすぎ」とユーザーから指摘)。
+    float swordArmClipAmount = 1.0f;
 
     float WindupSeconds() const { return (hitStart - clipStart) / playbackRate; }
     float ActiveSeconds() const { return (hitEnd - hitStart) / playbackRate; }
@@ -539,7 +547,9 @@ inline PlayerAttackSet& ActivePlayerAttackSet()
 inline const PlayerComboStep& DefaultKnightAttack(PlayerAttackSlot slot)
 {
     static const char* const combo = "assets/model/Knight/anim/Knight_combo_attack.fbx";
-    static const PlayerComboStep defaults[PLAYER_ATTACK_SLOT_COUNT] = {
+    static const PlayerComboStep* const defaults = []
+    {
+    static PlayerComboStep steps[PLAYER_ATTACK_SLOT_COUNT] = {
         // 弱1: combo_attack の1回目。
         { combo, 0.20f, 0.48f, 0.84f, 1.00f, 1.15f, 0.06f, 0.0f },
         // 弱2: combo_attack の2回目(弱1の終わりから続けて再生する)。
@@ -555,6 +565,15 @@ inline const PlayerComboStep& DefaultKnightAttack(PlayerAttackSlot slot)
         // ダッシュ攻撃: attack を移したもの。跳び上がって前へ出る斬り下ろし。踏み込みは1.6倍(Sword and Shield Pack と同じ)。
         { "assets/model/Knight/anim/Knight_mx_attack.fbx", 0.55f, 0.98f, 1.34f, 2.05f, 1.45f, 0.06f, 1.6f },
     };
+    // 弱攻撃(combo_attack)は振るたびに左腕を体の横へ投げ出すので、左腕は待機の構えへ寄せ、
+    // クリップの動きは3割だけ残す(振りに合わせて少し揺れる程度)。
+    for (int i = 0; i < 3; ++i)
+        steps[i].offHandClipAmount = 0.3f;
+    // 弱1は右腕を体の真横へ伸ばして振る。肩と上腕を待機の構えへ半分寄せ、腕の開きを抑える
+    // (4割では振り抜く瞬間に肩の高さで真横へ伸びたままだった)。
+    steps[0].swordArmClipAmount = 0.5f;
+    return steps;
+    }();
     return defaults[static_cast<int>(slot)];
 }
 /** 既定値(ファイルが無いとき・「既定に戻す」で使う)。 */
