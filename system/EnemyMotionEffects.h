@@ -93,12 +93,16 @@ public:
 		m_puffs.clear();
 		m_groundRings.clear();
 		m_roarRings.clear();
+		m_drips.clear();
 	}
 
 	bool IsEmpty() const
 	{
-		return m_puffs.empty() && m_groundRings.empty() && m_roarRings.empty();
+		return m_puffs.empty() && m_groundRings.empty() && m_roarRings.empty() && m_drips.empty();
 	}
+
+	// 撮影のログ用。いま出ているよだれの数。
+	std::size_t GetDripCount() const { return m_drips.size(); }
 
 	// 撮影のログ用。いま出ている土煙の粒・地面の輪・咆哮の輪の数。
 	std::size_t GetPuffCount() const { return m_puffs.size(); }
@@ -168,10 +172,60 @@ public:
 		m_roarRings.push_back({ center, 0.0f, lifetime, radius, alpha });
 	}
 
+	/**
+	 * @brief よだれを1滴垂らす。口元から糸を引いて伸び、切れて落ち、床に小さく広がって消える。
+	 * @param mouth    垂れ始める場所(下あごの縁)。
+	 * @param drift    落ちるときに引きずられる横の速さ(頭の動きの勢い)。
+	 * @param size     しずくの大きさ(半径)。
+	 * @param groundY  床の高さ。
+	 */
+	void SpawnDrip(const Vector3& mouth, const Vector3& drift, float size, float groundY)
+	{
+		if (m_drips.size() >= MAX_DRIPS)
+			m_drips.erase(m_drips.begin());
+		Drip drip;
+		drip.anchor = mouth;
+		drip.position = mouth;
+		drip.velocity = drift;
+		drip.size = size;
+		drip.groundY = groundY;
+		// 糸を引いて伸びている時間。滴ごとに少し変える。
+		drip.hangSeconds = 0.30f + 0.25f * Random01();
+		m_drips.push_back(drip);
+	}
+
 	void Update(float deltaSeconds)
 	{
 		if (deltaSeconds <= 0.0f)
 			return;
+		for (Drip& drip : m_drips)
+		{
+			drip.age += deltaSeconds;
+			if (drip.landedAge >= 0.0f)
+			{
+				drip.landedAge += deltaSeconds;
+				continue;
+			}
+			if (drip.age < drip.hangSeconds)
+			{
+				// 口元から糸を引いて、ゆっくり伸びる(重さで少しずつ速くなる)。
+				const float t = drip.age / drip.hangSeconds;
+				drip.position = drip.anchor + Vector3(0.0f, -drip.size * 3.5f * t * t, 0.0f);
+				continue;
+			}
+			// 糸が切れて落ちる。
+			drip.velocity.y -= DRIP_GRAVITY * deltaSeconds;
+			drip.position += drip.velocity * deltaSeconds;
+			if (drip.position.y <= drip.groundY)
+			{
+				drip.position.y = drip.groundY;
+				drip.landedAge = 0.0f;
+			}
+		}
+		m_drips.erase(
+			std::remove_if(m_drips.begin(), m_drips.end(),
+				[](const Drip& d) { return d.landedAge >= DRIP_PUDDLE_SECONDS || d.age > 6.0f; }),
+			m_drips.end());
 		// 空気の抵抗で速さを落とす。蹴り上げた直後だけ勢いよく広がり、すぐ漂う動きになる。
 		const float drag = std::exp(-DUST_DRAG * deltaSeconds);
 		for (Puff& puff : m_puffs)
@@ -238,6 +292,32 @@ public:
 			color.z *= puff.shade;
 			quad = PushDisc(quad, puff.position, radius,
 				WithAlpha(color, puff.alpha * DUST_DENSITY * fadeIn * fadeOut), cameraRight, cameraUp);
+		}
+		// --- よだれ ---(深度を比べる組)
+		// 糸を引いている間は口元からしずくまで細い粒を並べ、落ちている間は短い尾を引く。床に着いたら薄く広がって消える。
+		for (const Drip& drip : m_drips)
+		{
+			const Color slime = WithAlpha(DripColor(), DRIP_ALPHA);
+			if (drip.landedAge >= 0.0f)
+			{
+				const float t = std::clamp(drip.landedAge / DRIP_PUDDLE_SECONDS, 0.0f, 1.0f);
+				quad = PushDisc(quad, drip.position + Vector3(0.0f, GROUND_RING_LIFT, 0.0f),
+					drip.size * (1.2f + 1.3f * std::sqrt(t)), WithAlpha(DripColor(), DRIP_ALPHA * 0.8f * (1.0f - t)),
+					Vector3(1.0f, 0.0f, 0.0f), Vector3(0.0f, 0.0f, 1.0f));
+				continue;
+			}
+			const bool hanging = drip.age < drip.hangSeconds;
+			const Vector3 tailEnd = hanging
+				? drip.anchor
+				: drip.position - drip.velocity * 0.035f;
+			constexpr int STRAND_BEADS = 5;
+			for (int i = 1; i <= STRAND_BEADS; ++i)
+			{
+				const float k = static_cast<float>(i) / static_cast<float>(STRAND_BEADS + 1);
+				quad = PushDisc(quad, drip.position + (tailEnd - drip.position) * k,
+					drip.size * (0.55f - 0.25f * k), slime, cameraRight, cameraUp);
+			}
+			quad = PushDisc(quad, drip.position, drip.size, slime, cameraRight, cameraUp);
 		}
 		const std::size_t depthTestedQuads = quad;
 
@@ -312,6 +392,17 @@ private:
 		float size = 1.0f;
 		float alpha = 0.5f;
 		float shade = 1.0f;
+	};
+	struct Drip
+	{
+		Vector3 anchor{};
+		Vector3 position{};
+		Vector3 velocity{};
+		float age = 0.0f;
+		float hangSeconds = 0.35f;
+		float size = 1.0f;
+		float groundY = 0.0f;
+		float landedAge = -1.0f; ///< 床に着いてからの時間(負なら落ちている途中)
 	};
 	struct Ring
 	{
@@ -429,8 +520,16 @@ private:
 	static constexpr std::size_t RING_SEGMENTS = 32;
 	static constexpr std::size_t MAX_PUFFS = 220;
 	static constexpr std::size_t MAX_RINGS = 8;
+	static constexpr std::size_t MAX_DRIPS = 12;
+	// しずく1つ = 粒6個(しずく+糸の粒5)。
 	static constexpr std::size_t MAX_QUADS =
-		DISC_SEGMENTS * MAX_PUFFS + RING_SEGMENTS * 2 * MAX_RINGS * 2;
+		DISC_SEGMENTS * MAX_PUFFS + RING_SEGMENTS * 2 * MAX_RINGS * 2 + DISC_SEGMENTS * 6 * MAX_DRIPS;
+	// よだれ。重力はワールドの長さ(1m 約10)で約9.8m/s²。床の染みが消えるまでの時間。
+	static constexpr float DRIP_GRAVITY = 98.0f;
+	static constexpr float DRIP_PUDDLE_SECONDS = 1.6f;
+	static constexpr float DRIP_ALPHA = 0.85f;
+	// 濁った薄い黄緑のよだれ。床(明るい灰色)の上でも見えるよう少し濃くする。
+	static Color DripColor() { return Color(0.78f, 0.80f, 0.62f, 1.0f); }
 	// 速さが1秒で約 e^-3.5 ≒ 3% まで落ちる。
 	static constexpr float DUST_DRAG = 3.5f;
 	static constexpr float DUST_RISE = 6.0f;
@@ -446,6 +545,7 @@ private:
 	std::vector<Puff> m_puffs;
 	std::vector<Ring> m_groundRings;
 	std::vector<Ring> m_roarRings;
+	std::vector<Drip> m_drips;
 	std::vector<VERTEX_3D> m_vertices;
 	CVertexBuffer<VERTEX_3D> m_vertexBuffer;
 	CIndexBuffer m_indexBuffer;

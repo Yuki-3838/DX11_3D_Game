@@ -994,12 +994,15 @@ void CAnimationMesh::BuildLocalPoseMap(
 			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 0)].mValue,
 			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 1)].mValue, blend);
 		rot.Normalize();
-		// 敵のワールド位置と接地はGameScene側のSRTで管理している。
-		// 位置キーまで補間すると、ルートを含むアニメーションの上下移動が
-		// 描画SRTへ重なり、敵が地面へ埋まることがある。位置は従来どおり
-		// 現在のキーから読み、今回の補間対象は回転だけに限定する。
-		const aiVector3D pos =
+		// 位置もキーの間を補間する。以前は現在のキーの値だけを読んでいたため、腰(根元の骨)が動くクリップでは
+		// 回転は滑らかに進むのに腰の位置だけがキーごとに段々に飛び、地面に着けた足が前後に揺れて滑って見えた
+		// (尾回転のモーションで、軸足が毎秒60〜280で揺れ、前足を下ろす所で体が0.2ほど上下した。撮影の記録で確認)。
+		// 補間しても腰の動きそのもの(上下の幅)は変わらない。敵のワールド位置と接地は引き続きGameScene側のSRTで管理する。
+		const aiVector3D posA =
 			nodeAnim->mPositionKeys[keyIndex(nodeAnim->mNumPositionKeys, 0)].mValue;
+		const aiVector3D posB =
+			nodeAnim->mPositionKeys[keyIndex(nodeAnim->mNumPositionKeys, 1)].mValue;
+		const aiVector3D pos = posA + (posB - posA) * blend;
 
 		// assimp SRT=>DX版　SRT
 		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DX化
@@ -1064,7 +1067,7 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame,
 		// ローカル座標からボーンのアニメーション行列を作成
 		bone->AnimationMatrix = scalemtx * rotmtx * transmtx;
 	}
-
+	m_LastSampledPose = std::move(localpose);
 
 	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);		// 20240714 DX化	
 
@@ -1109,7 +1112,38 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 			toFrameFraction,
 			loopToAnimation);
 	}
+	ApplyBlendedRotationPose(bonecombarray, fromPose, toPose, blendRate);
+}
 
+void CAnimationMesh::UpdateBlendedRotationAnimation(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, SRTQ>& fromPose,
+	const aiAnimation* toAnimation,
+	int toFrame,
+	float toFrameFraction,
+	bool loopToAnimation,
+	float blendRate)
+{
+	m_DebugBoneMatrices.clear();
+	std::unordered_map<std::string, SRTQ> toPose;
+	if (toAnimation != nullptr)
+	{
+		BuildLocalPoseMap(
+			toAnimation,
+			toFrame,
+			toPose,
+			toFrameFraction,
+			loopToAnimation);
+	}
+	ApplyBlendedRotationPose(bonecombarray, fromPose, toPose, blendRate);
+}
+
+void CAnimationMesh::ApplyBlendedRotationPose(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, SRTQ>& fromPose,
+	std::unordered_map<std::string, SRTQ>& toPose,
+	float blendRate)
+{
 	const float rate = std::clamp(blendRate, 0.0f, 1.0f);
 	std::unordered_map<std::string, SRTQ> blendedPose;
 	blendedPose.reserve(std::max(fromPose.size(), toPose.size()));
@@ -1162,6 +1196,8 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 	for (const auto& bone : m_BoneDictionary)
 		bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
 			bone.second.Matrix.Transpose();
+	// 混ざった姿勢を控える(つなぎの途中で次のつなぎを始めるときのつなぎ元)。
+	m_LastSampledPose = std::move(blendedPose);
 }
 
 float CAnimationMesh::GetAnimatedLocalMaxZ() const
@@ -1238,11 +1274,36 @@ float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
 		}
 
 		const float height = skinned.Dot(upAxis);
-		lowestHeight = std::min(lowestHeight, height);
+		if (height < lowestHeight)
+		{
+			lowestHeight = height;
+			// 一番強く効いている骨を控える(どの部位が一番低いかを記録に出すため)。
+			int strongest = -1;
+			float strongestWeight = 0.0f;
+			for (int slot = 0; slot < 4; ++slot)
+			{
+				if (vertex.BoneWeight[slot] > strongestWeight)
+				{
+					strongestWeight = vertex.BoneWeight[slot];
+					strongest = vertex.BoneIndex[slot];
+				}
+			}
+			m_lastLowestBoneIndex = strongest;
+		}
 		hasVertex = true;
 	}
 
 	return hasVertex ? lowestHeight : 0.0f;
+}
+
+std::string CAnimationMesh::GetLastLowestBoneName() const
+{
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx == m_lastLowestBoneIndex)
+			return name;
+	}
+	return {};
 }
 
 void CAnimationMesh::ApplyAnimationToBones(
@@ -1655,7 +1716,8 @@ bool CAnimationMesh::SolveLegIK(
 	const LegIKChain& chain,
 	const Vector3& targetToeModelPosition,
 	float maxExtensionRatio,
-	float softening)
+	float softening,
+	const Matrix4x4* footModelOrientation)
 {
 	auto upperIt = m_BoneDictionary.find(chain.upperLeg);
 	auto lowerIt = m_BoneDictionary.find(chain.lowerLeg);
@@ -1691,7 +1753,15 @@ bool CAnimationMesh::SolveLegIK(
 	const Vector3 a = MatrixPosition(upperGlobal);
 	const Vector3 b = MatrixPosition(lowerGlobal);
 	const Vector3 c = MatrixPosition(footGlobal);
-	const Vector3 toeToFoot = MatrixPosition(footGlobal) - MatrixPosition(toeGlobal);
+	// 足首の向きを指定されたときは、その向きで足を置いたときの「足首とつま先の差」を使う。
+	Matrix4x4 footOrientation = footGlobal;
+	if (footModelOrientation != nullptr)
+		footOrientation = *footModelOrientation;
+	footOrientation._41 = 0.0f;
+	footOrientation._42 = 0.0f;
+	footOrientation._43 = 0.0f;
+	const Vector3 toeInFoot = MatrixPosition(toeGlobal * footGlobal.Invert());
+	const Vector3 toeToFoot = -Vector3::Transform(toeInFoot, footOrientation);
 	Vector3 t = targetToeModelPosition + toeToFoot;
 
 	const float lab = (b - a).Length();
@@ -1765,8 +1835,8 @@ bool CAnimationMesh::SolveLegIK(
 	const Matrix4x4 lowerGlobalNew = lowerGlobalAfterHip * kneeTransform;
 	const Matrix4x4 footGlobalChain = footGlobalAfterHip * kneeTransform;
 
-	// 足首は元の向きのまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
-	Matrix4x4 footGlobalNew = footGlobal;
+	// 足首は元の向き(指定があればその向き)のまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
+	Matrix4x4 footGlobalNew = footOrientation;
 	const Vector3 footPosition = MatrixPosition(footGlobalChain);
 	footGlobalNew._41 = footPosition.x;
 	footGlobalNew._42 = footPosition.y;
@@ -1777,6 +1847,23 @@ bool CAnimationMesh::SolveLegIK(
 	upperIt->second.AnimationMatrix = upperGlobalNew * upperParent.Invert();
 	lowerIt->second.AnimationMatrix = lowerGlobalNew * upperGlobalNew.Invert();
 	footIt->second.AnimationMatrix = footGlobalNew * lowerGlobalNew.Invert();
+	// 膝の骨のほかの子(翼膜の付け根など)は、足首と同じく向きを元のまま残し、位置だけ脚についていかせる。
+	const Matrix4x4 lowerInverse = lowerGlobal.Invert();
+	const Matrix4x4 lowerNewInverse = lowerGlobalNew.Invert();
+	for (const std::string& childName : chain.keepOrientation)
+	{
+		auto childIt = m_BoneDictionary.find(childName);
+		const auto childGlobalIt = m_DebugBoneMatrices.find(childName);
+		if (childIt == m_BoneDictionary.end() || childGlobalIt == m_DebugBoneMatrices.end())
+			continue;
+		const Matrix4x4 childGlobal = childGlobalIt->second;
+		const Vector3 followed = MatrixPosition(childGlobal * lowerInverse * lowerGlobalNew);
+		Matrix4x4 childGlobalNew = childGlobal;
+		childGlobalNew._41 = followed.x;
+		childGlobalNew._42 = followed.y;
+		childGlobalNew._43 = followed.z;
+		childIt->second.AnimationMatrix = childGlobalNew * lowerNewInverse;
+	}
 	return true;
 }
 

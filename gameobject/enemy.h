@@ -18,7 +18,8 @@ public:
 	// Deadは倒れた状態(倒れるクリップを再生して動かない)。
 	// Standbyはプレイヤーを倒した後に立っている状態(勝利の咆哮の後は何もしない)。
 	// 撮影のログは番号で書いているので、項目は必ず末尾へ足す。
-	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn, Dead, Standby };
+	// Threatは攻撃の合間の威嚇。うなって頭を振るだけで攻撃は来ない(大型モンスターの「挑発」。殴る好機)。
+	enum class MotionState { Approach, Circle, Windup, Active, Recovery, Retreat, Flinch, Roar, Turn, Dead, Standby, Threat };
 
 	explicit enemy(IScene* scene);
 
@@ -106,6 +107,8 @@ public:
 	// 当たり判定(敵の向きの反対=尾の向き)と見た目は自動で一致する。
 	int getSpinHalfTurns() const { return m_spinHalfTurns; }
 	float getSpinSign() const { return m_spinSign; }
+	// 尾回転のモーションの再生位置(秒。Combat::EnemySpinClipSeconds)。尾回転の溜め・判定・隙の間でなければ負。
+	float getTailSpinClipSeconds() const;
 	// 回っている間(Active)か。回転中は脚を動かすため、アニメーション側が見る。
 	bool isTailSpinning() const;
 
@@ -149,16 +152,60 @@ public:
 		s_roarFromClip = roar;
 		s_attacksFromClip = attacks;
 	}
+	// 怯みの動きがクリップにあるモデル(Wyvern の Damage)は、手続きの前後の傾きを足さない。
+	static void setFlinchFromClip(bool fromClip) { s_flinchFromClip = fromClip; }
+	// 尾回転のモーション(溜め・半回転・一拍・隙、体の向きの回転まで入ったクリップ)があるモデルでは、
+	// 手続きの構え(全身の傾き・首や尾の構え)を足さず、描画の向きから回った分を引く(回転はクリップが見せる)。
+	static void setTailSpinFromClip(bool fromClip) { s_tailSpinFromClip = fromClip; }
+	static bool isTailSpinFromClip() { return s_tailSpinFromClip; }
+	// 弱り具合(疲れ・瀕死)をクリップと息づかいで見せるモデル(Wyvern の crawl)は、
+	// 全身を丸ごと前へ傾ける手続きの姿勢(EnemyConditionPose)を足さない。
+	// 体を1枚の板のように傾けると、地面に着いた足ごと回って尾が床へ沈み、体が浮いていた。
+	static void setConditionFromClip(bool fromClip) { s_conditionFromClip = fromClip; }
+	// 足で立たせるモデル(Wyvern)は、火球の「反る・突き出す」と突進の「構える・前のめりで走る・反って止まる」を、
+	// 全身の傾きではなく胸の上下(背骨)で見せる。
+	// 全身を1枚の板のまま傾けると、地面に着いた足ごと回って片側の2本が床から浮いた
+	// (火球: 溜めの間ずっと後ろ足が最大7浮き、吐いた後は前足が4浮いていた。実機での指摘「ブレス攻撃のとき浮いてる」。
+	//  突進: 前のめりのまま走ると、前足と後ろ足で床に着く高さが約5違い、着く足が替わるたびに体が1フレームで上下した)。
+	// 胸を動かした分の前足は、GameScene が脚の IK で地面に残す。
+	static void setAttackTiltOnChest(bool onChest) { s_attackTiltOnChest = onChest; }
+	// 全身の傾きの代わりに胸を持ち上げる量(胸の上下 EnemyTellPose::chestHeave に足す。正で胸が上がる)。
+	float getAttackChestLift() const;
+	// 威嚇のクリップがあるモデルだけ威嚇する。
+	static void setThreatEnabled(bool enabled) { s_threatEnabled = enabled; }
+	// 威嚇の長さ。クリップ(Scream2 3.5秒)はこの長さに合わせて少し速く流す。
+	static constexpr float THREAT_SECONDS = 2.8f;
 
 private:
 	static inline bool s_attackPoseEnabled = true;
 	static inline bool s_roarFromClip = false;
 	static inline bool s_attacksFromClip = false;
+	static inline bool s_flinchFromClip = false;
+	static inline bool s_tailSpinFromClip = false;
+	static inline bool s_conditionFromClip = false;
+	static inline bool s_threatEnabled = false;
+	static inline bool s_attackTiltOnChest = false;
+	// 胸へ移す攻撃か(火球と突進。壁にぶつかったよろめきは除く)。
+	bool attackTiltGoesToChest() const;
+	// 今の状態の式どおりの胸の上下(m_chestCarry を足す前)。
+	float computeChestLift() const;
+	// 状態が変わった瞬間の胸の上下の食い違い(m_poseCarry と同じく短く0へ戻す)。
+	float m_chestCarry = 0.0f;
+	// before(切り替わる直前の傾き)と今の状態の傾きの差を m_poseCarry / m_chestCarry に控える。
+	void carryPoseFrom(const Combat::EnemyPoseOffset& before, float chestBefore);
+	// 威嚇を出す間隔を数える(隙が明けた回数)。
+	int m_threatCounter = 0;
+	// 隙が明けたときに威嚇するか(3回に1回。怒っている間・背を向けているときはしない)。
+	bool shouldThreatenAfterRecovery(const Vector3& targetPosition);
 	// クリップで動きを見せている攻撃・咆哮の最中か(上の設定と今の状態から)。
 	bool isRoarFromClip() const;
 	bool isAttackFromClip() const;
 
 	void changeState(MotionState nextState);
+	// 選んだ攻撃の予兆(溜め)へ入る。尾回転なら、この時点で回る向きも決める。
+	// 溜めの最初のコマから、回る向きに合ったモーション(左回り・右回り)を描くため
+	// (次の更新で決めていたときは、最初のコマだけ前回の向きのモーションが選ばれ、歩きからのつなぎが途切れて姿勢が飛んだ)。
+	void enterWindup(const Vector3& targetPosition);
 	// 描画用の構え(EnemyAttackPose.h)へ渡すため、AIの状態を攻撃の段階へ変換する。
 	Combat::EnemyAttackPhase currentAttackPhase() const;
 	// playerBehind=true なら、近接の候補から尾回転を選ぶ(背後の相手へ向き直らずに応じる)。
@@ -180,7 +227,14 @@ private:
 	// 正面とプレイヤーへの向きの差(0〜π)。
 	float facingErrorTo(const Vector3& targetPosition) const;
 	void moveInFacingDirection(float distance);
-	// 尾回転に入る瞬間に、回る向きと基準の向きを決める。
+	// 歩く速さ(m_locomotionSpeed)を目標の速さへ加速・減速で寄せ、その速さで正面へ動く。
+	// 以前は状態ごとに速さを決め打ちしていたので、0と最高速が1フレームで切り替わり、
+	// 「急に止まって急に動き出す」機械のような動きになっていた(審査会の指摘)。
+	void driveLocomotion(float targetSpeed, float deltaSec, float accel, float decel);
+	// 尾回転の溜めに入ったときに回る向きを決める。溜めの捻り(回る向きと逆へ捻る)が回る向きの手がかりになるので、
+	// 溜めの終わりではなく始めに決める(終わりに決めていたときは、捻りと逆へ回ることがあった)。
+	void chooseTailSpinSign(const Vector3& targetPosition);
+	// 尾回転に入る瞬間に、基準の向きを決める。
 	void beginTailSpin(const Vector3& targetPosition);
 
 	static constexpr float PREFERRED_DISTANCE = 26.0f;
@@ -219,7 +273,23 @@ private:
 	// 移動の速さの倍率。弱っているほど遅い。攻撃の踏み込みには掛けない
 	// (掛けると攻撃の届く距離と見た目が食い違う)。
 	float moveSpeedScale() const;
-	static constexpr float RETREAT_SECONDS = 0.22f;
+	// 加速して下がるので、以前(0.22秒・最初から最高速)と同じくらい下がれるよう少し長くした。
+	static constexpr float RETREAT_SECONDS = 0.30f;
+	// 歩く速さの加速・減速(表の長さ/秒/秒)。大型の体は重いので、出だしはじわっと、止まるのも数歩かかる。
+	//   加速 230: 止まった状態から近づく速さ(84)まで約0.37秒
+	//   減速 330: 近づく速さから止まるまで約0.25秒
+	// 予兆・向き直りに入るときは早めに止める(滑りながら攻撃すると、届く距離が予兆とずれる)。
+	static constexpr float LOCOMOTION_ACCEL = 230.0f;
+	static constexpr float LOCOMOTION_DECEL = 330.0f;
+	static constexpr float LOCOMOTION_STOP_DECEL = 560.0f;
+	// 後退は飛びのく動きなので、ほかより強く蹴り出す。
+	static constexpr float RETREAT_ACCEL = 700.0f;
+	// 攻撃する・向き直ると決めたら、まず歩きながら止まる(歩く脚のまま減速するので足は滑らない)。
+	// 止まりきってから予兆へ入る。以前は予兆に入った瞬間に止めていたので「ピタッ」と止まって見えた。
+	// 周回の速さ(44)から約0.2秒・約5進んで止まる。
+	static constexpr float BRAKE_DECEL = 200.0f;
+	static constexpr float BRAKE_DONE_SPEED = 3.0f;
+	bool m_brakingForAttack = false;
 	static constexpr float MIN_CIRCLE_SECONDS = 0.55f;
 	static constexpr float MAX_CIRCLE_SECONDS = 1.40f;
 	static constexpr float MAX_DELTA_SECONDS = 0.1f;
@@ -228,6 +298,8 @@ private:
 	static constexpr float RANGED_ATTACK_INTERVAL_SECONDS = 3.2f;
 
 	Vector3 m_move{0, 0, 0};
+	// いま歩いている速さ(正面へ正、後ろへ負。表の長さ/秒)。状態が変わっても途切れさせない。
+	float m_locomotionSpeed = 0.0f;
 	Vector3 m_destrot{0, 0, 0};
 	player* m_target{nullptr};
 	MotionState m_motionState = MotionState::Approach;
@@ -251,6 +323,13 @@ private:
 	static constexpr float VICTORY_ROAR_DELAY_SECONDS = 0.9f;
 	// 倒れた瞬間に足していた体の傾き。短く0へ戻す(いきなり消すと姿勢が跳ぶ)。
 	Combat::EnemyPoseOffset m_deathPoseStart{};
+	// 状態が変わった瞬間の体の傾きの食い違い。短く0へ戻す(changeState で控え、update で減らす)。
+	// 傾きは状態ごとの式で決まるので、切り替わりで値が飛ぶ所がある。突進では構え→走りで約5度、
+	// 走り→滑って止まるで約7度、体が1フレームで傾き直し、後ろ足が7ほど跳ね上がっていた。
+	Combat::EnemyPoseOffset m_poseCarry{};
+	static constexpr float POSE_CARRY_SECONDS = 0.08f;
+	// 今の状態の式どおりの傾き(m_poseCarry を足す前)。
+	Combat::EnemyPoseOffset computePoseOffset() const;
 	int m_rageCount = 0;
 	float m_posture = 0.0f;
 	float m_flinchYawSign = 1.0f;
@@ -265,6 +344,7 @@ private:
 	int m_spinHalfTurns = 1;
 	float m_spinSign = 1.0f;
 	float m_spinStartYaw = 0.0f;
+	bool m_spinSignChosen = false; ///< この溜めで回る向きを決めたか
 	// 離れた相手への攻撃。次に出せるまでの残り時間と、直前に出した種類(交互に出すため)。
 	float m_rangedCooldown = 0.0f;
 	Combat::EnemyAttackKind m_previousRangedKind = Combat::EnemyAttackKind::Charge;

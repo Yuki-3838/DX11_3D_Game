@@ -38,11 +38,15 @@ protected:
 		Matrix4x4 afterLayer{};  ///< 足した直後のAnimationMatrix(書き換えられたかの判定に使う)
 	};
 	std::unordered_map<std::string, LayeredBoneRotation> m_LayeredBoneRotations{};
+	// 直前に当てたクリップの姿勢(GetLastSampledPose)。
+	std::unordered_map<std::string, SRTQ> m_LastSampledPose{};
 
 	// レンダラ
 	CStaticMeshRenderer m_StaticMeshRenderer{};
 	bool m_hideEmbeddedShieldSubset = false;
 	size_t m_groundingSampleBudget = 0;
+	// 直前の GetAnimatedLowestAlong で一番低かった頂点を一番強く動かしている骨(調査・撮影の記録用)。
+	mutable int m_lastLowestBoneIndex = -1;
 	bool m_useAnimationScaleKeys = false;
 	std::unique_ptr<CStaticMesh> m_swordMesh{};
 	CStaticMeshRenderer m_swordRenderer{};
@@ -147,6 +151,22 @@ public:
 		bool loopToAnimation,
 		float blendRate);
 
+	// つなぎ元をクリップのコマではなく、控えておいた姿勢(GetLastSampledPose)で渡す版。
+	// つなぎの途中で次のつなぎを始めるとき、画面に出ていた「混ざった姿勢」からつなぐのに使う。
+	// クリップのコマからつなぎ直すと、混ざる前の片方の姿勢へ1フレームで飛んでしまう。
+	void UpdateBlendedRotationAnimation(
+		BoneCombMatrix& bonecombarray,
+		const std::unordered_map<std::string, SRTQ>& fromPose,
+		const aiAnimation* toAnimation,
+		int toFrame,
+		float toFrameFraction,
+		bool loopToAnimation,
+		float blendRate);
+
+	// 直前の Update / UpdateBlendedRotationAnimation で骨へ当てたクリップの姿勢
+	// (後から足す回転や脚の IK を足す前のもの)。
+	const std::unordered_map<std::string, SRTQ>& GetLastSampledPose() const { return m_LastSampledPose; }
+
 	// 読み込んだ移動モーションは選択したボーンだけを動かし、
 	// タイトル姿勢は剣を持つ手と契約書を持つ手を引き続き制御する。
 	void UpdateAnimationWithManualPose(
@@ -235,6 +255,12 @@ public:
 	// 骨格のローカル行列を休止姿勢へ戻す。クリップを当てる前に呼び、
 	// クリップにキーが無いボーンを「前に再生したクリップの姿勢のまま」にしない。
 	// pose(と otherPose)は、これから当てるクリップの骨ごとの姿勢。骨格の一番上を見つけるのに使う。
+	// UpdateBlendedRotationAnimation の本体(つなぎ元・つなぎ先の姿勢を受け取って混ぜる)。
+	void ApplyBlendedRotationPose(
+		BoneCombMatrix& bonecombarray,
+		const std::unordered_map<std::string, SRTQ>& fromPose,
+		std::unordered_map<std::string, SRTQ>& toPose,
+		float blendRate);
 	void ResetBonesToRestPose(
 		const std::unordered_map<std::string, SRTQ>& pose,
 		const std::unordered_map<std::string, SRTQ>* otherPose = nullptr);
@@ -257,6 +283,9 @@ public:
 		std::string lowerLeg;  ///< 膝
 		std::string foot;      ///< 足首
 		std::string toe;       ///< つま先
+		/// 膝の骨の子で、IKで脚を曲げてもモデル空間での向きを元のまま残す骨(位置は脚についていく)。
+		/// 前脚に翼膜が付いたモデル(Wyvern)で、前腕を回すと膜の先が床へ振り下ろされないように使う。
+		std::vector<std::string> keepOrientation;
 	};
 
 	/**
@@ -266,6 +295,8 @@ public:
 	 * @param targetToeModelPosition つま先の目標位置(モデル空間)。
 	 * @param maxExtensionRatio 脚を伸ばしきる割合の上限(1.0で完全に伸ばす)。
 	 * @param softening 上限へ近づいたときに滑らかに抑え始める距離(モデル単位)。
+	 * @param footModelOrientation 足首の向き(モデル空間。位置は使わない)。nullptrなら元の姿勢の向きのまま。
+	 *        地面に着いた足をワールドで同じ向きに留めるときに渡す(体が回っても足が一緒に回らないように)。
 	 * @return 解けたらtrue。
 	 *
 	 * @details
@@ -279,7 +310,8 @@ public:
 		const LegIKChain& chain,
 		const Vector3& targetToeModelPosition,
 		float maxExtensionRatio = 0.985f,
-		float softening = 1.5f);
+		float softening = 1.5f,
+		const Matrix4x4* footModelOrientation = nullptr);
 
 	/** 骨のモデル空間での位置(今の姿勢)。 */
 	bool GetBoneModelPosition(const std::string& boneName, Vector3& outPosition) const;
@@ -329,6 +361,8 @@ public:
 	float GetAnimatedLocalMinY() const;
 	// 現在のボーン行列でスキニングした頂点を、upAxis方向の成分で見たときの最小値。
 	float GetAnimatedLowestAlong(const Vector3& upAxis) const;
+	// 直前に求めた一番低い頂点がどの骨に付いているか(床に埋まる部位を突き止めるのに使う)。無ければ空。
+	std::string GetLastLowestBoneName() const;
 	// 最下点を求めるときに見る頂点の数のおおよその上限(0 = 全頂点)。
 	// 頂点が多いモデルで、毎フレームの全頂点スキニングが重くならないよう間引く。
 	void SetGroundingSampleBudget(size_t vertexBudget) { m_groundingSampleBudget = vertexBudget; }
