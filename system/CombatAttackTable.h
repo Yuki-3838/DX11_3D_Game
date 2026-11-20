@@ -188,6 +188,16 @@ inline constexpr float ENEMY_SPIN_FIRST_HIT_TIME = 0.0f;
 inline constexpr float ENEMY_SPIN_HIT_HALF_ANGLE = 0.70f;
 // 回転中の移動。回りながら少し流れる程度にする(大きいと体ごと突っ込む攻撃に見える)。
 inline constexpr float ENEMY_SPIN_LUNGE_SPEED = 18.0f;
+// 半回転のうち、軽く跳んで4本の足を地面から離している区間(半回転の進み 0〜1 の範囲)。
+// 半回転0.42秒で180°(一番速いところで毎秒約640°)回るのを、地面に着いた足の踏み替えだけで支えることはできない。
+// 足を地面に着けたまま回すと、足が床の上で体と一緒に回り、滑って見えた(スローで見ての指摘)。
+// 回り始めと回り終わりのゆっくりの所(それぞれ約12°)だけ足を着け、速い所は跳んで空中で回る(飛竜の回転尾の跳び)。
+// 回りながらの移動も、足が地面に着いていないこの区間にだけ付ける(着いている足を引きずらないように)。
+// ※ 尾回転の専用モーション(tools/blender_make_wyvern_tail_spin.py)があるモデルは跳ばない。この区間は勢いよく回る所で、
+//   回る内側の後ろ足(軸足)を地面に着けたまま、その指の付け根を中心に回る(4本とも浮いて跳びはねに見えたため)。
+//   その場合は回りながらの移動もしない(流すと軸足が床を滑る)。跳ぶのはモーションが無いモデルの作り方だけ。
+inline constexpr float ENEMY_SPIN_HOP_START = 0.16f;
+inline constexpr float ENEMY_SPIN_HOP_END = 0.84f;
 // 尾で薙がれた側は横へ大きく飛ばされる。
 inline constexpr float ENEMY_SPIN_KNOCKBACK_SPEED = 360.0f;
 inline constexpr float ENEMY_SPIN_KNOCKBACK_SECONDS = 0.48f;
@@ -893,6 +903,60 @@ inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
     out.segmentT = 1.0f;
     out.turnedHalfTurns = static_cast<float>(turns);
     return out;
+}
+
+/** 半回転の進み(0〜1)から、跳んでいる区間の中の進み(0〜1)。跳んでいなければ負。 */
+inline float EnemySpinHopProgress(float segmentT)
+{
+    if (segmentT <= Tuning::ENEMY_SPIN_HOP_START || segmentT >= Tuning::ENEMY_SPIN_HOP_END)
+        return -1.0f;
+    return (segmentT - Tuning::ENEMY_SPIN_HOP_START) /
+        (Tuning::ENEMY_SPIN_HOP_END - Tuning::ENEMY_SPIN_HOP_START);
+}
+
+/**
+ * @brief 尾回転のモーション(tools/blender_make_wyvern_tail_spin.py で作ったクリップ)の再生位置(秒)。
+ *
+ * クリップは次の順に区切ってある(どれも下の Tuning の長さで作ってある。長さを変えたらクリップも作り直す)。
+ *   溜め → 1回目の半回転 → 半回転1回の隙 | 一拍 → 2回目の半回転 → 半回転2回の隙
+ * 一拍は1回目の半回転の終わり(着地)の続きとして作ってあるので、半回転2回のときは
+ * 1回目の半回転の後で「半回転1回の隙」を飛ばして一拍へ移る。
+ * 溜めと隙は、弱り具合などで実際の長さが変わっても、クリップの区切りの中で伸び縮みさせる。
+ *
+ * @param phase         攻撃のどの段階か(0=溜め・1=判定・2=隙)
+ * @param phaseTime     その段階に入ってからの秒
+ * @param phaseSeconds  その段階の実際の長さ(溜めと隙だけ使う)
+ * @param halfTurns     半回転の回数
+ */
+inline float EnemySpinClipSeconds(int phase, float phaseTime, float phaseSeconds, int halfTurns)
+{
+    const float windup = Tuning::ENEMY_SPIN_ANTICIPATION;
+    const float turn = Tuning::ENEMY_SPIN_HALF_TURN_SECONDS;
+    const float recover = Tuning::ENEMY_SPIN_RECOVERY;
+    const float pause = Tuning::ENEMY_SPIN_PAUSE_SECONDS;
+    const float secondStart = windup + turn + recover; // 一拍の始まり
+    const int turns = std::clamp(halfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
+    const auto stretch = [](float time, float actual, float authored)
+    {
+        return actual > 0.0f ? std::clamp(time / actual, 0.0f, 1.0f) * authored : std::min(time, authored);
+    };
+    if (phase <= 0)
+        return stretch(phaseTime, phaseSeconds, windup);
+    if (phase == 1)
+    {
+        const float t = std::max(0.0f, phaseTime);
+        if (t < turn || turns == 1)
+            return windup + std::min(t, turn);
+        if (t < turn + pause)
+            return secondStart + (t - turn);
+        return secondStart + pause + std::min(t - turn - pause, turn);
+    }
+    const float recoverStart = turns == 1 ? windup + turn : secondStart + pause + turn;
+    const float recoverTime = recoverStart + stretch(phaseTime, phaseSeconds, recover);
+    // 半回転1回の隙の終わりは、すぐ後ろの一拍の最初のキー(別の筋書きの、着地したばかりの姿勢)と
+    // 同じ時刻になる。そこまで進めるとキーの間を補間して最後の一瞬だけ姿勢が跳ぶので、1つ手前のキーで止める。
+    constexpr float CLIP_KEY_SECONDS = 0.01f; // クリップは100コマ/秒
+    return turns == 1 ? std::min(recoverTime, secondStart - CLIP_KEY_SECONDS) : recoverTime;
 }
 
 /**

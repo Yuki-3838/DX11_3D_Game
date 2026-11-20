@@ -147,10 +147,14 @@ bool enemy::notifyChargeBlocked()
 	if (!isChargeRunning())
 		return false;
 	// 走りを打ち切って隙へ移る。よろめきの分だけ隙が長くなる(recoverySeconds)。
+	const Combat::EnemyPoseOffset before = getAttackPoseOffset();
+	const float chestBefore = getAttackChestLift();
 	changeState(MotionState::Recovery);
 	m_chargeStunned = true;
 	// よろめきは怯みと同じ動きを使う。顔を背ける向きは毎回入れ替える。
 	m_flinchYawSign = -m_flinchYawSign;
+	// よろめきの姿勢へ切り替えた後で、傾きのつなぎを取り直す。
+	carryPoseFrom(before, chestBefore);
 	return true;
 }
 
@@ -176,7 +180,24 @@ float enemy::getSpinProgress() const
 		static_cast<float>(turns);
 }
 
-void enemy::beginTailSpin(const Vector3& targetPosition)
+float enemy::getTailSpinClipSeconds() const
+{
+	if (m_attackKind != Combat::EnemyAttackKind::TailSpin)
+		return -1.0f;
+	switch (m_motionState)
+	{
+	case MotionState::Windup:
+		return Combat::EnemySpinClipSeconds(0, m_stateTime, windupSeconds(), m_spinHalfTurns);
+	case MotionState::Active:
+		return Combat::EnemySpinClipSeconds(1, m_stateTime, 0.0f, m_spinHalfTurns);
+	case MotionState::Recovery:
+		return Combat::EnemySpinClipSeconds(2, m_stateTime, recoverySeconds(), m_spinHalfTurns);
+	default:
+		return -1.0f;
+	}
+}
+
+void enemy::chooseTailSpinSign(const Vector3& targetPosition)
 {
 	// 尾は正面の反対を向いている。回す向きは「尾がプレイヤーへ早く届く側」を選ぶ。
 	const float tailYawNow = WrapAngle(m_srt.rot.y + PI);
@@ -189,6 +210,15 @@ void enemy::beginTailSpin(const Vector3& targetPosition)
 		m_spinSign = -m_spinSign;
 	else
 		m_spinSign = delta >= 0.0f ? 1.0f : -1.0f;
+	m_spinSignChosen = true;
+}
+
+void enemy::beginTailSpin(const Vector3& targetPosition)
+{
+	// 溜めの始めに決めそびれていたら(溜めを飛ばして入ったときなど)、ここで決める。
+	if (!m_spinSignChosen)
+		chooseTailSpinSign(targetPosition);
+	m_spinSignChosen = false; // 次の尾回転の溜めでまた決める
 	m_spinStartYaw = m_srt.rot.y;
 }
 
@@ -251,7 +281,7 @@ void enemy::requestAttack(float distance, const Vector3& targetPosition)
 		if (m_behindDecisionCounter == 0)
 		{
 			selectNextAttack(distance, true);
-			changeState(MotionState::Windup);
+			enterWindup(targetPosition);
 			return;
 		}
 	}
@@ -262,7 +292,7 @@ void enemy::requestAttack(float distance, const Vector3& targetPosition)
 		return;
 	}
 	selectNextAttack(distance);
-	changeState(MotionState::Windup);
+	enterWindup(targetPosition);
 }
 
 float enemy::moveSpeedScale() const
@@ -415,6 +445,14 @@ SRT enemy::getRenderSRT() const
 	const Combat::EnemyPoseOffset pose = getAttackPoseOffset();
 	renderSrt.rot.x += pose.pitch;
 	renderSrt.rot.y += pose.yaw;
+	// 尾回転のモーションは体の向きの回転(半回転)まで入っている。回っている間と隙の間は、
+	// 物理の向き(当たり判定が見る、回り始めから回った向き)ではなく回り始めの向きで描き、回るのはクリップに任せる。
+	// クリップの回転と物理の向きは、半回転の始めと終わりで同じになるように作ってある。
+	if (s_tailSpinFromClip && m_attackKind == Combat::EnemyAttackKind::TailSpin &&
+		(m_motionState == MotionState::Active || m_motionState == MotionState::Recovery))
+	{
+		renderSrt.rot.y = m_spinStartYaw + pose.yaw;
+	}
 	return renderSrt;
 }
 
@@ -432,6 +470,8 @@ void enemy::init()
 	m_locomotionSpeed = 0.0f;
 	m_motionState = MotionState::Approach;
 	m_stateTime = 0.0f;
+	m_poseCarry = {};
+	m_chestCarry = 0.0f;
 	m_circleDirection = 1.0f;
 }
 
@@ -443,6 +483,12 @@ void enemy::update(uint64_t dt)
 	const Vector3 targetPosition = m_target->getSRT().pos;
 	const float distance = distanceToTarget(targetPosition);
 	m_stateTime += deltaSec;
+	{
+		const float keep = std::exp(-deltaSec / POSE_CARRY_SECONDS);
+		m_poseCarry.pitch *= keep;
+		m_poseCarry.yaw *= keep;
+		m_chestCarry *= keep;
+	}
 	// 予兆から隙までを1本のクリップとして再生するため、攻撃の間はまとめて時間を数える。
 	if (m_motionState == MotionState::Windup ||
 		m_motionState == MotionState::Active ||
@@ -623,7 +669,7 @@ void enemy::update(uint64_t dt)
 		if (facingErrorTo(targetPosition) <= ATTACK_ALIGN_ANGLE)
 		{
 			selectNextAttack(distance);
-			changeState(MotionState::Windup);
+			enterWindup(targetPosition);
 		}
 		else if (m_stateTime >= TURN_TIMEOUT_SECONDS)
 		{
@@ -633,6 +679,8 @@ void enemy::update(uint64_t dt)
 	}
 	case MotionState::Windup:
 	{
+		if (m_attackKind == Combat::EnemyAttackKind::TailSpin && !m_spinSignChosen)
+			chooseTailSpinSign(targetPosition);
 		const float turnRate = windupTurnRate();
 		if (turnRate > 0.0f)
 			faceTarget(targetPosition, deltaSec, turnRate, WINDUP_TURN_SPEED);
@@ -664,8 +712,12 @@ void enemy::update(uint64_t dt)
 			m_srt.rot.y = WrapAngle(m_spinStartYaw + m_spinSign * PI * spin.turnedHalfTurns);
 			// 回りながら少し流れる。踏み込みではないので小さくする。
 			// 止まっている間は動かさない(止まって見せることがこの攻撃の読み合いなので)。
-			if (!spin.pausing)
-				moveInFacingDirection(Combat::Tuning::ENEMY_SPIN_LUNGE_SPEED * deltaSec);
+			// 流れるのは跳んで足が地面から離れている間だけ(着いた足を引きずらないように)。
+			// 流れる距離が変わらないよう、その区間の短さの分だけ速くする。
+			// 専用モーションは軸足を地面に着けたまま回るので流さない(流すと軸足が床を滑る)。
+			if (!s_tailSpinFromClip && !spin.pausing && Combat::EnemySpinHopProgress(spin.segmentT) >= 0.0f)
+				moveInFacingDirection(Combat::Tuning::ENEMY_SPIN_LUNGE_SPEED * deltaSec /
+					(Combat::Tuning::ENEMY_SPIN_HOP_END - Combat::Tuning::ENEMY_SPIN_HOP_START));
 		}
 		else if (m_attackKind == Combat::EnemyAttackKind::Charge)
 		{
@@ -775,12 +827,23 @@ bool enemy::isRoarFromClip() const
 
 bool enemy::isAttackFromClip() const
 {
-	return s_attacksFromClip &&
-		Combat::EnemyAttackUsesAttackClip(m_attackKind) &&
-		currentAttackPhase() != Combat::EnemyAttackPhase::None;
+	if (currentAttackPhase() == Combat::EnemyAttackPhase::None)
+		return false;
+	// 尾回転のモーションがあるモデルは、溜め・回転・隙の形をすべてクリップで見せる。
+	if (s_tailSpinFromClip && m_attackKind == Combat::EnemyAttackKind::TailSpin)
+		return true;
+	return s_attacksFromClip && Combat::EnemyAttackUsesAttackClip(m_attackKind);
 }
 
 Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
+{
+	Combat::EnemyPoseOffset pose = computePoseOffset();
+	pose.pitch += m_poseCarry.pitch;
+	pose.yaw += m_poseCarry.yaw;
+	return pose;
+}
+
+Combat::EnemyPoseOffset enemy::computePoseOffset() const
 {
 	// 撮影・比較用。構えを入れる前の見た目を再現する(dev_settings.ini の enemy_attack_pose=0)。
 	// 怯み・弱り具合の姿勢もまとめて切る。どれも同じ「描画用SRTへ足す演出」で、
@@ -831,6 +894,9 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 	// 尾回転は回る向きで構えが左右反転し、一拍の位置も回転数で変わるので、状態ごと渡す。
 	Combat::EnemyPoseOffset pose = Combat::EnemyAttackPose(
 		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
+	// 足で立たせるモデルの火球は、反る・突き出す傾きを胸へ移す(getAttackChestLift)。全身は傾けない。
+	if (attackTiltGoesToChest())
+		pose.pitch = 0.0f;
 
 	// 弱り具合の姿勢は、攻撃の予兆と攻撃判定の間には足さない。
 	// 息で頭が上下すると構えの形が崩れ、「何が来るか」が読みにくくなるため。
@@ -850,6 +916,32 @@ Combat::EnemyPoseOffset enemy::getAttackPoseOffset() const
 		pose.yaw += condition.yaw;
 	}
 	return pose;
+}
+
+bool enemy::attackTiltGoesToChest() const
+{
+	return s_attackTiltOnChest &&
+		(m_attackKind == Combat::EnemyAttackKind::Fireball || m_attackKind == Combat::EnemyAttackKind::Charge) &&
+		currentAttackPhase() != Combat::EnemyAttackPhase::None && !isChargeStunned();
+}
+
+float enemy::getAttackChestLift() const
+{
+	if (!s_attackPoseEnabled)
+		return 0.0f;
+	return computeChestLift() + m_chestCarry;
+}
+
+float enemy::computeChestLift() const
+{
+	if (!s_attackPoseEnabled || !attackTiltGoesToChest() || isAttackFromClip() || isRoarFromClip())
+		return 0.0f;
+	// 全身の傾き(負で反る)を、同じ向きの胸の上下へ置き換える。胸だけを回すので、全身の傾きより少し小さくても
+	// 頭の上がり下がりは同じくらいに見える(首の構え FIREBALL_NECK_REAR も重なる)。
+	constexpr float CHEST_PER_BODY_PITCH = 0.7f;
+	const Combat::EnemyPoseOffset pose = Combat::EnemyAttackPose(
+		m_attackKind, currentAttackPhase(), m_stateTime, getSpinState());
+	return -pose.pitch * CHEST_PER_BODY_PITCH;
 }
 
 Combat::EnemyTellPose enemy::getAttackTellPose() const
@@ -975,6 +1067,9 @@ Combat::EnemyAttackPhase enemy::currentAttackPhase() const
 void enemy::changeState(MotionState nextState)
 {
 	// 攻撃の始まり(予兆)でだけ、攻撃の経過時間を数え直す。
+	// 切り替わる直前に描いていた傾き(よろめきを解く前に控える)。
+	const Combat::EnemyPoseOffset before = getAttackPoseOffset();
+	const float chestBefore = getAttackChestLift();
 	if (nextState == MotionState::Windup)
 		m_attackElapsed = 0.0f;
 	// よろめきは突進で壁にぶつかった隙の間だけ。ほかの状態へ移ったら解く。
@@ -983,6 +1078,23 @@ void enemy::changeState(MotionState nextState)
 	m_brakingForAttack = false;
 	m_motionState = nextState;
 	m_stateTime = 0.0f;
+	carryPoseFrom(before, chestBefore);
+}
+
+void enemy::carryPoseFrom(const Combat::EnemyPoseOffset& before, float chestBefore)
+{
+	// 直前の傾きと、今の状態の最初の傾きの差を控え、update で短く0へ戻す。
+	const Combat::EnemyPoseOffset after = computePoseOffset();
+	m_poseCarry.pitch = before.pitch - after.pitch;
+	m_poseCarry.yaw = WrapAngle(before.yaw - after.yaw);
+	m_chestCarry = chestBefore - computeChestLift();
+}
+
+void enemy::enterWindup(const Vector3& targetPosition)
+{
+	changeState(MotionState::Windup);
+	if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
+		chooseTailSpinSign(targetPosition);
 }
 
 float enemy::distanceToTarget(const Vector3& targetPosition) const

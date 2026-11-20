@@ -55,6 +55,8 @@ namespace EnemyPreload
         load(profile.roarClip, "roar");
         load(profile.turnLeftClip, "turn_left");
         load(profile.turnRightClip, "turn_right");
+        load(profile.tailSpinLeftClip, "tail_spin_left");
+        load(profile.tailSpinRightClip, "tail_spin_right");
         load(profile.damageClip, "damage");
         load(profile.threatClip, "threat");
         load(profile.weakWalkClip, "weak_walk");

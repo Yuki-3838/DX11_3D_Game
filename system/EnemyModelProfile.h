@@ -130,6 +130,13 @@ struct EnemyModelProfile
     /// 踏み替えのクリップを1倍で再生したときに見合う回る速さ(度/秒)。実際に回っている速さから再生の速さを決める。
     float turnClipDegreesPerSecond = 60.0f;
     /**
+     * 尾回転のモーション(左回り・右回り)。溜め・半回転・一拍・隙を1本にまとめ、体の向きの回転(半回転)も入っている。
+     * 区切りの並びは Combat::EnemySpinClipSeconds を参照。tools/blender_make_wyvern_tail_spin.py で作る。
+     * 空(またはファイルが無い)なら、待機の立ち姿勢を手続きで回し、足を IK で運ぶ従来のやり方になる。
+     */
+    std::string tailSpinLeftClip;
+    std::string tailSpinRightClip;
+    /**
      * 立ち止まっている間(隙・予兆・怯みなど)に待機のクリップをループで流すか。
      * false なら待機の最初のコマで止める(Cethiel は待機の途中で上体を起こして後ろ足が浮き、影が離れるため)。
      * 止めたままだと剥製のように固まって見えるので、足が浮かない待機のあるモデルは true にする。
@@ -404,6 +411,9 @@ inline const EnemyModelProfile& GetWyvernProfile()
         p.turnLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_left.fbx";
         p.turnRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_right.fbx";
         p.turnClipDegreesPerSecond = 60.0f;
+        // 尾回転は買ったクリップに無いので、Blender で骨ごとに動きを付けて作った(tools/blender_make_wyvern_tail_spin.py)。
+        p.tailSpinLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_TailSpin_L.fbx";
+        p.tailSpinRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_TailSpin_R.fbx";
         // Damage(0.53秒): 体が沈み、頭が跳ね上がり、尾が振れる。足は地面に着いたまま。
         p.damageClip = "assets/model/Wyvern/anim/Anim_Wyvern_Damage.fbx";
         // Scream2(3.5秒): 前半身を起こして頭を地面へ叩きつけるようにうなり、頭を左右に振って威嚇する。

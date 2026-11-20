@@ -1027,6 +1027,40 @@ void GameScene::update(uint64_t deltatime)
 		deltatime = static_cast<uint64_t>(static_cast<double>(deltatime) * BattleFinishTimeScale());
 	}
 	const bool battleFinishing = m_battleFinish != BattleFinish::None;
+	// カメラは調整用のスローをかけない時間で動かす(遅くしても視点はふつうに回せるように)。
+	const float cameraDeltaSeconds = std::clamp(static_cast<float>(deltatime) * 0.000001f, 0.0f, 0.1f);
+	// 調整用: 動きをゆっくり・止めて見る。devmode のときだけ効く(提出用の起動では押しても何も起きない)。
+	bool debugTimeStepping = false;
+	if (DebugUI::IsGameplayDefaultVisible() && !ImGui::GetIO().WantTextInput)
+	{
+		if (input.IsKeyTriggered(DIK_F7))
+		{
+			static constexpr float SCALES[] = { 1.0f, 0.5f, 0.25f, 0.1f };
+			int next = 0;
+			for (int i = 0; i < 4; ++i)
+				if (m_debugTimeScale >= SCALES[i] - 0.001f) { next = (i + 1) % 4; break; }
+			m_debugTimeScale = SCALES[next];
+		}
+		if (input.IsKeyTriggered(DIK_F8))
+			m_debugTimeFrozen = !m_debugTimeFrozen;
+		if (input.IsKeyTriggered(DIK_F9))
+		{
+			m_debugTimeFrozen = true;
+			m_debugStepRequested = true;
+		}
+	}
+	if (m_debugTimeFrozen && m_debugStepRequested)
+	{
+		// 1コマ = 1/60秒ぶん進める(遅くする倍率はかけない。コマ送りは1コマずつ見るためのもの)。
+		debugTimeStepping = true;
+		m_debugStepRequested = false;
+		deltatime = 16667;
+	}
+	else if (m_debugTimeScale < 0.999f)
+	{
+		deltatime = static_cast<uint64_t>(static_cast<double>(deltatime) * m_debugTimeScale);
+	}
+	const bool debugTimeHeld = m_debugTimeFrozen && !debugTimeStepping;
 	const float deltaSeconds = std::clamp(static_cast<float>(deltatime) * 0.000001f, 0.0f, 0.1f);
 	// 視点操作。フロム作品(PC版)と同じく、マウスを動かすだけでカメラが回る。
 	// そのためカーソルをゲーム画面に閉じ込めて隠す。デバッグ表示を触るときは左Altでカーソルを出す。
@@ -1046,7 +1080,7 @@ void GameScene::update(uint64_t deltatime)
 		DebugUI::SetCursorVisible(true);
 		return;
 	}
-	if (!m_enemyIntroActive)
+	if (!m_enemyIntroActive && !debugTimeHeld)
 		m_battleSeconds += realDeltaSeconds;
 	// 調整・撮影用: lockon_at で、戦闘開始から指定の秒数でロックオンする。
 	// auto_lockon は開始と同時なので、カメラが敵を向いたまま回らない。回り込む動きを確かめるときに使う。
@@ -1102,6 +1136,14 @@ void GameScene::update(uint64_t deltatime)
 	if (m_timelineEditor.IsOpen())
 	{
 		UpdateTimelineEditor(deltaSeconds);
+		return;
+	}
+	// 調整用の停止中は、カメラだけ動かして残りの更新を通さない(止めた姿勢を回り込んで見る)。
+	// 時間を0で進めると、移動量を時間で割る処理があちこちにあるため、更新そのものを止める。
+	if (debugTimeHeld)
+	{
+		if (!battleFinishing)
+			UpdateGameplayCamera(cameraDeltaSeconds);
 		return;
 	}
 	// ゲームの操作はGameInput(仮想コントローラー)から「行動」として受け取る。
@@ -1623,7 +1665,7 @@ void GameScene::update(uint64_t deltatime)
 	{
 		UpdateCombatCameraDistance(deltaSeconds);
 		UpdateArenaCameraCollision();
-		UpdateGameplayCamera(deltaSeconds);
+		UpdateGameplayCamera(cameraDeltaSeconds);
 	}
 	if (m_playerAnimationMesh && m_player)
 	{
@@ -1911,7 +1953,9 @@ void GameScene::BeginBattleFinish(bool victory)
 				(m_localEnemyMeshBounds.min + m_localEnemyMeshBounds.max) * 0.5f;
 			m_finishFocusOffset = Vector3::Transform(localCenter, render.GetMatrix()) - foe->getSRT().pos;
 			// 低めを見る。手前に立っているプレイヤーの足元が画面の下で切れないように。
-			m_finishFocusOffset.y = std::clamp(m_finishFocusOffset.y, 6.0f, 14.0f);
+			// ただし大きな敵は、体の高さの4割ほどを見る(足元を見ると、立ち上がった頭と翼が画面の上で切れる)。
+			m_finishFocusOffset.y = std::max(std::clamp(m_finishFocusOffset.y, 6.0f, 14.0f),
+				0.4f * MeasureEnemyFinishExtents(*foe).y);
 		}
 		m_camera.TriggerShake(3.4f, 0.90f);
 		// 発光の残り時間は遅い時間で減るので短めにする(0.2だと約1秒も金色のままで、倒れる動きが読めなかった)。
@@ -1956,36 +2000,75 @@ void GameScene::BeginBattleFinish(bool victory)
 		const float z = pivot.z + std::cosf(yaw) * distance;
 		return x * x + z * z <= FINISH_CAMERA_SAFE_RADIUS * FINISH_CAMERA_SAFE_RADIUS;
 	};
+	m_finishVictoryDistance = FINISH_VICTORY_CAMERA_DISTANCE;
+	m_finishVictoryHeight = 26.0f;
 	if (victory && foe)
 	{
-		// ドラゴンは自分の左側へ首を投げ出して倒れる(撮影で確認)。首の向きと同じ方角にカメラがあると、
-		// 頭が手前へ伸びて画面の下で切れた。体の真正面か真後ろ(首が画面の横へ伸びる位置)のうち、
-		// 今のカメラに近いほうへ回り込む。そちらが壁の外なら、もう一方を使う。
+		// 討伐は、倒れていく敵の全身(頭から尾の先、立ち上がった頭と翼まで)が入るように、斜め前の高い所へ引いて映す。
+		// 以前は敵の大きさによらず115の距離で足元の高さを見ていたので、大きな敵(Wyvern は頭から尾まで約130、
+		// 断末魔で立ち上がると頭が約55まで上がる)では画面いっぱいに体が映り、頭・尾・翼が画面の外へ切れていた。
+		// 候補は体の斜め前(左右)・真横(左右)・斜め後ろ(左右)。闘技場の内側に収まるもののうち、今のカメラに近い方角を使う。
 		const float foeYaw = foe->getSRT().rot.y;
-		float closerDelta = wrapAngle(foeYaw + PI - m_finishCameraYaw);
-		float otherDelta = wrapAngle(foeYaw - m_finishCameraYaw);
-		if (std::abs(otherDelta) < std::abs(closerDelta))
-			std::swap(closerDelta, otherDelta);
-		m_finishCameraOrbitDelta =
-			fitsInArena(m_finishCameraYaw + closerDelta, FINISH_VICTORY_CAMERA_DISTANCE) ? closerDelta : otherDelta;
-	}
-	else if (foe)
-	{
-		// 敵の反対側から映す(プレイヤーの向こうに敵が立つ構図)。今のカメラのままだと、
-		// 追いかけてきた敵の体がカメラとプレイヤーの間へ入り、倒れるところが隠れた(撮影で確認)。
-		// 壁際で真後ろが壁の外になるときは、壁に沿う向きへ少しずつずらす。
-		const Vector3 fromFoe = m_player->getSRT().pos - foe->getSRT().pos;
-		const float awayYaw = std::atan2(fromFoe.x, fromFoe.z);
-		float chosen = awayYaw;
-		for (const float offset : { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f, 1.8f, -1.8f })
+		const float frontYaw = foeYaw + PI; // 敵の正面にカメラを置く向き
+		const Vector3 size = MeasureEnemyFinishExtents(*foe);
+		constexpr float HALF_FOV_Y = DirectX::XMConvertToRadians(45.0f) * 0.5f;
+		const float tanHalfY = std::tan(HALF_FOV_Y);
+		const float aspect = static_cast<float>(Application::GetWidth()) /
+			static_cast<float>(std::max(1u, static_cast<unsigned>(Application::GetHeight())));
+		const auto distanceFor = [&](float viewFromFront)
 		{
-			if (fitsInArena(awayYaw + offset, FINISH_DEFEAT_CAMERA_DISTANCE_END))
+			// 横から見える幅と、奥行き(手前へ出る分だけカメラを離す)。
+			const float s = std::abs(std::sinf(viewFromFront));
+			const float c = std::abs(std::cosf(viewFromFront));
+			const float seenWidth = size.x * s + size.z * c;
+			const float seenDepth = size.x * c + size.z * s;
+			const float fitWidth = 0.5f * seenWidth * 1.15f / (tanHalfY * aspect);
+			// 断末魔で立ち上がる分を見込んで、高さには余裕を多めに取る。
+			const float fitHeight = 0.5f * size.y * 1.6f / tanHalfY;
+			// 手前へ出る部分(斜めから見た頭や尾)が近すぎないよう、奥行きの4分の1だけ離す。
+			return std::max(FINISH_VICTORY_CAMERA_DISTANCE, std::max(fitWidth, fitHeight) + 0.25f * seenDepth);
+		};
+		constexpr float THREE_QUARTER = 0.96f; // 正面から約55度
+		const float candidates[] = {
+			THREE_QUARTER, -THREE_QUARTER, PI * 0.5f, -PI * 0.5f, PI - THREE_QUARTER, -(PI - THREE_QUARTER) };
+		float bestDelta = 0.0f;
+		float bestScore = (std::numeric_limits<float>::max)();
+		for (const float fromFront : candidates)
+		{
+			const float yaw = frontYaw + fromFront;
+			const float distance = distanceFor(fromFront);
+			const float delta = wrapAngle(yaw - m_finishCameraYaw);
+			// 壁の外へ出る候補は、出る量に応じて大きく減点する(全部出るときは一番出ないもの)。
+			const float x = pivot.x + std::sinf(yaw) * distance;
+			const float z = pivot.z + std::cosf(yaw) * distance;
+			const float overflow = std::max(0.0f, std::sqrt(x * x + z * z) - FINISH_CAMERA_SAFE_RADIUS);
+			const float score = overflow * 100.0f + std::abs(delta);
+			if (score < bestScore)
 			{
-				chosen = awayYaw + offset;
-				break;
+				bestScore = score;
+				bestDelta = delta;
+				m_finishVictoryDistance = distance;
 			}
 		}
-		m_finishCameraOrbitDelta = wrapAngle(chosen - m_finishCameraYaw);
+		m_finishCameraOrbitDelta = bestDelta;
+		// 少し見下ろす(約17度)。体の重なりがほどけ、倒れた体の全体の形が読める。
+		m_finishVictoryHeight = m_finishVictoryDistance * 0.3f;
+		LogStartup(("game: finish camera size " + std::to_string(size.x) + " x " + std::to_string(size.y) +
+			" x " + std::to_string(size.z) + " distance " + std::to_string(m_finishVictoryDistance)).c_str());
+	}
+	else
+	{
+		// 力尽きた: モンハン(初期作〜MHXX)と同じく、倒れたハンターを画面の中央に映したまま、
+		// 渦を巻くようにゆっくり回り込みながら上へ引いていく。回る向きはふだん反時計回りで、
+		// 引き終わりのカメラが闘技場の壁の外へ出るときだけ時計回りにする。
+		// 以前は敵の反対側へ回り込み、すぐに真上近くから見下ろしていた(3.6秒で暗転)。
+		const auto endOutside = [&](float sign)
+		{
+			const float yaw = m_finishCameraYaw + sign * FINISH_DEFEAT_SPIN_SPEED * FINISH_DEFEAT_FADE_START;
+			return !fitsInArena(yaw, FINISH_DEFEAT_CAMERA_DISTANCE_END);
+		};
+		m_finishDefeatSpinSign = (endOutside(-1.0f) && !endOutside(1.0f)) ? 1.0f : -1.0f;
+		m_finishCameraOrbitDelta = 0.0f;
 	}
 }
 
@@ -2079,20 +2162,25 @@ void GameScene::UpdateBattleFinishCamera(float realDeltaSeconds)
 	if (victory && foe)
 	{
 		// 倒れていく敵を、低い位置からゆっくり回り込んで映す。
+		// 回り込みながら、ゆっくり少しだけ引いていく(倒れ切って静まる間も画が止まらないように)。
 		focus = foe->getSRT().pos + m_finishFocusOffset;
-		distance = FINISH_VICTORY_CAMERA_DISTANCE;
-		height = 26.0f;
+		const float drift = 1.0f + 0.08f * smooth(m_battleFinishTime / FINISH_VICTORY_FADE_START);
+		distance = m_finishVictoryDistance * drift;
+		height = m_finishVictoryHeight * drift;
 		orbit = m_finishCameraOrbitDelta * smooth(m_battleFinishTime / 2.0f) + 0.04f * m_battleFinishTime;
 	}
 	else
 	{
-		// 倒れたプレイヤーへ寄ってから、ゆっくり上へ引いて小さく見せる。
-		const float pull = smooth(m_battleFinishTime / FINISH_DEFEAT_FADE_START);
+		// 倒れたハンターを中央に置いたまま、回り込みながら上へ引いていく(引き始めは速く、だんだんゆっくり)。
+		const float t = std::clamp(m_battleFinishTime / (FINISH_DEFEAT_FADE_START + FINISH_FADE_SECONDS), 0.0f, 1.0f);
+		const float pull = 1.0f - (1.0f - t) * (1.0f - t);
 		focus = m_player->getSRT().pos;
-		focus.y = ARENA_FLOOR_TOP_Y + 14.0f - 8.0f * pull;
-		distance = 44.0f + (FINISH_DEFEAT_CAMERA_DISTANCE_END - 44.0f) * pull;
-		height = 20.0f + 30.0f * pull;
-		orbit = m_finishCameraOrbitDelta * smooth(m_battleFinishTime / 1.2f) + 0.05f * m_battleFinishTime;
+		focus.y = ARENA_FLOOR_TOP_Y + 6.0f - 3.0f * pull;
+		distance = FINISH_DEFEAT_CAMERA_DISTANCE_START +
+			(FINISH_DEFEAT_CAMERA_DISTANCE_END - FINISH_DEFEAT_CAMERA_DISTANCE_START) * pull;
+		height = FINISH_DEFEAT_CAMERA_HEIGHT_START +
+			(FINISH_DEFEAT_CAMERA_HEIGHT_END - FINISH_DEFEAT_CAMERA_HEIGHT_START) * pull;
+		orbit = m_finishDefeatSpinSign * FINISH_DEFEAT_SPIN_SPEED * m_battleFinishTime;
 	}
 	const float yaw = m_finishCameraYaw + orbit;
 	Vector3 position = focus + Vector3(std::sinf(yaw) * distance, height, std::cosf(yaw) * distance);
@@ -2105,10 +2193,37 @@ void GameScene::UpdateBattleFinishCamera(float realDeltaSeconds)
 	}
 	// 決着の瞬間のカメラから、演出の構図へつなぐ。
 	const float blend = smooth(m_battleFinishTime / 1.2f);
-	m_camera.SetCinematicViewWithShake(
-		Vector3::Lerp(m_finishCameraStartPosition, position, blend),
-		Vector3::Lerp(m_finishCameraStartLookat, focus, blend),
-		realDeltaSeconds);
+	const Vector3 cameraPosition = Vector3::Lerp(m_finishCameraStartPosition, position, blend);
+	const Vector3 cameraLookat = Vector3::Lerp(m_finishCameraStartLookat, focus, blend);
+	m_camera.SetCinematicViewWithShake(cameraPosition, cameraLookat, realDeltaSeconds);
+}
+
+Vector3 GameScene::MeasureEnemyFinishExtents(const enemy& foe) const
+{
+	// 休止姿勢のメッシュの箱(ローカル)の8つの角を、描画の行列でワールドへ移し、体の前後・左右・上下の幅を測る。
+	const Vector3& lo = m_localEnemyMeshBounds.min;
+	const Vector3& hi = m_localEnemyMeshBounds.max;
+	if (lo == hi)
+		return Vector3(0.0f, 0.0f, 0.0f);
+	const Matrix4x4 world = foe.getRenderSRT().GetMatrix();
+	const float yaw = foe.getSRT().rot.y;
+	// 敵の正面の向き(enemy::angleToTarget と同じ取り方)と、右の向き。
+	const Vector3 forward(-std::sinf(yaw), 0.0f, -std::cosf(yaw));
+	const Vector3 right(std::cosf(yaw), 0.0f, -std::sinf(yaw));
+	float minF = (std::numeric_limits<float>::max)(), maxF = -minF;
+	float minR = minF, maxR = -minF, minY = minF, maxY = -minF;
+	for (int corner = 0; corner < 8; ++corner)
+	{
+		const Vector3 local(
+			(corner & 1) ? hi.x : lo.x,
+			(corner & 2) ? hi.y : lo.y,
+			(corner & 4) ? hi.z : lo.z);
+		const Vector3 p = Vector3::Transform(local, world);
+		minF = std::min(minF, p.Dot(forward)); maxF = std::max(maxF, p.Dot(forward));
+		minR = std::min(minR, p.Dot(right)); maxR = std::max(maxR, p.Dot(right));
+		minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+	}
+	return Vector3(maxF - minF, maxY - minY, maxR - minR);
 }
 
 void GameScene::DrawBattleFinishOverlay()
@@ -2833,6 +2948,10 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	aiAnimation* const attackAnimation = EnemyAttackAnimationFor(attackKind);
 	const EnemyAttackClipBinding* const attackBinding = EnemyAttackBindingFor(attackKind);
 	const bool tailSpinAttack = inAttack && attackKind == Combat::EnemyAttackKind::TailSpin;
+	// 尾回転の専用モーション(あるモデルだけ)。回る向きに合わせて左回り・右回りを選ぶ。
+	aiAnimation* const tailSpinClip = tailSpinAttack && m_enemies.front()->getTailSpinClipSeconds() >= 0.0f
+		? m_enemyTailSpinAnimations[m_enemies.front()->getSpinSign() > 0.0f ? 0 : 1]
+		: nullptr;
 	// 攻撃クリップを使わない攻撃(尾回転・火球・突進)。立ち姿勢か歩きに、首や尾の構えを重ねて見せる。
 	// 火球は上を向いて吐き、突進は走るので、頭を地面へ振り下ろす攻撃クリップとは形が合わない。
 	const bool nonClipAttack = inAttack && !Combat::EnemyAttackUsesAttackClip(attackKind);
@@ -2877,6 +2996,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAttackBlendFromAnimation = m_enemyLastSampledAnimation;
 			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
 			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+			CaptureEnemyBlendFromPose();
 			m_enemyAttackBlendTime = 0.0f;
 			m_enemyAttackBlendDuration = ENEMY_FINISH_BLEND_SECONDS;
 			m_enemyAttackBlendActive = true;
@@ -2913,6 +3033,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				: (m_enemyIdleAnimation != nullptr ? m_enemyIdleAnimation : m_enemyWalkAnimation);
 			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
 			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+			CaptureEnemyBlendFromPose();
 			m_enemyAttackBlendTime = 0.0f;
 			m_enemyAttackBlendDuration = ENEMY_ATTACK_BLEND_SECONDS;
 			m_enemyAttackBlendActive = m_enemyAttackBlendFromAnimation != nullptr;
@@ -3063,6 +3184,20 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAnimationFrame = static_cast<int>(keyPosition);
 			m_enemyAnimationTick = keyPosition - std::floor(keyPosition);
 		}
+	}
+	else if (!m_enemyIntroActive && tailSpinClip != nullptr)
+	{
+		// 尾回転は専用のモーション(溜め・半回転・一拍・隙を1本にまとめたもの)を時刻で流す。
+		// 体の向きの回転もクリップに入っているので、描画の向きは回り始めの向きのまま(enemy::getRenderSRT)。
+		holdStandingPose = false;
+		timeDrivenClip = true;
+		animation = tailSpinClip;
+		const double ticksPerSecond = animation->mTicksPerSecond > 0.0 ? animation->mTicksPerSecond : 30.0;
+		const float lastKey = static_cast<float>(EnemyClipKeyCount(animation)) - 1.0f;
+		const float keyPosition = std::clamp(
+			m_enemies.front()->getTailSpinClipSeconds() * static_cast<float>(ticksPerSecond), 0.0f, lastKey);
+		m_enemyAnimationFrame = static_cast<int>(keyPosition);
+		m_enemyAnimationTick = keyPosition - std::floor(keyPosition);
 	}
 	else if (!m_enemyIntroActive)
 	{
@@ -3221,6 +3356,36 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyAnimationTick = 0.0f;
 	}
 
+	// 尾回転のモーションから抜けるとき。回った後(判定・隙)のクリップの姿勢は体が半回転した向きなので、
+	// そこからつなぐと、描画の向き(抜けた瞬間に回った後の向きへ移る)と二重に回り、つなぎの間だけ体がぐるりと回る。
+	// 隙の終わりは待機の最初のコマを半回転させた姿勢にしてあるので、つなぎの始まりを待機の最初のコマに差し替える。
+	{
+		const bool tailSpinTurned = tailSpinClip != nullptr && animation == tailSpinClip &&
+			(state == enemy::MotionState::Active || state == enemy::MotionState::Recovery);
+		const bool tailSpinClipNow = tailSpinClip != nullptr && animation == tailSpinClip;
+		if (m_enemyTailSpinClipWasActive && !tailSpinClipNow)
+		{
+			const auto isSpinClip = [this](const aiAnimation* clip)
+			{
+				return clip != nullptr && (clip == m_enemyTailSpinAnimations[0] || clip == m_enemyTailSpinAnimations[1]);
+			};
+			if (isSpinClip(m_enemyLastSampledAnimation) && m_enemyIdleAnimation != nullptr)
+			{
+				m_enemyLastSampledAnimation = m_enemyIdleAnimation;
+				m_enemyLastSampledFrame = 0;
+				m_enemyLastSampledFraction = 0.0f;
+				// 画面の姿勢(回った後の向きのクリップ)ではなく、待機の最初のコマからつなぐ。
+				m_enemyLastPoseUsableAsBlendFrom = false;
+			}
+			if (isSpinClip(m_enemyAttackBlendFromAnimation))
+			{
+				m_enemyAttackBlendActive = false;
+				m_enemyGenericBlend = false;
+			}
+		}
+		m_enemyTailSpinClipWasActive = tailSpinTurned;
+	}
+
 	// 時刻で再生位置を決めるクリップ(羽ばたき・咆哮)に入る・出るときは、直前の姿勢から短くつなぐ。
 	// つながないと、着地の瞬間(羽ばたき→咆哮)や吠え終わり(咆哮→歩き)で姿勢が飛ぶ。
 	bool clipSwitchBlendStarted = false;
@@ -3235,6 +3400,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyAttackBlendFromAnimation = m_enemyLastSampledAnimation;
 			m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
 			m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+			CaptureEnemyBlendFromPose();
 			m_enemyAttackBlendTime = 0.0f;
 			// 殴られたのけぞりは一瞬でつなぐ(ゆっくりつなぐと、効いていないように見える)。
 			m_enemyAttackBlendDuration = animation == m_enemyDamageAnimation
@@ -3283,6 +3449,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyAttackBlendFromAnimation = m_enemyLastSampledAnimation;
 		m_enemyAttackBlendFromFrame = m_enemyLastSampledFrame;
 		m_enemyAttackBlendFromFraction = m_enemyLastSampledFraction;
+		CaptureEnemyBlendFromPose();
 		m_enemyAttackBlendTime = 0.0f;
 		m_enemyAttackBlendDuration = tailSpinAttack && state == enemy::MotionState::Active
 			? ENEMY_SPIN_LEG_BLEND_SECONDS
@@ -3341,17 +3508,32 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				animation == m_enemyTurnLeftAnimation || animation == m_enemyTurnRightAnimation ||
 				(animation == m_enemyWeakWalkAnimation && animation != nullptr) ||
 				(animation == m_enemyIdleAnimation && loopIdle);
-			m_enemyAnimationMesh->UpdateBlendedRotationAnimation(
-				m_enemyBoneComb,
-				m_enemyAttackBlendFromAnimation,
-				m_enemyAttackBlendFromFrame,
-				m_enemyAttackBlendFromFraction,
-				true,
-				animation,
-				m_enemyAnimationFrame,
-				fraction,
-				loopTarget,
-				blendRate);
+			if (m_enemyAttackBlendFromPoseValid)
+			{
+				m_enemyAnimationMesh->UpdateBlendedRotationAnimation(
+					m_enemyBoneComb,
+					m_enemyAttackBlendFromPose,
+					animation,
+					m_enemyAnimationFrame,
+					fraction,
+					loopTarget,
+					blendRate);
+			}
+			else
+			{
+				m_enemyAnimationMesh->UpdateBlendedRotationAnimation(
+					m_enemyBoneComb,
+					m_enemyAttackBlendFromAnimation,
+					m_enemyAttackBlendFromFrame,
+					m_enemyAttackBlendFromFraction,
+					true,
+					animation,
+					m_enemyAnimationFrame,
+					fraction,
+					loopTarget,
+					blendRate);
+			}
+			m_enemyLastPoseUsableAsBlendFrom = true;
 			m_enemyAttackBlendTime += std::max(deltaSeconds, 0.0f);
 			if (m_enemyAttackBlendTime >= m_enemyAttackBlendDuration)
 			{
@@ -3367,11 +3549,13 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			m_enemyLastSampledFraction = fraction;
 			m_enemyAnimationMesh->Update(m_enemyBoneComb, m_enemyAnimationFrame,
 				fraction, !holdRecoveryPose);
+			m_enemyLastPoseUsableAsBlendFrom = true;
 		}
 	}
 	else
 	{
 		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
+		m_enemyLastPoseUsableAsBlendFrom = false;
 	}
 	// 攻撃ごとのシルエット。クリップの姿勢の上から首・あご・尾・前脚を回し、
 	// 3種類の攻撃を遠目にも見分けられるようにする(接地の計算より前に済ませる)。
@@ -3385,6 +3569,8 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		tellPose.frontLegLift = 0.0f;
 	// 首でハンターを目で追い、尾は回転に遅れてついてくる(攻撃の構えの間は効かない)。
 	AddEnemySecondaryMotion(tellPose, deltaSeconds);
+	// 足で立たせるモデルの火球は、全身を傾ける代わりに胸を上下させる(前足は下の IK で地面に残す)。
+	tellPose.chestHeave += m_enemies.front()->getAttackChestLift();
 	ApplyEnemyTellPose(tellPose);
 	// 息づかいで胸を持ち上げた分だけ、前足も一緒に浮いてしまう。前足のつま先を、胸を動かす前の位置へ
 	// 脚のIKで戻す(肩が上がって脚が伸び、足は地面に残る)。胸が上下して見えるのはこのため。
@@ -3421,12 +3607,31 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	// 尾回転の間は、地面に着いた足をその場に留め、離れすぎたら踏み替える(足が床を滑らないように)。
 	// 溜め(尾を寄せて体をひねる)の間も、体の向きが変わるので固定する。
 	// 勢いよく回っている間(半回転と半回転の間の一拍を除く)は前足を浮かせ、後ろ足を軸に回る。
-	ApplyEnemyFootPlant(
-		m_enemyFootPlantEnabled && tailSpinAttack && !enemyDead &&
-			(state == enemy::MotionState::Windup || state == enemy::MotionState::Active),
-		state == enemy::MotionState::Active && m_enemies.front()->isTailSpinning() &&
-			!m_enemies.front()->isTailSpinPausing(),
-		deltaSeconds);
+	// 半回転の速い所では軽く跳んで、4本とも地面から離して空中で回る(足を着けたまま回すと床の上で足が回る)。
+	{
+		float hopProgress = -1.0f;
+		const bool spinning = state == enemy::MotionState::Active && m_enemies.front()->isTailSpinning() &&
+			!m_enemies.front()->isTailSpinPausing();
+		// 尾回転の専用モーションがあるときは、足の運び(地面に留める・跳ぶ)もクリップに入っているので使わない。
+		const bool spinFromClip = tailSpinClip != nullptr;
+		if (m_enemyFootPlantEnabled && spinning && !enemyDead && !spinFromClip)
+		{
+			const Combat::EnemySpinPhase spin = Combat::EnemySpinPhaseAt(
+				m_enemies.front()->getStateTime(), m_enemies.front()->getSpinState().halfTurns);
+			hopProgress = Combat::EnemySpinHopProgress(spin.segmentT);
+		}
+		// 跳ぶ高さ(ワールドの長さ)。放物線で上がって下りる。高く跳ぶと尾を振る攻撃ではなく跳びはねに見える。
+		constexpr float ENEMY_SPIN_HOP_HEIGHT = 3.0f;
+		m_enemyHopOffsetY = hopProgress >= 0.0f
+			? ENEMY_SPIN_HOP_HEIGHT * 4.0f * hopProgress * (1.0f - hopProgress)
+			: 0.0f;
+		ApplyEnemyFootPlant(
+			m_enemyFootPlantEnabled && tailSpinAttack && !enemyDead && !spinFromClip &&
+				(state == enemy::MotionState::Windup || state == enemy::MotionState::Active),
+			spinning,
+			hopProgress,
+			deltaSeconds);
+	}
 	// 敵の静的AABBだけでは、スキニングで脚や胴が沈んだ姿勢のときに
 	// 実頂点の最下点を拾えない。描画専用の接地オフセットだけを現在姿勢に
 	// 合わせ、物理で使う敵のワールドSRTは変更しない。
@@ -3453,6 +3658,14 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			!(m_enemyIntroActive && m_enemyIntroTime < m_enemyProfile->introFallSeconds);
 		// 足を留めている間に、地面に着いた足が1本も無い(全部持ち上げている)ときは、体の高さを前の更新のまま保つ。
 		bool holdGroundOffset = false;
+		// 尾回転の専用モーションは、地面に着いた足を待機の立ち姿勢の足の高さ(床)に置いて作ってある。
+		// 一番低い足に合わせ直すと、持ち上げている足が一番低いときに体ごと上下するので、立ち姿勢の高さで描く。
+		// 以前は「モーションに入る前の高さ」を保っていたが、入る前の歩き・向き直りで体が少し上がっていると、
+		// その分だけ溜め・回転・隙の間ずっと4本の足が床から浮いていた(記録で 1.3〜2)。
+		// 直前の歩きなどからつないでいる間は、つなぎ途中の姿勢の足が立ち姿勢の高さに無いので、ふだんどおり一番低い足を床に合わせる
+		// (つなぎ終わりはモーションの最初のコマ = 待機の立ち姿勢なので、どちらで合わせても同じ高さになる)。
+		const bool standOnClipGround = tailSpinClip != nullptr && m_enemyStandingGroundOffsetValid &&
+			!m_enemyAttackBlendActive;
 		if (standsOnFeet)
 		{
 			float footLowest = (std::numeric_limits<float>::max)();
@@ -3463,7 +3676,7 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			{
 				for (const EnemyPlantedFoot& planted : m_enemyPlantedFeet)
 					anyPlanted = anyPlanted || (planted.planted && planted.air <= 0.0f);
-				holdGroundOffset = !anyPlanted && m_enemyHeldGroundOffsetValid;
+				holdGroundOffset = holdGroundOffset || (!anyPlanted && m_enemyHeldGroundOffsetValid);
 			}
 			for (int footIndex = 0; footIndex < 4; ++footIndex)
 			{
@@ -3493,11 +3706,31 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 					m_enemyGroundSinkBone = m_enemyAnimationMesh->GetLastLowestBoneName();
 			}
 		}
-		const float visualGroundOffsetY = holdGroundOffset
+		float groundOffsetY = standOnClipGround
+			? m_enemyStandingGroundOffsetY
+			: holdGroundOffset
 			? m_enemyHeldGroundOffsetY
 			: enemyGroundY - lowestHeight * m_enemyModelScale;
-		m_enemyHeldGroundOffsetY = visualGroundOffsetY;
+		// 走り(Wyvern の Run)は、1歩ごとに4本の足が全部宙に浮く瞬間(跳ぶ間)がある。
+		// 一番低い足を床に合わせると、跳んでいる間も体を床まで引き下ろすので、着く足が替わるたびに
+		// 体が1フレームで5〜7上下し、突進・近づく走りががくがくして見えた(記録で後ろ足が1フレームに20跳ねた)。
+		// 走りのクリップの足は、床に着いている間は待機と同じ高さにあるので、走っている間は
+		// 立ち姿勢の高さ(クリップの高さ)より下へは引き下ろさない(足が床へ入る向きにだけ持ち上げる)。
+		// 歩き↔走りのつなぎで切り替えの段が出ないよう、効き目は0.2秒かけて出し入れする。
+		{
+			const bool runClipNow = standsOnFeet && m_enemyStandingGroundOffsetValid &&
+				m_enemyRunAnimation != nullptr && animation == m_enemyRunAnimation;
+			const float step = std::max(deltaSeconds, 0.0f) / 0.2f;
+			m_enemyRunGroundWeight = std::clamp(
+				m_enemyRunGroundWeight + (runClipNow ? step : -step), 0.0f, 1.0f);
+			if (!standOnClipGround && !holdGroundOffset && m_enemyRunGroundWeight > 0.0f)
+				groundOffsetY += m_enemyRunGroundWeight *
+					std::max(0.0f, m_enemyStandingGroundOffsetY - groundOffsetY);
+		}
+		m_enemyHeldGroundOffsetY = groundOffsetY;
 		m_enemyHeldGroundOffsetValid = true;
+		// 尾回転で跳んでいる間は、その分だけ体を持ち上げる(保つ高さには含めない)。
+		const float visualGroundOffsetY = groundOffsetY + m_enemyHopOffsetY;
 		for (const auto& enemyObject : m_enemies)
 		{
 			if (enemyObject)
@@ -3647,6 +3880,14 @@ void GameScene::MeasureEnemyFootClearance()
 		{
 			footLowest = std::min(footLowest, -foot.z); // 傾きなしの高さ
 		}
+	}
+	// 立ち姿勢の一番低い頂点(足の裏)を床に置く持ち上げ量。接地の計算(UpdateEnemyAnimation)と同じ式。
+	{
+		constexpr float enemyGroundY = -0.3f;
+		constexpr float groundingSafetyMargin = 0.01f;
+		m_enemyStandingGroundOffsetY = enemyGroundY -
+			(m_enemyAnimationMesh->GetAnimatedLowestLocalHeight(0.0f) - groundingSafetyMargin) * m_enemyModelScale;
+		m_enemyStandingGroundOffsetValid = true;
 	}
 	if (footLowest == (std::numeric_limits<float>::max)())
 		return;
@@ -4056,6 +4297,7 @@ void GameScene::draw(uint64_t deltatime)
 	DrawEnemyIntroOverlay();
 	DrawBattleFinishOverlay();
 	DrawPauseOverlay();
+	DrawDebugTimeOverlay();
 	CaptureFrameIfRequested();
 }
 
@@ -4141,7 +4383,7 @@ void GameScene::WriteCaptureLog()
 		e.getStateTime(),
 		bodyHeight,
 		m_player->getRenderSRT().pos.y,
-		m_battleFinish != BattleFinish::None ? BattleFinishTimeScale() : 1.0f,
+		(m_battleFinish != BattleFinish::None ? BattleFinishTimeScale() : 1.0f) * m_debugTimeScale,
 		cameraWallGap,
 		m_camera.GetYaw() * TO_DEG,
 		m_lockOnTarget ? 1 : 0,
@@ -4669,6 +4911,26 @@ void GameScene::DrawEnemyIntroOverlay()
 	}
 }
 
+void GameScene::DrawDebugTimeOverlay()
+{
+	if (!m_debugTimeFrozen && m_debugTimeScale >= 0.999f)
+		return;
+	// 遅くしたまま忘れないよう、画面の上の中央に今の速さを出す。
+	char text[96];
+	if (m_debugTimeFrozen)
+		sprintf_s(text, "停止中  F8: 再開 / F9: 1コマ進める  (速さ x%.2f)", m_debugTimeScale);
+	else
+		sprintf_s(text, "スロー x%.2f  F7: 速さを変える / F8: 止める", m_debugTimeScale);
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImDrawList* drawList = ImGui::GetForegroundDrawList(viewport);
+	const ImVec2 extent = ImGui::CalcTextSize(text);
+	const float x = viewport->WorkPos.x + (viewport->WorkSize.x - extent.x) * 0.5f;
+	const float y = viewport->WorkPos.y + 12.0f;
+	drawList->AddRectFilled(ImVec2(x - 12.0f, y - 6.0f), ImVec2(x + extent.x + 12.0f, y + extent.y + 6.0f),
+		IM_COL32(0, 0, 0, 170), 6.0f);
+	drawList->AddText(ImVec2(x, y), IM_COL32(255, 220, 120, 255), text);
+}
+
 void GameScene::DrawPauseOverlay()
 {
 	if (!m_paused)
@@ -4768,6 +5030,11 @@ void GameScene::init()
 	m_combat.SetPlayerDebugInvincible(GetDevSetting("player_invincible", "0") == "1");
 	// 比較用: enemy_foot_plant=0 で尾回転の足の固定を切る(前の、足が流れる回り方に戻る)。
 	m_enemyFootPlantEnabled = GetDevSetting("enemy_foot_plant", "1") != "0";
+	// 調整用: time_scale=0.25 のように書くと、最初からゆっくり動かす(F7 で変えられる)。
+	try { m_debugTimeScale = std::clamp(std::stof(GetDevSetting("time_scale", "1")), 0.05f, 1.0f); }
+	catch (...) { m_debugTimeScale = 1.0f; }
+	m_debugTimeFrozen = false;
+	m_debugStepRequested = false;
 	// カメラ(3D)の初期匁E
 	// 剣の軌跡。刃のワールド座標だけを渡す作りなので、
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
@@ -4928,6 +5195,13 @@ void GameScene::init()
 	m_enemyRoarAnimation = loadEnemyClip(m_enemyProfile->roarClip, "roar");
 	m_enemyTurnLeftAnimation = loadEnemyClip(m_enemyProfile->turnLeftClip, "turn_left");
 	m_enemyTurnRightAnimation = loadEnemyClip(m_enemyProfile->turnRightClip, "turn_right");
+	m_enemyTailSpinAnimations[0] = loadEnemyClip(m_enemyProfile->tailSpinLeftClip, "tail_spin_left");
+	m_enemyTailSpinAnimations[1] = loadEnemyClip(m_enemyProfile->tailSpinRightClip, "tail_spin_right");
+	// 左右どちらかしか無いと片方の向きだけ回り方が変わるので、両方そろったときだけ使う。
+	if (m_enemyTailSpinAnimations[0] == nullptr || m_enemyTailSpinAnimations[1] == nullptr)
+		m_enemyTailSpinAnimations[0] = m_enemyTailSpinAnimations[1] = nullptr;
+	enemy::setTailSpinFromClip(m_enemyTailSpinAnimations[0] != nullptr);
+	m_enemyTailSpinClipWasActive = false;
 	m_enemyDamageAnimation = loadEnemyClip(m_enemyProfile->damageClip, "damage");
 	m_enemyThreatAnimation = loadEnemyClip(m_enemyProfile->threatClip, "threat");
 	m_enemyWeakWalkAnimation = loadEnemyClip(m_enemyProfile->weakWalkClip, "weak_walk");
@@ -4939,6 +5213,11 @@ void GameScene::init()
 	enemy::setConditionFromClip(m_enemyWeakWalkAnimation != nullptr);
 	// 足で立たせるために、足の骨から足の裏までの厚みを測っておく。
 	MeasureEnemyFootClearance();
+	// 足で立たせるモデルで、胸を動かしても前足を地面に残せる(胸の骨と前足首の骨がある)なら、
+	// 火球の反る・突き出す傾きを全身ではなく胸で見せる(全身を傾けると片側の2本が床から浮く)。
+	enemy::setAttackTiltOnChest(m_enemyFootClearance > 0.0f &&
+		m_enemyProfile->HasBone(EnemyBone::BreathSpine) &&
+		m_enemyProfile->HasBone(EnemyBone::FrontAnkleL) && m_enemyProfile->HasBone(EnemyBone::FrontAnkleR));
 	// 咆哮・攻撃の動きをクリップで見せるときは、敵の側で手続きの姿勢(全身の傾き・首やあごの構え)を足さない。
 	enemy::setClipDrivenPoses(
 		m_enemyRoarAnimation != nullptr,
@@ -5309,6 +5588,23 @@ void GameScene::DrawDebugWindow()
 	// 起動のたびにゲーム画面の左上を基準に置き直す。起動中に動かすのは自由。
 	if (ImGui::Begin("デバッグ", nullptr, ImGuiWindowFlags_NoSavedSettings))
 	{
+		// 動きをゆっくり・止めて見る(F7 / F8 / F9 と同じもの)。
+		ImGui::SetNextItemWidth(160.0f);
+		ImGui::SliderFloat("速さ", &m_debugTimeScale, 0.05f, 1.0f, "x%.2f");
+		ImGui::SameLine();
+		ImGui::Checkbox("止める", &m_debugTimeFrozen);
+		ImGui::SameLine();
+		if (ImGui::Button("1コマ"))
+		{
+			m_debugTimeFrozen = true;
+			m_debugStepRequested = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("等速"))
+		{
+			m_debugTimeScale = 1.0f;
+			m_debugTimeFrozen = false;
+		}
 		if (ImGui::BeginTabBar("デバッグタブ"))
 		{
 			DebugCombat();
@@ -5712,7 +6008,7 @@ void GameScene::PushEnemyBodyOutOfWalls()
 	}
 }
 
-void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float deltaSeconds)
+void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, float deltaSeconds)
 {
 	if (!m_enemyAnimationMesh || !m_enemyProfile || m_enemies.empty() || !m_enemies.front())
 		return;
@@ -5745,6 +6041,19 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 				m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(LEGS[i].toe), toeModel);
 			if (m_enemyFootLastWorldValid[i])
 				m_enemyFootLastWorld[i] = Vector3::Transform(toeModel, modelToWorld);
+			// 足の向きも控える(固定を始めた更新で向きだけ今の姿勢にすると、かかとが飛んだ。記録で毎秒150)。
+			m_enemyFootLastRotValid[i] = false;
+			if (m_enemyProfile->HasBone(LEGS[i].ankle))
+			{
+				const auto& globals = m_enemyAnimationMesh->GetDebugBoneMatrices();
+				const auto found = globals.find(m_enemyProfile->Bone(LEGS[i].ankle));
+				if (found != globals.end())
+				{
+					Vector3 scale{}, translation{};
+					m_enemyFootLastRotValid[i] = (found->second * modelToWorld).Decompose(
+						scale, m_enemyFootLastRot[i], translation);
+				}
+			}
 		}
 	};
 
@@ -5775,6 +6084,12 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 			m_enemyPlantedFeet[i] = EnemyPlantedFoot{};
 			m_enemyPlantedFeet[i].planted = true;
 			m_enemyPlantedFeet[i].plantWorld = m_enemyFootLastWorld[i];
+			if (m_enemyFootLastRotValid[i])
+			{
+				m_enemyPlantedFeet[i].plantRot = m_enemyFootLastRot[i];
+				m_enemyPlantedFeet[i].lastRot = m_enemyFootLastRot[i];
+				m_enemyPlantedFeet[i].hasRot = true;
+			}
 		}
 	}
 	// 踏み出すのは、クリップの足の位置から脚の長さのこの割合だけ離れたとき。
@@ -5814,6 +6129,32 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 	// (床の高さ = 接地の計算で一番低い足の骨を合わせる高さ。地面 -0.3 の上 m_enemyFootClearance)
 	const float groundBoneY = -0.3f + (m_enemyFootClearance + 0.01f) * m_enemyModelScale;
 
+	// 足(足首)の向き。クリップのままの向きをワールドで求め、留めた向きをモデル空間へ戻してIKへ渡す。
+	// クリップの足首の向きはモデル空間のものなので、そのまま使うと体が回った分だけ足も回る。
+	const auto& boneGlobals = m_enemyAnimationMesh->GetDebugBoneMatrices();
+	Matrix4x4 worldToModelRotation = worldToModel;
+	worldToModelRotation._41 = 0.0f;
+	worldToModelRotation._42 = 0.0f;
+	worldToModelRotation._43 = 0.0f;
+	const auto footWorldRotation = [&](EnemyBone ankle, Quaternion& rotation, Vector3& scale) -> bool
+	{
+		const auto found = boneGlobals.find(m_enemyProfile->Bone(ankle));
+		if (found == boneGlobals.end())
+			return false;
+		Matrix4x4 world = found->second * modelToWorld;
+		Vector3 translation{};
+		return world.Decompose(scale, rotation, translation);
+	};
+	// 向きの差(ラジアン)。
+	const auto rotationAngle = [](const Quaternion& a, const Quaternion& b)
+	{
+		return 2.0f * std::acos(std::clamp(std::abs(a.Dot(b)), 0.0f, 1.0f));
+	};
+	// 体の向きと足の向きがこれ以上ずれたら踏み替える(足首がねじれすぎないように)。
+	constexpr float STEP_TWIST_LIMIT = 0.70f; // 約40°
+	// 跳んでいる間に後ろ足を体へ引き寄せる高さ(ワールドの長さ)。
+	constexpr float HOP_TUCK_HEIGHT = 3.0f;
+
 	int steppingCount = 0;
 	for (const EnemyPlantedFoot& foot : m_enemyPlantedFeet)
 		steppingCount += foot.stepping ? 1 : 0;
@@ -5846,6 +6187,39 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 
 		// 前足(並びの0・1)は、勢いよく回っている間は地面から浮かせて体についていかせる。
 		const bool frontFoot = i < 2;
+		Quaternion naturalRot{};
+		Vector3 footScale{};
+		const bool hasRot = footWorldRotation(leg.ankle, naturalRot, footScale);
+		// 前の更新で足に与えた向き(浮かせ始め・跳び始めはここから体についていく向きへ移す)。
+		const Quaternion previousRot = foot.hasRot ? foot.lastRot : naturalRot;
+		// 固定を始めた更新は、足の向きを今の向きで留める。
+		if (foot.planted && !foot.hasRot && hasRot)
+			foot.plantRot = naturalRot;
+		// 足を goal(ワールド)へ、向きを rotation(ワールド)にして脚を解く。
+		const auto solveFoot = [&](const Vector3& goal, const Quaternion& rotation)
+		{
+			foot.lastGoal = goal;
+			foot.hasLastGoal = true;
+			CAnimationMesh::LegIKChain chain{
+				m_enemyProfile->Bone(leg.upper), m_enemyProfile->Bone(leg.lower),
+				m_enemyProfile->Bone(leg.ankle), m_enemyProfile->Bone(leg.toe) };
+			if (frontFoot)
+				chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[i];
+			Matrix4x4 orientation{};
+			const Matrix4x4* orientationPointer = nullptr;
+			if (hasRot)
+			{
+				foot.lastRot = rotation;
+				foot.hasRot = true;
+				const Quaternion blended = Quaternion::Slerp(naturalRot, rotation, m_enemyFootPlantWeight);
+				orientation = Matrix4x4::CreateScale(footScale) * Matrix4x4::CreateFromQuaternion(blended) *
+					worldToModelRotation;
+				orientationPointer = &orientation;
+			}
+			if (m_enemyAnimationMesh->SolveLegIK(
+				chain, Vector3::Transform(goal, worldToModel), 0.985f, 1.5f, orientationPointer))
+				solved = true;
+		};
 		const float airTarget = frontFoot && frontAirborne && active ? 1.0f : 0.0f;
 		if (airTarget > foot.air)
 		{
@@ -5853,6 +6227,7 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 			{
 				// 浮かせ始め。今いる場所(着いている場所か、運んでいる途中の場所)から体についていく位置へ移す。
 				foot.airFrom = foot.hasLastGoal ? foot.lastGoal : natural;
+				foot.airFromRot = previousRot;
 				foot.airReach = 0.0f;
 				foot.planted = false;
 				foot.stepping = false;
@@ -5872,24 +6247,56 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 				std::max(natural.y, groundBoneY) + foot.air * FRONT_AIR_HEIGHT,
 				carriedTo.z);
 			goal = natural + (goal - natural) * m_enemyFootPlantWeight;
-			foot.lastGoal = goal;
-			foot.hasLastGoal = true;
-			CAnimationMesh::LegIKChain chain{
-				m_enemyProfile->Bone(leg.upper), m_enemyProfile->Bone(leg.lower),
-				m_enemyProfile->Bone(leg.ankle), m_enemyProfile->Bone(leg.toe) };
-			chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[i];
-			if (m_enemyAnimationMesh->SolveLegIK(chain, Vector3::Transform(goal, worldToModel)))
-				solved = true;
+			solveFoot(goal, Quaternion::Slerp(foot.airFromRot, naturalRot, reach));
 			allHome = false;
 			continue;
 		}
 		// 下ろしきったら、そこで地面に着く(下の処理で今の位置に留める)。
 		foot.airReach = 0.0f;
 
+		// 尾回転の速い所では後ろ足も地面から離す(軽く跳ぶ)。体は接地の側で持ち上げる。
+		// 跳び始めの場所から体についていく場所へ運び、跳びの真ん中では体へ少し引き寄せ、下りるときに体の下へ着く。
+		if (!frontFoot && active && hopProgress >= 0.0f)
+		{
+			if (!foot.hopping)
+			{
+				foot.hopping = true;
+				foot.airFrom = foot.hasLastGoal ? foot.lastGoal : natural;
+				foot.airFromRot = previousRot;
+				foot.planted = false;
+				foot.stepping = false;
+			}
+			const float r = std::clamp(hopProgress / 0.6f, 0.0f, 1.0f);
+			const float reach = r * r * (3.0f - 2.0f * r);
+			// 着く場所は「跳び終わるときの体の下」(今の体の動きのまま進んだ先)。
+			// 今の体の下へ合わせ続けると、下りてくる間も足が体と一緒に横へ動き、床すれすれで流れた(記録で着地の瞬間に毎秒100)。
+			const float hopRemainSeconds = (1.0f - hopProgress) *
+				(Combat::Tuning::ENEMY_SPIN_HOP_END - Combat::Tuning::ENEMY_SPIN_HOP_START) *
+				Combat::Tuning::ENEMY_SPIN_HALF_TURN_SECONDS;
+			const Vector3 landing = natural + carried * hopRemainSeconds;
+			const Vector3 carriedTo = foot.airFrom + (landing - foot.airFrom) * reach;
+			Vector3 goal(carriedTo.x,
+				natural.y + HOP_TUCK_HEIGHT * std::sin(hopProgress * 3.14159265f),
+				carriedTo.z);
+			goal = natural + (goal - natural) * m_enemyFootPlantWeight;
+			solveFoot(goal, Quaternion::Slerp(foot.airFromRot, naturalRot, reach));
+			allHome = false;
+			continue;
+		}
+		// 跳び終わったら、下りてきた場所にそのまま着く(体の下へ引き直すと着いた瞬間に足が動く)。
+		if (foot.hopping)
+		{
+			foot.hopping = false;
+			foot.planted = true;
+			foot.plantWorld = foot.hasLastGoal ? foot.lastGoal : natural;
+			foot.plantRot = foot.hasRot ? foot.lastRot : naturalRot;
+		}
+
 		if (!foot.planted && !foot.stepping)
 		{
 			foot.planted = true;
 			foot.plantWorld = natural;
+			foot.plantRot = naturalRot;
 		}
 		const float driftX = natural.x - foot.plantWorld.x;
 		const float driftZ = natural.z - foot.plantWorld.z;
@@ -5901,18 +6308,25 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 		const Vector3 ankleOffset = Vector3::Transform(ankleModel, modelToWorld) - natural;
 		const Vector3 plantedAnkle = Vector3(foot.plantWorld.x, natural.y, foot.plantWorld.z) + ankleOffset;
 		const bool outOfReach = (plantedAnkle - hipWorld).Length() > STEP_REACH_LIMIT * legLength;
+		// 足の向きが体の向きからずれすぎた(足首がねじれた)ら、向きを直すために踏み替える。
+		// 回り終わった後は小さいずれでも踏み直して、元の向きへ戻してから固定を外す(外すときに足が床の上で回らないように)。
+		const float twistLimit = active ? STEP_TWIST_LIMIT : STEP_TWIST_LIMIT * 0.3f;
+		const bool twisted = foot.planted && hasRot &&
+			rotationAngle(foot.plantRot, naturalRot) > twistLimit;
 		if (foot.planted &&
 			(drift > STEP_DISTANCE_FORCED * legLength ||
-			 ((outOfReach || drift > stepDistance) && steppingCount < maxSteppingFeet)))
+			 ((outOfReach || twisted || drift > stepDistance) && steppingCount < maxSteppingFeet)))
 		{
 			foot.planted = false;
 			foot.stepping = true;
 			foot.stepFrom = foot.plantWorld;
+			foot.stepFromRot = foot.plantRot;
 			foot.stepTime = 0.0f;
 			++steppingCount;
 		}
 
 		Vector3 target = foot.plantWorld;
+		Quaternion rotation = foot.plantRot;
 		float lift = 0.0f;
 		if (foot.stepping)
 		{
@@ -5931,35 +6345,37 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 			// 着く場所は運んでいる間だけ体についていかせ、運び終えたら決める。
 			// 下ろしている間も体と一緒に動かしていたので、着地の瞬間に足が床すれすれを流れていた(撮影の記録で毎秒200)。
 			if (carry < 1.0f)
+			{
 				foot.landWorld = natural + lead;
+				foot.landRot = naturalRot;
+			}
 			const Vector3 land = foot.landWorld;
 			const float s = carry * carry * (3.0f - 2.0f * carry);
 			target = foot.stepFrom + (land - foot.stepFrom) * s;
+			// 向きも運ぶ間に変える(着いた後は着いた向きのまま留める)。
+			rotation = Quaternion::Slerp(foot.stepFromRot, foot.landRot, s);
 			// 持ち上げは速く、下ろしは運び終えてから(平方根で山の両肩を立てる)。
+			// 持ち上げる高さは床から測る。溜めで体が前へのめると、クリップの足の高さが床より下になり、
+			// そこから持ち上げても床すれすれにしか上がらず、運ぶ足が床の上を流れた(記録で毎秒120)。
 			lift = std::sqrt(std::max(0.0f, std::sin(t * 3.14159265f))) *
-				std::clamp(STEP_LIFT * legLength, STEP_LIFT_MIN, STEP_LIFT_MAX);
+				(std::clamp(STEP_LIFT * legLength, STEP_LIFT_MIN, STEP_LIFT_MAX) +
+					std::max(0.0f, groundBoneY - natural.y));
 			if (t >= 1.0f)
 			{
 				foot.stepping = false;
 				foot.planted = true;
 				foot.plantWorld = land;
+				foot.plantRot = foot.landRot;
 				++m_enemyFootStepCount;
 			}
 		}
-		if (foot.stepping || drift > STEP_DISTANCE_SETTLING * legLength * 1.5f)
+		if (foot.stepping || drift > STEP_DISTANCE_SETTLING * legLength * 1.5f ||
+			(hasRot && rotationAngle(foot.plantRot, naturalRot) > STEP_TWIST_LIMIT * 0.45f))
 			allHome = false;
 
 		Vector3 goal(target.x, natural.y + lift, target.z);
 		goal = natural + (goal - natural) * m_enemyFootPlantWeight;
-		foot.lastGoal = goal;
-		foot.hasLastGoal = true;
-		CAnimationMesh::LegIKChain chain{
-			m_enemyProfile->Bone(leg.upper), m_enemyProfile->Bone(leg.lower),
-			m_enemyProfile->Bone(leg.ankle), m_enemyProfile->Bone(leg.toe) };
-		if (frontFoot)
-			chain.keepOrientation = m_enemyProfile->frontLegKeepOrientation[i];
-		if (m_enemyAnimationMesh->SolveLegIK(chain, Vector3::Transform(goal, worldToModel)))
-			solved = true;
+		solveFoot(goal, rotation);
 	}
 	if (solved)
 		m_enemyAnimationMesh->RefreshBoneMatrices(m_enemyBoneComb);
@@ -5987,11 +6403,23 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float delta
 		m_enemyFootPlantWeight = std::max(0.0f, m_enemyFootPlantWeight - dt / PLANT_FADE_OUT_SECONDS);
 }
 
+void GameScene::CaptureEnemyBlendFromPose()
+{
+	// 直前に描いた姿勢があれば、それをつなぎ元にする(つなぎの途中なら混ざった姿勢のまま)。
+	// 無いとき・使えないときは、従来どおりつなぎ元のクリップのコマから作る。
+	m_enemyAttackBlendFromPoseValid = m_enemyLastPoseUsableAsBlendFrom && m_enemyAnimationMesh &&
+		!m_enemyAnimationMesh->GetLastSampledPose().empty();
+	if (m_enemyAttackBlendFromPoseValid)
+		m_enemyAttackBlendFromPose = m_enemyAnimationMesh->GetLastSampledPose();
+}
+
 void GameScene::MeasureEnemyFootSlide(float deltaSeconds)
 {
 	if (m_captureDir.empty() || deltaSeconds <= 0.0f)
 		return;
 	bool valid = true;
+	static constexpr EnemyBone ANKLES[4] = {
+		EnemyBone::FrontAnkleL, EnemyBone::FrontAnkleR, EnemyBone::BackAnkleL, EnemyBone::BackAnkleR };
 	for (int i = 0; i < 4; ++i)
 	{
 		Vector3 foot{};
@@ -6000,9 +6428,14 @@ void GameScene::MeasureEnemyFootSlide(float deltaSeconds)
 			valid = false;
 			continue;
 		}
+		// 足首(かかと)も測る。つま先の点だけ留まっていても、足が床の上で向きを変えると足首が横へ動く。
+		Vector3 ankle = foot;
+		GetEnemyBoneWorld(ANKLES[i], ankle);
 		// 地面に着いている(前後の更新とも床から踏んだとみなす高さより下)足が、横へ動いた速さ。
 		const Vector3 previous = m_enemyFootPrevWorld[i];
+		const Vector3 previousAnkle = m_enemyAnklePrevWorld[i];
 		m_enemyFootPrevWorld[i] = foot;
+		m_enemyAnklePrevWorld[i] = ankle;
 		if (!m_enemyFootPrevValid)
 			continue;
 		if (foot.y - ARENA_FLOOR_TOP_Y >= ENEMY_FOOT_CONTACT_HEIGHT ||
@@ -6010,7 +6443,9 @@ void GameScene::MeasureEnemyFootSlide(float deltaSeconds)
 			continue;
 		const float dx = foot.x - previous.x;
 		const float dz = foot.z - previous.z;
-		const float speed = std::sqrt(dx * dx + dz * dz) / deltaSeconds;
+		const float ax = ankle.x - previousAnkle.x;
+		const float az = ankle.z - previousAnkle.z;
+		const float speed = std::max(std::sqrt(dx * dx + dz * dz), std::sqrt(ax * ax + az * az)) / deltaSeconds;
 		if (speed > m_enemyFootSlideMax)
 		{
 			m_enemyFootSlideMax = speed;

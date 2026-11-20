@@ -191,6 +191,10 @@ private:
 	// その場で足を踏み替えて回るクリップ(Wyvern)。無ければ歩きを速く回す。
 	aiAnimation* m_enemyTurnLeftAnimation = nullptr;
 	aiAnimation* m_enemyTurnRightAnimation = nullptr;
+	// 尾回転のモーション(左回り・右回り)。体の向きの回転まで入っている(enemy::setTailSpinFromClip)。
+	aiAnimation* m_enemyTailSpinAnimations[2]{};
+	// 前の更新で尾回転のモーションを当てていたか(抜けるときのつなぎの始まりを差し替えるため)。
+	bool m_enemyTailSpinClipWasActive = false;
 	// 怯み(Damage)・威嚇(Scream2)・瀕死の歩き(crawl)。無いモデルは nullptr。
 	aiAnimation* m_enemyDamageAnimation = nullptr;
 	aiAnimation* m_enemyThreatAnimation = nullptr;
@@ -248,11 +252,24 @@ private:
 		Vector3 airFrom{};      // 浮かせ始めたときの足の場所
 		Vector3 lastGoal{};     // 前回の更新で足を置いた場所(ワールド)
 		bool hasLastGoal = false;
+		// 足(足首)のワールドでの向き。地面に着いている間は向きも留める
+		// (位置だけ留めると、体が回る分だけ足が指の付け根を軸に床の上で回り、滑って見えた)。
+		Quaternion plantRot{};    // 着いている足の向き
+		Quaternion stepFromRot{}; // 踏み出したときの向き
+		Quaternion landRot{};     // 着くときの向き(運び終えたら決まる)
+		Quaternion airFromRot{};  // 浮かせ始めたときの向き
+		Quaternion lastRot{};     // 前回の更新で足に与えた向き
+		bool hasRot = false;
+		// 尾回転の跳び(4本とも地面から離れて空中で回る)の途中か。
+		bool hopping = false;
 	};
 	EnemyPlantedFoot m_enemyPlantedFeet[4]{};
 	// 前の更新で足(つま先)があった場所(ワールド)。固定を始めるときにここへ留める。
 	Vector3 m_enemyFootLastWorld[4]{};
 	bool m_enemyFootLastWorldValid[4]{};
+	// 前の更新の足(足首)のワールドでの向き。固定を始めるときは向きもここに留める。
+	Quaternion m_enemyFootLastRot[4]{};
+	bool m_enemyFootLastRotValid[4]{};
 	// 固定の効き(0〜1)。回り始めで上げ、回り終わって足を元の位置へ戻してから下げる。
 	float m_enemyFootPlantWeight = 0.0f;
 	// 回り終わってからの時間(足を戻しきれなくても、これを過ぎたら固定を外す)。
@@ -269,11 +286,15 @@ private:
 	bool m_enemyHeldGroundOffsetValid = false;
 	int m_enemyFootSlideFoot = -1; // 一番速く滑った足(ENEMY_FOOT_BONES の並び)
 	Vector3 m_enemyFootPrevWorld[4]{};
+	Vector3 m_enemyAnklePrevWorld[4]{};
 	bool m_enemyFootPrevValid = false;
 	// 足の固定を使うか(dev_settings.ini の enemy_foot_plant=0 で切って、前と比べられる)。
 	bool m_enemyFootPlantEnabled = true;
 	static constexpr float ENEMY_FOOT_STEP_SECONDS = 0.12f;
-	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float deltaSeconds);
+	// hopProgress: 尾回転で跳んでいる区間の中の進み(0〜1)。跳んでいなければ負。
+	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, float deltaSeconds);
+	// 尾回転の跳びで体を持ち上げる高さ(ワールドの長さ。接地の高さに足す)。
+	float m_enemyHopOffsetY = 0.0f;
 	void MeasureEnemyFootSlide(float deltaSeconds);
 	// 首と尾の二次的な動きを求めて構えに足す。毎更新1回だけ呼ぶ(ばねの状態を進めるため)。
 	void AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float deltaSeconds);
@@ -282,6 +303,12 @@ private:
 	// 足の骨(指の付け根)が足の裏からどれだけ上にあるか(モデルの長さ)。待機の最初のコマで測る。
 	// 0 なら足で立たせず、従来どおり一番低い頂点を床に合わせる。
 	float m_enemyFootClearance = 0.0f;
+	// 待機の最初のコマ(4本の足が地面に着いた立ち姿勢)を床に置く描画の持ち上げ量(ワールドの長さ)。
+	// 尾回転の専用モーションは、地面に着いた足をこの立ち姿勢の足の高さに置いて作ってあるので、この値で描く。
+	float m_enemyStandingGroundOffsetY = 0.0f;
+	bool m_enemyStandingGroundOffsetValid = false;
+	// 走りの間、体をクリップの高さより下へ引き下ろさない効き目(0〜1。走りのクリップに入ると0.2秒で1)。
+	float m_enemyRunGroundWeight = 0.0f;
 	// 足で立たせたときに、床へ入るのを許す深さ(ワールドの長さ)。歩きで爪の先が約3〜5入る(記録で確認)。
 	static constexpr float ENEMY_MAX_GROUND_SINK = 4.0f;
 	// 足で立たせたときに、床より下へ入った頂点の深さ(ワールドの長さ。撮影の記録用)。
@@ -316,6 +343,16 @@ private:
 	bool m_enemyAttackBlendActive = false;
 	// 直前に当てていたクリップ。決着で倒れるクリップなどへ移るときのつなぎ元にする。
 	aiAnimation* m_enemyLastSampledAnimation = nullptr;
+	// つなぎ元の姿勢そのもの(つなぎを始めた瞬間に画面に出ていたクリップの姿勢)。
+	// つなぎの途中で次のつなぎを始めると、つなぎ元のクリップのコマは画面の姿勢(2つが混ざったもの)と違う。
+	// コマからつなぎ直していたので、隙→後退→走り→周回のように続けて切り替わる所で、
+	// 後ろ足が一瞬17ほど跳ね上がる・体が5ほど上下するなど、1フレームで姿勢が飛んでいた。
+	std::unordered_map<std::string, SRTQ> m_enemyAttackBlendFromPose;
+	bool m_enemyAttackBlendFromPoseValid = false;
+	// 直前に描いた姿勢を、そのままつなぎ元に使えるか(尾回転から抜けるときは使わない。下の処理を参照)。
+	bool m_enemyLastPoseUsableAsBlendFrom = false;
+	// つなぎを始めるときに、いま画面に出ている姿勢をつなぎ元として控える。
+	void CaptureEnemyBlendFromPose();
 	enemy::MotionState m_previousEnemyMotionState = enemy::MotionState::Approach;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
@@ -390,6 +427,13 @@ private:
 	bool m_mouseLookCaptured = true;
 	// 戦闘中の一時停止(Esc・パッドのSTART)。止めている間は update の大半を通さない。
 	bool m_paused = false;
+	// 調整用: 動きをゆっくり・止めて見る(devmode のときだけ)。
+	// F7 で 1 → 0.5 → 0.25 → 0.1 倍と遅くし、F8 で止める・再開、止めている間 F9 で1コマ進める。
+	// カメラは遅くしない(止めている間も回り込んで見られる)。
+	float m_debugTimeScale = 1.0f;
+	bool m_debugTimeFrozen = false;
+	bool m_debugStepRequested = false;
+	void DrawDebugTimeOverlay();
 	// 足の接地(フットロック)。移動中、接地している足のつま先をワールドへ固定して脚をIKで合わせる。
 	void UpdateFootLock(float deltaSeconds);
 	// 撮影・調整用: 動かない・攻撃しない・倒れない敵(練習台)をプレイヤーの正面へ置く。
@@ -468,6 +512,8 @@ private:
 	// 演出の進行(咆哮・地響き・カメラ・リザルトへの移動)。実時間を渡す。
 	void UpdateBattleFinish(float realDeltaSeconds);
 	void UpdateBattleFinishCamera(float realDeltaSeconds);
+	// 倒した敵の大きさ(ワールドの長さ)。x = 体の前後の長さ、y = 高さ、z = 左右の幅(翼を含む)。
+	Vector3 MeasureEnemyFinishExtents(const enemy& foe) const;
 	void DrawBattleFinishOverlay();
 	BattleFinish m_battleFinish = BattleFinish::None;
 	float m_battleFinishTime = 0.0f;            ///< 決着してからの実時間(秒)
@@ -479,6 +525,11 @@ private:
 	Vector3 m_finishFocusOffset{};              ///< 倒れる敵の足元の位置から注視点までのずれ
 	float m_finishCameraYaw = 0.0f;
 	float m_finishCameraOrbitDelta = 0.0f;      ///< 演出の間に回り込む角度(ラジアン)
+	// 討伐のカメラの距離と高さ(倒した敵の大きさから決める。BeginBattleFinish)。
+	float m_finishVictoryDistance = FINISH_VICTORY_CAMERA_DISTANCE;
+	float m_finishVictoryHeight = 26.0f;
+	// 力尽きたときに回り込む向き(-1で上から見て反時計回り、+1で時計回り)。
+	float m_finishDefeatSpinSign = -1.0f;
 	// 撮影・調整用(dev_settings.ini の debug_finish)を1回だけ効かせる。
 	bool m_debugFinishDone = false;
 	// 時間配分(どれも実時間の秒)。討伐は倒れるクリップ(2.5秒)を最後まで見せてから暗くする。
@@ -489,11 +540,19 @@ private:
 	static constexpr float FINISH_DEFEAT_FREEZE_END = 0.06f;
 	static constexpr float FINISH_DEFEAT_SLOW_END = 0.75f;
 	static constexpr float FINISH_DEFEAT_RECOVER_END = 1.05f;
-	static constexpr float FINISH_DEFEAT_FADE_START = 3.60f;
+	// 力尽きたときは、倒れたハンターを画面の中央に映したまま8秒ほど見せてから暗くする
+	// (モンハンの初期作〜MHXX では約10秒映す。決定ボタンで飛ばせる)。
+	static constexpr float FINISH_DEFEAT_FADE_START = 8.00f;
 	static constexpr float FINISH_FADE_SECONDS = 1.00f;
 	// カメラの距離と、闘技場の内側に収める半径(壁の少し手前)。
 	static constexpr float FINISH_VICTORY_CAMERA_DISTANCE = 115.0f;
-	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_END = 62.0f;
+	// 力尽きたとき、渦を巻いて引いていくカメラの最初と最後の距離・高さ。
+	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_START = 34.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_END = 125.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_HEIGHT_START = 16.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_HEIGHT_END = 85.0f;
+	// 回り込む速さ(ラジアン/秒)。8秒で約140度。
+	static constexpr float FINISH_DEFEAT_SPIN_SPEED = 0.30f;
 	static constexpr float FINISH_CAMERA_SAFE_RADIUS = 280.0f;
 	// これより後なら決定ボタンで飛ばせる(回避を連打していて誤って飛ばさないよう、すぐには受け付けない)。
 	static constexpr float FINISH_SKIP_ALLOWED_AFTER = 1.50f;
