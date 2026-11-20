@@ -325,6 +325,9 @@ public:
 	float GetAnimatedLocalMinY() const;
 	// 現在のボーン行列でスキニングした頂点を、upAxis方向の成分で見たときの最小値。
 	float GetAnimatedLowestAlong(const Vector3& upAxis) const;
+	// 現在のボーン行列でスキニングした頂点の位置(モデル空間)。sampleBudget>0 なら等間隔に間引く。
+	// 部位ごとの当たり判定(カプセル)の太さを、モデルの実際の太さと見比べる確認用。毎フレーム呼ぶ想定ではない。
+	void GetAnimatedVertexPositions(std::vector<Vector3>& out, size_t sampleBudget) const;
 	// 最下点を求めるときに見る頂点の数のおおよその上限(0 = 全頂点)。
 	// 頂点が多いモデルで、毎フレームの全頂点スキニングが重くならないよう間引く。
 	void SetGroundingSampleBudget(size_t vertexBudget) { m_groundingSampleBudget = vertexBudget; }

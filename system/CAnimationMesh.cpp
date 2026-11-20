@@ -2025,3 +2025,55 @@ std::unordered_map<std::string, std::string> CAnimationMesh::GetDebugBoneParentN
 	CollectDebugBoneParents(&m_AssimpNodeNameTree, parents);
 	return parents;
 }
+
+void CAnimationMesh::GetAnimatedVertexPositions(std::vector<Vector3>& out, size_t sampleBudget) const
+{
+	out.clear();
+	if (m_vertices.empty())
+		return;
+
+	std::array<const BONE*, MAX_BONE> bonesByIndex{};
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		(void)name;
+		if (bone.idx >= 0 && bone.idx < MAX_BONE)
+			bonesByIndex[bone.idx] = &bone;
+	}
+
+	const size_t stride = sampleBudget > 0
+		? (std::max)(static_cast<size_t>(1), m_vertices.size() / sampleBudget)
+		: 1;
+	out.reserve(m_vertices.size() / stride + 1);
+	for (size_t vertexIndex = 0; vertexIndex < m_vertices.size(); vertexIndex += stride)
+	{
+		// 剣は体の太さに入れない(GetAnimatedLowestAlong と同じ)。
+		if (vertexIndex < m_groundingIgnoredVertices.size() && m_groundingIgnoredVertices[vertexIndex])
+			continue;
+		// スキニングは GetAnimatedLowestAlong(GPU側)と同じ式。
+		const VERTEX_3D& vertex = m_vertices[vertexIndex];
+		Vector3 skinned{};
+		float weightSum = 0.0f;
+		for (int slot = 0; slot < 4; ++slot)
+		{
+			const int boneIndex = vertex.BoneIndex[slot];
+			const float weight = vertex.BoneWeight[slot];
+			if (boneIndex < 0 || boneIndex >= MAX_BONE || weight <= 0.0f)
+				continue;
+			const BONE* bone = bonesByIndex[boneIndex];
+			if (bone == nullptr)
+				continue;
+			skinned += Vector3::Transform(vertex.Position, bone->Matrix) * weight;
+			weightSum += weight;
+		}
+		if (weightSum > 0.0001f)
+		{
+			if (weightSum < 1.0f)
+				skinned += vertex.Position * (1.0f - weightSum);
+		}
+		else
+		{
+			skinned = vertex.Position;
+		}
+		out.push_back(skinned);
+	}
+}

@@ -234,6 +234,9 @@
     <ClInclude Include="..\system\OneVsOneCombat.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="..\system\CombatHitShapes.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="..\system\AttackTimelineEditor.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

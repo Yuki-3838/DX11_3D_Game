@@ -222,6 +222,71 @@ namespace {
 		}
 	}
 
+	// 部位ごとの判定のカプセル(CombatHitShapes.h)を線で描く。
+	// 両端の輪・側面の4本の線・両端の半球の弧(2方向)で形が分かるようにする。
+	void DrawCapsuleWire(const Combat::HitCapsule& capsule, const Color& color, float lineWidth = 0.0030f)
+	{
+		constexpr int SEGMENTS = 16;
+		constexpr float TWO_PI = 6.28318530718f;
+		Vector3 axis = capsule.b - capsule.a;
+		const float axisLength = axis.Length();
+		axis = axisLength > 0.0001f ? axis / axisLength : Vector3(0.0f, 1.0f, 0.0f);
+		const Vector3 helper = std::abs(axis.y) < 0.95f ? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
+		Vector3 side = helper.Cross(axis);
+		side.Normalize();
+		const Vector3 up = axis.Cross(side);
+		const float r = capsule.radius;
+		SetLineWidth(lineWidth);
+		const auto line = [&color](const Vector3& from, const Vector3& to)
+		{
+			const Vector3 direction = to - from;
+			const float length = direction.Length();
+			if (length > 0.0001f)
+				LineDrawerDraw(length, from, direction, color);
+		};
+		// 両端の輪
+		for (const Vector3& center : { capsule.a, capsule.b })
+		{
+			for (int i = 0; i < SEGMENTS; ++i)
+			{
+				const float t0 = TWO_PI * static_cast<float>(i) / SEGMENTS;
+				const float t1 = TWO_PI * static_cast<float>(i + 1) / SEGMENTS;
+				line(center + (side * std::cos(t0) + up * std::sin(t0)) * r,
+					center + (side * std::cos(t1) + up * std::sin(t1)) * r);
+			}
+		}
+		// 側面
+		for (const Vector3& offset : { side * r, -side * r, up * r, -up * r })
+			line(capsule.a + offset, capsule.b + offset);
+		// 両端の半球の弧(side 方向と up 方向の2面)
+		constexpr int HALF = SEGMENTS / 2;
+		for (const Vector3& across : { side, up })
+		{
+			for (int end = 0; end < 2; ++end)
+			{
+				const Vector3 center = end == 0 ? capsule.a : capsule.b;
+				const Vector3 outward = end == 0 ? -axis : axis;
+				for (int i = 0; i < HALF; ++i)
+				{
+					const float t0 = 3.14159265f * static_cast<float>(i) / HALF;
+					const float t1 = 3.14159265f * static_cast<float>(i + 1) / HALF;
+					line(center + (across * std::cos(t0) + outward * std::sin(t0)) * r,
+						center + (across * std::cos(t1) + outward * std::sin(t1)) * r);
+				}
+			}
+		}
+	}
+
+	void DrawCapsuleList(const Combat::HitShapeList& shapes, const Color& color, int highlightIndex, const Color& highlightColor)
+	{
+		for (int i = 0; i < static_cast<int>(shapes.size()); ++i)
+		{
+			const bool highlighted = i == highlightIndex;
+			DrawCapsuleWire(shapes[static_cast<size_t>(i)], highlighted ? highlightColor : color,
+				highlighted ? 0.0050f : 0.0030f);
+		}
+	}
+
 	Vector3 GetAabbCenter(const GM31::GE::Collision::BoundingBoxAABB& box)
 	{
 		return (box.min + box.max) * 0.5f;
@@ -1671,6 +1736,14 @@ void GameScene::update(uint64_t deltatime)
 			(m_player->isDodging() &&
 			m_player->getDodgeFrame() >= m_dodgeInvincibleStartFrame &&
 			m_player->getDodgeFrame() <= m_dodgeInvincibleEndFrame);
+		// 部位ごとの当たり判定の形。骨の位置から作るので、描画と同じ姿勢で当たる。
+		//  - 剣 → 敵: 敵の頭・首・胴・尾・脚・翼のどれかに剣が触れたら当たり
+		//  - 敵 → プレイヤー: 振っている部位(爪・頭・尾、突進なら体)がプレイヤーの頭・胴・腕・脚に触れたら当たり
+		// 以前は敵の全体を包む箱と、敵の攻撃は距離と角度(扇形)だけで見ていたので、
+		// 爪の内側(懐)にいても当たっていた。
+		m_combat.SetEnemyHurtShapes(BuildEnemyHurtShapes());
+		m_combat.SetEnemyAttackShapes(BuildEnemyAttackShapes());
+		m_combat.SetPlayerHurtShapes(BuildPlayerHurtShapes(playerObb));
 		m_combat.Update(
 			deltatime,
 			m_player->getSRT().pos,
@@ -1741,7 +1814,9 @@ void GameScene::update(uint64_t deltatime)
 
 			// 火花とダメージ数値。命中点は剣先のワールド座標を使う。
 			// 剣先は武器ボーンから求めているので、武器やモデルを差し替えても成立する。
-			const Vector3 hitPoint = swordTransformValid ? swordTip : enemyPosition;
+			// 部位の形で当たったときは、剣が触れた点(刃と部位が重なった所)から出す。
+			Vector3 hitPoint = swordTransformValid ? swordTip : enemyPosition;
+			m_combat.GetPlayerHitContact(hitPoint);
 			if (swordTransformValid)
 			{
 				// 刃の進行方向へ弾く。前フレームの剣先との差から求める。
@@ -1839,6 +1914,7 @@ void GameScene::update(uint64_t deltatime)
 		const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localPlayerMeshBounds,
 			m_player->getRenderSRT());
+		m_combat.SetPlayerHurtShapes(BuildPlayerHurtShapes(playerObb));
 		m_combat.UpdatePlayerCollisionDebug(
 			swordBase,
 			swordTip,
@@ -2429,6 +2505,10 @@ void GameScene::RecomputeTimelineAnalysis()
 	const auto enemyObb = m_timelineAnalysis.hasEnemy
 		? GM31::GE::Collision::BuildWorldOBBFromLocalAABB(m_localEnemyMeshBounds, m_enemies.front()->getRenderSRT())
 		: GM31::GE::Collision::BoundingBoxOBB{};
+	// ゲームと同じく、敵の部位ごとの形で当たりを見る(エディターを開いている間、敵の姿勢は動かない)。
+	const Combat::HitShapeList enemyHurtShapes = m_timelineAnalysis.hasEnemy
+		? BuildEnemyHurtShapes()
+		: Combat::HitShapeList{};
 
 	// クリップ全体を、ゲームの2フレーム(再生速度込み)ごとに区切って姿勢を作る。
 	// ゲームで実際に剣が通る位置と同じになるよう、プレビューと同じ処理(PoseTimelinePreview)を使う。
@@ -2464,7 +2544,7 @@ void GameScene::RecomputeTimelineAnalysis()
 			const auto playerObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 				m_localPlayerMeshBounds, m_player->getRenderSRT());
 			const bool hit = OneVsOneCombat::EvaluateSwordCollisionPreview(
-				base, tip, previousValid ? previousTip : tip, playerObb, enemyObb).narrowPhaseHit;
+				base, tip, previousValid ? previousTip : tip, playerObb, enemyObb, &enemyHurtShapes).narrowPhaseHit;
 			if (hit && !inHit)
 			{
 				inHit = true;
@@ -2511,8 +2591,9 @@ void GameScene::UpdateTimelineEditor(float deltaSeconds)
 			m_localPlayerMeshBounds, m_player->getRenderSRT());
 		const auto enemyObb = GM31::GE::Collision::BuildWorldOBBFromLocalAABB(
 			m_localEnemyMeshBounds, m_enemies.front()->getRenderSRT());
+		const Combat::HitShapeList enemyHurtShapes = BuildEnemyHurtShapes();
 		m_timelineBladeHitsEnemy = OneVsOneCombat::EvaluateSwordCollisionPreview(
-			base, tip, previousTip, playerObb, enemyObb).narrowPhaseHit;
+			base, tip, previousTip, playerObb, enemyObb, &enemyHurtShapes).narrowPhaseHit;
 	}
 
 	// 再生中は、ゲームと同じく軌跡の区間で剣の軌跡を出す。
@@ -3435,6 +3516,26 @@ void GameScene::draw(uint64_t deltatime)
 		if (m_drawAttackCollisionXray)
 			Renderer::SetDepthEnable(false);
 
+		// 部位ごとの判定。受ける形は常に、攻撃する形は敵の判定が出ている間だけ描く。
+		// 当たった部位は赤く太く描く。剣の判定は構えているだけでも毎フレーム計算しているので、
+		// 敵の部位を赤くするのは攻撃の判定が出ている間だけにする(待機中に剣が胴へ触れて赤くなり、当たったように見えた)。
+		const Color hitColor(1.0f, 0.05f, 0.02f, 1.0f);
+		if (!m_enemies.empty() && m_drawEnemyHurtShapes)
+			DrawCapsuleList(collision.enemyHurtShapes, Color(0.20f, 1.0f, 0.40f, 0.9f),
+				showSwordSweep && collision.narrowPhaseHit ? collision.enemyHurtHitIndex : -1, hitColor);
+		if (m_drawPlayerHurtShapes)
+			DrawCapsuleList(collision.playerHurtShapes, Color(0.15f, 0.75f, 1.0f, 0.9f),
+				collision.playerHurtHitIndex, hitColor);
+		if (!m_enemies.empty() && m_drawEnemyAttackShapes && m_combat.IsEnemyAttackActive())
+			DrawCapsuleList(collision.enemyAttackShapes,
+				collision.enemyAttackLive ? Color(1.0f, 0.55f, 0.05f, 1.0f) : Color(0.6f, 0.6f, 0.65f, 0.7f),
+				collision.enemyAttackHitIndex, hitColor);
+		// 剣の攻撃する形。剣の位置は構えているだけでも毎フレーム求めているが、
+		// 当たるのは攻撃の判定が出ている間だけなので、そのときだけ描く。
+		if (m_drawSwordShapes && showSwordSweep)
+			DrawCapsuleList(collision.swordShapes, Color(1.0f, 0.90f, 0.10f, 1.0f),
+				collision.narrowPhaseHit ? collision.swordHitIndex : -1, hitColor);
+
 		if (!m_enemies.empty() && m_drawEnemyAabb)
 		{
 			DrawBoxEdges(GetAabbCorners(collision.enemyBroadPhase),
@@ -3553,7 +3654,7 @@ void GameScene::WriteCaptureLog()
 		m_captureLog = _wfsopen((m_captureDir + L"\\enemy_log.csv").c_str(), L"w", _SH_DENYNO);
 		if (!m_captureLog)
 			return;
-		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail,state_time,body_y,player_y,time_scale,camera_wall_gap,camera_yaw_deg,locked,enemy_hp,stamina,camera_slide_deg,camera_player_dist,player_on_screen\n");
+		fprintf(m_captureLog, "time,state,attack,enemy_x,enemy_z,enemy_yaw_deg,facing_error_deg,distance,player_x,player_z,player_hp,foot_fl,foot_fr,foot_bl,foot_br,fx_puffs,fx_rings,wall_push,player_hp_trail,state_time,body_y,player_y,time_scale,camera_wall_gap,camera_yaw_deg,locked,enemy_hp,stamina,camera_slide_deg,camera_player_dist,player_on_screen,attack_gap,attack_live,player_hit_part\n");
 	}
 	const enemy& e = *m_enemies.front();
 	const Vector3 enemyPos = e.getSRT().pos;
@@ -3606,7 +3707,22 @@ void GameScene::WriteCaptureLog()
 				y <= static_cast<float>(Application::GetHeight())) ? 1 : 0;
 		}
 	}
-	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d\n",
+	// 部位ごとの判定の確認用: 敵の攻撃する形とプレイヤーの受ける形の、表面どうしのすき間の最小値。
+	// 負なら重なっている。攻撃する形が無いとき(攻撃していない・火球)は 999 を書く。
+	const auto& collision = m_combat.GetCollisionDebugState();
+	float attackGap = 999.0f;
+	for (const Combat::HitCapsule& attackShape : collision.enemyAttackShapes)
+	{
+		for (const Combat::HitCapsule& hurtShape : collision.playerHurtShapes)
+		{
+			Vector3 c1{};
+			Vector3 c2{};
+			const float distance = std::sqrt(Combat::ClosestPointsSegmentSegment(
+				attackShape.a, attackShape.b, hurtShape.a, hurtShape.b, c1, c2));
+			attackGap = (std::min)(attackGap, distance - attackShape.radius - hurtShape.radius);
+		}
+	}
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d,%.2f,%d,%d\n",
 		m_battleSeconds,
 		static_cast<int>(e.getMotionState()),
 		static_cast<int>(e.getAttackKind()),
@@ -3631,7 +3747,10 @@ void GameScene::WriteCaptureLog()
 		m_playerStamina,
 		m_camera.GetWallSlideYaw() * TO_DEG,
 		cameraPlayerDistance,
-		playerOnScreen);
+		playerOnScreen,
+		attackGap,
+		collision.enemyAttackLive ? 1 : 0,
+		collision.playerHurtHitIndex);
 	fflush(m_captureLog);
 }
 
@@ -3659,6 +3778,16 @@ void GameScene::CaptureFrameIfRequested()
 		Renderer::SaveBackBufferPngAtFrameEnd((m_captureDir + name).c_str());
 	else
 		Renderer::SaveBackBufferPng((m_captureDir + name).c_str());
+	if (m_captureHitFit)
+	{
+		FILE* fitFile = _wfsopen((m_captureDir + L"\\hit_fit.txt").c_str(), L"a", _SH_DENYNO);
+		if (fitFile)
+		{
+			const int state = m_enemies.empty() ? -1 : static_cast<int>(m_enemies.front()->getMotionState());
+			fprintf(fitFile, "=== t=%.2f state=%d\n%s\n", clock, state, MeasureEnemyHurtShapeFit().c_str());
+			fclose(fitFile);
+		}
+	}
 	++m_capturedFrames;
 	if (m_captureExit && m_capturedFrames >= m_captureCount)
 		PostQuitMessage(0);
@@ -4233,6 +4362,15 @@ void GameScene::init()
 	// 当たって演出は出るが、体力だけ減らない。デバッグ表示の「戦闘」タブでも切り替えられる。
 	m_combat.SetEnemyDebugInvincible(GetDevSetting("enemy_invincible", "0") == "1");
 	m_combat.SetPlayerDebugInvincible(GetDevSetting("player_invincible", "0") == "1");
+	// 確認・撮影用: hit_shapes=1 で、部位ごとの当たり判定の形を最初から描く(当たり判定タブの「当たり判定の形を描く」と同じ)。
+	// hit_shapes=2 なら「物陰でも透けて見せる」も入れる(敵の体の下に入ったプレイヤーの形を見るため)。
+	{
+		const std::string hitShapes = GetDevSetting("hit_shapes", "0");
+		if (hitShapes == "1" || hitShapes == "2")
+			m_drawAttackCollisionDebug = true;
+		if (hitShapes == "2")
+			m_drawAttackCollisionXray = true;
+	}
 	// カメラ(3D)の初期匁E
 	// 剣の軌跡。刃のワールド座標だけを渡す作りなので、
 	// 武器やキャラクターのモデルが変わっても初期化はこのままでよい。
@@ -4312,6 +4450,7 @@ void GameScene::init()
 			m_captureIntro = GetDevSetting("capture_intro", "0") == "1";
 			m_captureFlight = GetDevSetting("capture_flight", "0") == "1";
 			m_captureUi = GetDevSetting("capture_ui", "0") == "1";
+			m_captureHitFit = GetDevSetting("capture_hit_fit", "0") == "1";
 		}
 	}
 	// 敵の攻撃を1種類に固定する(dev_settings.iniの force_enemy_attack=slam|bite|sweep|spin|fireball|charge)。
@@ -4513,6 +4652,8 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
+	// 部位ごとの受ける形(頭・胴・腕・脚)を作る骨を、モデルの表から選んでおく。
+	ResolvePlayerJointBones();
 	// クリップはモデルごとの表(CharacterModelProfile)から引く。iniのキーで差し替えられる。
 	const auto locomotionClip = [&playerProfile](LocomotionClipSlot slot) {
 		return playerProfile.locomotionClips[static_cast<size_t>(slot)];
@@ -5207,6 +5348,464 @@ bool GameScene::GetEnemyStrikeSegment(EnemyStrikePart part, Vector3& root, Vecto
 		tip = m_enemyMouthPosition + (m_enemyMouthPosition - root) * m_enemyProfile->headTrailExtend;
 		return true;
 	}
+}
+
+namespace
+{
+	/**
+	 * 頭を、太い後ろ(頭蓋)と細い前(鼻先)の2つのカプセルにして足す。受ける形と噛みつきの攻撃する形で共通。
+	 * 鼻先の芯は口先から半径の分だけ手前で止め、丸い端がちょうど口先に来るようにする
+	 * (芯を口先まで伸ばすと、半径の分だけ口の先の何も無い所まで判定が出る)。
+	 */
+	void AppendEnemyHeadCapsules(
+		Combat::HitShapeList& shapes,
+		const Vector3& neckTip,
+		const Vector3& mouth,
+		float skullRadius,
+		float snoutRadius,
+		float split,
+		float snoutReach)
+	{
+		const Vector3 axis = mouth - neckTip;
+		const float length = axis.Length();
+		if (length < 0.0001f)
+		{
+			shapes.push_back({ neckTip, mouth, skullRadius, Combat::HitPart::Head });
+			return;
+		}
+		const Vector3 direction = axis / length;
+		const Vector3 middle = neckTip + axis * std::clamp(split, 0.0f, 1.0f);
+		// 鼻先の芯の先。丸い端が「口先 + snoutReach」で止まる位置。分け目より手前にはしない(短い頭でも鼻先の形を残す)。
+		const float snoutEndAlong = (std::max)(length * split, length + snoutReach - snoutRadius);
+		shapes.push_back({ neckTip, middle, skullRadius, Combat::HitPart::Head });
+		shapes.push_back({ middle, neckTip + direction * snoutEndAlong, snoutRadius, Combat::HitPart::Head });
+	}
+}
+
+Combat::HitShapeList GameScene::BuildEnemyHurtShapes() const
+{
+	using Combat::HitPart;
+	Combat::HitShapeList shapes;
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front())
+		return shapes;
+	const EnemyHitRadii& radii = m_enemyProfile->hitRadii;
+	const float scale = Combat::EnemyReachScale();
+	shapes.reserve(24);
+	// 役割の骨を順に結んだ線分を、同じ部位のカプセルとして足す。モデルに無い骨は飛ばしてつなぐ。
+	const auto addChain = [&](std::initializer_list<EnemyBone> chain, float radius, HitPart part)
+	{
+		bool hasPrevious = false;
+		Vector3 previous{};
+		for (const EnemyBone role : chain)
+		{
+			Vector3 position{};
+			if (!GetEnemyBoneWorld(role, position))
+				continue;
+			if (hasPrevious)
+				shapes.push_back({ previous, position, radius * scale, part });
+			previous = position;
+			hasPrevious = true;
+		}
+	};
+	// 頭は首の先から口先まで(口先は骨の無い点なので、UpdateEnemyMouthPosition が求めたものを使う)。
+	Vector3 neck3{};
+	if (m_enemyMouthValid && GetEnemyBoneWorld(EnemyBone::Neck3, neck3))
+		AppendEnemyHeadCapsules(shapes, neck3, m_enemyMouthPosition,
+			radii.head * scale, radii.headSnout * scale, radii.headSplit, radii.headSnoutReach * scale);
+	addChain({ EnemyBone::Neck1, EnemyBone::Neck2, EnemyBone::Neck3 }, radii.neck, HitPart::Neck);
+	addChain({ EnemyBone::Neck1, EnemyBone::Body, EnemyBone::Tail1 }, radii.body, HitPart::Body);
+	// 尾(Wyvern は先で反り上がるので、骨を1本ずつ結ぶ extraHurtChains で作る)。
+	if (m_enemyProfile->hurtTailFromRoles)
+	{
+		addChain({ EnemyBone::Tail1, EnemyBone::Tail2, EnemyBone::Tail3 }, radii.tail, HitPart::Tail);
+		// 尾の先は最後の骨よりさらに先にある(壁の押し出し・攻撃の通り道と同じ延ばし方)。
+		Vector3 tail2{};
+		Vector3 tail3{};
+		if (GetEnemyBoneWorld(EnemyBone::Tail2, tail2) && GetEnemyBoneWorld(EnemyBone::Tail3, tail3))
+			shapes.push_back({ tail3, tail3 + (tail3 - tail2) * m_enemyProfile->tailTipExtend, radii.tailTip * scale, HitPart::Tail });
+	}
+	// 脚(Wyvern は足首・手首を含めて extraHurtChains で作る)。
+	if (m_enemyProfile->hurtLegsFromRoles)
+	{
+		addChain({ EnemyBone::FrontUpperL, EnemyBone::FrontLowerL }, radii.upperLeg, HitPart::FrontLegL);
+		addChain({ EnemyBone::FrontLowerL, EnemyBone::FrontFootL }, radii.lowerLeg, HitPart::FrontLegL);
+		addChain({ EnemyBone::FrontUpperR, EnemyBone::FrontLowerR }, radii.upperLeg, HitPart::FrontLegR);
+		addChain({ EnemyBone::FrontLowerR, EnemyBone::FrontFootR }, radii.lowerLeg, HitPart::FrontLegR);
+		addChain({ EnemyBone::BackUpperL, EnemyBone::BackLowerL }, radii.upperLeg, HitPart::BackLegL);
+		addChain({ EnemyBone::BackLowerL, EnemyBone::BackFootL }, radii.lowerLeg, HitPart::BackLegL);
+		addChain({ EnemyBone::BackUpperR, EnemyBone::BackLowerR }, radii.upperLeg, HitPart::BackLegR);
+		addChain({ EnemyBone::BackLowerR, EnemyBone::BackFootR }, radii.lowerLeg, HitPart::BackLegR);
+	}
+	// 翼(手続きで広げる翼のあるモデル。Wyvern の翼は前脚の手首から出る指なので extraHurtChains で作る)。
+	addChain({ EnemyBone::WingRootL, EnemyBone::WingTipL }, radii.wing, HitPart::WingL);
+	addChain({ EnemyBone::WingRootR, EnemyBone::WingTipR }, radii.wing, HitPart::WingR);
+	// 役割の骨では表せない部位(Wyvern の翼など)。骨の名前で結ぶ。
+	for (const EnemyHitChain& chain : m_enemyProfile->extraHurtChains)
+	{
+		bool hasPrevious = false;
+		bool addedAny = false;
+		Vector3 previous{};
+		for (const std::string& boneName : chain.bones)
+		{
+			Vector3 position{};
+			if (!GetEnemyBoneWorld(boneName.c_str(), position))
+				continue;
+			if (hasPrevious)
+			{
+				shapes.push_back({ previous, position, chain.radius * scale, chain.part });
+				addedAny = true;
+			}
+			previous = position;
+			hasPrevious = true;
+		}
+		// 最後の骨より先へ、最後のカプセルと同じ向きに延ばす。
+		if (addedAny && chain.tipExtend > 0.0f)
+		{
+			Combat::HitCapsule& last = shapes.back();
+			last.b += (last.b - last.a) * chain.tipExtend;
+		}
+	}
+	return shapes;
+}
+
+std::string GameScene::MeasureEnemyHurtShapeFit() const
+{
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front())
+		return "敵がいない";
+	const Combat::HitShapeList shapes = BuildEnemyHurtShapes();
+	if (shapes.empty())
+		return "受ける形が無い";
+	std::vector<Vector3> vertices;
+	m_enemyAnimationMesh->GetAnimatedVertexPositions(vertices, 60000);
+	const Matrix4x4 world = m_enemies.front()->getRenderSRT().GetMatrix();
+
+	// 形ごとに、割り当てた頂点の「芯からの距離」と「芯の両端からのはみ出し」を集める。
+	struct Fit
+	{
+		std::vector<float> radial;
+		std::array<std::vector<float>, 4> radialBySection; ///< 芯を4つに分けた区間ごと(始点側から)
+		float beyondA = 0.0f; ///< 芯の始点より手前へ出た長さの最大
+		float beyondB = 0.0f; ///< 芯の終点より先へ出た長さの最大
+		size_t total = 0;     ///< 割り当てた頂点の数(両端の外も含む)
+		size_t inside = 0;    ///< そのうち、どれかのカプセルの内側にある数(重なった別の形の内側でもよい)
+		Vector3 outsideSum{}; ///< どのカプセルにも入らない頂点の位置の和(敵から見た 右/前/上)
+		float outsideGap = 0.0f; ///< どのカプセルにも入らない頂点の、一番近い面からの距離の最大
+	};
+	// 外れた頂点の場所を、敵から見た向き(右/前/上)で示す。
+	const SRT enemySrt = m_enemies.front()->getRenderSRT();
+	const Vector3 enemyForward(-std::sin(enemySrt.rot.y), 0.0f, -std::cos(enemySrt.rot.y));
+	const Vector3 enemyRight(std::cos(enemySrt.rot.y), 0.0f, -std::sin(enemySrt.rot.y));
+	std::vector<Fit> fits(shapes.size());
+	for (const Vector3& local : vertices)
+	{
+		const Vector3 point = Vector3::Transform(local, world);
+		size_t best = 0;
+		float bestDistance = (std::numeric_limits<float>::max)();
+		float bestAlong = 0.0f;
+		float bestLength = 0.0f;
+		float nearestSurface = (std::numeric_limits<float>::max)(); // 負なら内側
+		for (size_t index = 0; index < shapes.size(); ++index)
+		{
+			const Vector3 axis = shapes[index].b - shapes[index].a;
+			const float length = axis.Length();
+			const float along = length > 0.0001f ? (point - shapes[index].a).Dot(axis) / length : 0.0f;
+			const float clamped = (std::clamp)(along, 0.0f, length);
+			const Vector3 nearest = length > 0.0001f ? shapes[index].a + axis * (clamped / length) : shapes[index].a;
+			const float distance = (point - nearest).Length();
+			nearestSurface = (std::min)(nearestSurface, distance - shapes[index].radius);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = index;
+				bestAlong = along;
+				bestLength = length;
+			}
+		}
+		Fit& fit = fits[best];
+		++fit.total;
+		if (nearestSurface <= 0.0f)
+		{
+			++fit.inside;
+		}
+		else
+		{
+			const Vector3 offset = point - enemySrt.pos;
+			fit.outsideSum += Vector3(offset.Dot(enemyRight), offset.Dot(enemyForward), offset.y);
+			fit.outsideGap = (std::max)(fit.outsideGap, nearestSurface);
+		}
+		// 芯の横方向の距離(両端の外にある頂点は、はみ出しとして別に数える)。
+		if (bestAlong >= 0.0f && bestAlong <= bestLength)
+		{
+			fit.radial.push_back(bestDistance);
+			const size_t section = bestLength > 0.0001f
+				? (std::min)(static_cast<size_t>(3), static_cast<size_t>(bestAlong / bestLength * 4.0f))
+				: 0;
+			fit.radialBySection[section].push_back(bestDistance);
+		}
+		fit.beyondA = (std::max)(fit.beyondA, -bestAlong);
+		fit.beyondB = (std::max)(fit.beyondB, bestAlong - bestLength);
+	}
+
+	const auto percentile = [](std::vector<float>& values, float ratio)
+	{
+		if (values.empty())
+			return 0.0f;
+		const size_t index = (std::min)(values.size() - 1, static_cast<size_t>(ratio * static_cast<float>(values.size() - 1)));
+		return values[index];
+	};
+	std::string report = "部位  頂点数  内側の割合  今の半径  芯の長さ  芯からの距離(50%/90%/最大)  始点の外/終点の外  区間ごとの75%(始点側から)  外れた頂点(面からの最大・中心の右/前/上)\n";
+	char line[400];
+	size_t allInside = 0;
+	for (size_t index = 0; index < shapes.size(); ++index)
+	{
+		Fit& fit = fits[index];
+		std::sort(fit.radial.begin(), fit.radial.end());
+		float sectionP75[4]{};
+		for (size_t section = 0; section < 4; ++section)
+		{
+			std::sort(fit.radialBySection[section].begin(), fit.radialBySection[section].end());
+			sectionP75[section] = percentile(fit.radialBySection[section], 0.75f);
+		}
+		const float length = (shapes[index].b - shapes[index].a).Length();
+		allInside += fit.inside;
+		const size_t outsideCount = fit.total - fit.inside;
+		const Vector3 outsideCenter = outsideCount > 0 ? fit.outsideSum / static_cast<float>(outsideCount) : Vector3(0.0f, 0.0f, 0.0f);
+		snprintf(line, sizeof(line), "%2zu %-6s 頂点%5zu  内側%3.0f%%  半径%5.1f  長さ%5.1f  距離%5.1f/%5.1f/%5.1f  外%5.1f/%5.1f  区間%5.1f/%5.1f/%5.1f/%5.1f  外れ%5.1f (%6.1f/%6.1f/%6.1f)\n",
+			index,
+			Combat::HitPartDebugName(shapes[index].part),
+			fit.total,
+			fit.total > 0 ? 100.0f * static_cast<float>(fit.inside) / static_cast<float>(fit.total) : 0.0f,
+			shapes[index].radius,
+			length,
+			percentile(fit.radial, 0.5f),
+			percentile(fit.radial, 0.9f),
+			fit.radial.empty() ? 0.0f : fit.radial.back(),
+			fit.beyondA,
+			fit.beyondB,
+			sectionP75[0], sectionP75[1], sectionP75[2], sectionP75[3],
+			fit.outsideGap, outsideCenter.x, outsideCenter.y, outsideCenter.z);
+		report += line;
+	}
+	snprintf(line, sizeof(line), "全体: 頂点 %zu のうち %.0f%% がどれかの形の内側\n",
+		vertices.size(), vertices.empty() ? 0.0f : 100.0f * static_cast<float>(allInside) / static_cast<float>(vertices.size()));
+	report += line;
+	return report;
+}
+
+Combat::HitShapeList GameScene::BuildEnemyAttackShapes()
+{
+	using Combat::HitPart;
+	Combat::HitShapeList shapes;
+	if (!m_enemyAnimationMesh || m_enemies.empty() || !m_enemies.front())
+	{
+		m_enemyStrikePreviousTipValid.fill(false);
+		return shapes;
+	}
+	const EnemyHitRadii& radii = m_enemyProfile->hitRadii;
+	const float scale = Combat::EnemyReachScale();
+
+	// 攻撃に使う3つの部位(頭・右前脚の爪・尾)の根元と先端。並びは EnemyStrikePart と同じ。
+	// 先端は前のフレームの位置を覚えておき、その間の通り道もカプセルにする
+	// (速く振ったとき、1フレームの間にプレイヤーの体を飛び越して当たらないことがないように)。
+	std::array<Vector3, 3> roots{};
+	std::array<Vector3, 3> tips{};
+	std::array<bool, 3> valid{};
+	constexpr size_t HEAD = static_cast<size_t>(EnemyStrikePart::Head);
+	constexpr size_t CLAW = static_cast<size_t>(EnemyStrikePart::RightClaw);
+	constexpr size_t TAIL = static_cast<size_t>(EnemyStrikePart::Tail);
+	// 頭は首の先から口先まで(軌跡用の延長 headTrailExtend は見た目のためのものなので使わない)。
+	valid[HEAD] = m_enemyMouthValid && GetEnemyBoneWorld(EnemyBone::Neck3, roots[HEAD]);
+	tips[HEAD] = m_enemyMouthPosition;
+	valid[CLAW] = GetEnemyStrikeSegment(EnemyStrikePart::RightClaw, roots[CLAW], tips[CLAW]);
+	valid[TAIL] = GetEnemyStrikeSegment(EnemyStrikePart::Tail, roots[TAIL], tips[TAIL]);
+
+	const auto addSweep = [&](size_t index, float radius, HitPart part)
+	{
+		if (valid[index] && m_enemyStrikePreviousTipValid[index] &&
+			(tips[index] - m_enemyStrikePreviousTip[index]).LengthSquared() > 0.01f)
+			shapes.push_back({ m_enemyStrikePreviousTip[index], tips[index], radius, part });
+	};
+	const auto addPart = [&](EnemyStrikePart part)
+	{
+		const size_t index = static_cast<size_t>(part);
+		if (!valid[index])
+			return;
+		switch (part)
+		{
+		case EnemyStrikePart::RightClaw:
+		{
+			// 前脚の脛から爪の先まで。上腕は含めない(振り下ろす爪の内側=懐は安全にする)。
+			const float radius = radii.strikeClaw * scale;
+			shapes.push_back({ roots[index], tips[index], radius, HitPart::Claw });
+			addSweep(index, radius, HitPart::Claw);
+			break;
+		}
+		case EnemyStrikePart::Tail:
+		{
+			// 尾は曲がるので、骨に沿って3本に分けて結ぶ。
+			const float radius = radii.strikeTail * scale;
+			Vector3 tail1{};
+			Vector3 tail2{};
+			Vector3 tail3{};
+			if (GetEnemyBoneWorld(EnemyBone::Tail1, tail1) &&
+				GetEnemyBoneWorld(EnemyBone::Tail2, tail2) &&
+				GetEnemyBoneWorld(EnemyBone::Tail3, tail3))
+			{
+				shapes.push_back({ tail1, tail2, radius, HitPart::Tail });
+				shapes.push_back({ tail2, tail3, radius, HitPart::Tail });
+				shapes.push_back({ tail3, tips[index], radius, HitPart::Tail });
+			}
+			else
+			{
+				shapes.push_back({ roots[index], tips[index], radius, HitPart::Tail });
+			}
+			addSweep(index, radius, HitPart::Tail);
+			break;
+		}
+		case EnemyStrikePart::Head:
+		default:
+		{
+			// 受ける形と同じく、太い後ろと細い前(噛みつく口先)に分ける。通り道は口先なので細い方の半径。
+			const float snoutRadius = radii.strikeHeadSnout * scale;
+			AppendEnemyHeadCapsules(shapes, roots[index], tips[index],
+				radii.strikeHead * scale, snoutRadius, radii.headSplit, radii.headSnoutReach * scale);
+			addSweep(index, snoutRadius, HitPart::Head);
+			break;
+		}
+		}
+	};
+
+	switch (m_enemies.front()->getAttackKind())
+	{
+	case Combat::EnemyAttackKind::Slam:
+	case Combat::EnemyAttackKind::Bite:
+	case Combat::EnemyAttackKind::Sweep:
+	{
+		// 専用のクリップがあるモデル(Wyvern)は、そのクリップで振る部位(爪・頭・尾)。
+		// Cethiel のドラゴンは1本の攻撃クリップで頭を振り下ろすので頭(軌跡と同じ決め方)。
+		const EnemyAttackClipBinding* binding = EnemyAttackBindingFor(m_enemies.front()->getAttackKind());
+		addPart(binding != nullptr ? binding->strikePart : EnemyStrikePart::Head);
+		break;
+	}
+	case Combat::EnemyAttackKind::TailSpin:
+		addPart(EnemyStrikePart::Tail);
+		break;
+	case Combat::EnemyAttackKind::Charge:
+	{
+		// 突進は体ごとぶつかる。頭・首・胴・前脚で当てる(尾と後脚は体の後ろを付いてくるだけ)。
+		for (const Combat::HitCapsule& shape : BuildEnemyHurtShapes())
+		{
+			if (shape.part == HitPart::Head || shape.part == HitPart::Neck || shape.part == HitPart::Body ||
+				shape.part == HitPart::FrontLegL || shape.part == HitPart::FrontLegR)
+				shapes.push_back(shape);
+		}
+		break;
+	}
+	case Combat::EnemyAttackKind::Fireball:
+	default:
+		// 火球は飛んでいく火球が当たり判定を持つ(体では当てない)。
+		break;
+	}
+
+	for (size_t i = 0; i < tips.size(); ++i)
+	{
+		m_enemyStrikePreviousTipValid[i] = valid[i];
+		if (valid[i])
+			m_enemyStrikePreviousTip[i] = tips[i];
+	}
+	return shapes;
+}
+
+void GameScene::ResolvePlayerJointBones()
+{
+	m_playerJointBones = {};
+	if (!m_playerAnimationMesh)
+		return;
+	const std::vector<std::string> names = m_playerAnimationMesh->GetBoneNames();
+	const auto lower = [](std::string text)
+	{
+		std::transform(text.begin(), text.end(), text.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return text;
+	};
+	const CharacterModelProfile& profile = GetPlayerModelProfile();
+	for (size_t joint = 0; joint < m_playerJointBones.size(); ++joint)
+	{
+		for (const std::string& alias : profile.canonicalAliases[joint])
+		{
+			const auto found = std::find_if(names.begin(), names.end(),
+				[&](const std::string& name) { return name == alias || lower(name) == lower(alias); });
+			if (found != names.end())
+			{
+				m_playerJointBones[joint] = *found;
+				break;
+			}
+		}
+	}
+}
+
+Combat::HitShapeList GameScene::BuildPlayerHurtShapes(
+	const GM31::GE::Collision::BoundingBoxOBB& playerObb) const
+{
+	using Combat::HitPart;
+	Combat::HitShapeList shapes;
+	if (!m_player)
+		return shapes;
+	const Matrix4x4 world = m_player->getRenderSRT().GetMatrix();
+	const auto joint = [&](CanonicalJoint which, Vector3& out)
+	{
+		const std::string& name = m_playerJointBones[static_cast<size_t>(which)];
+		Vector3 model{};
+		if (name.empty() || !m_playerAnimationMesh || !m_playerAnimationMesh->GetBoneModelPosition(name, model))
+			return false;
+		out = Vector3::Transform(model, world);
+		return true;
+	};
+	const auto addBone = [&](CanonicalJoint from, CanonicalJoint to, float radius, HitPart part)
+	{
+		Vector3 a{};
+		Vector3 b{};
+		if (joint(from, a) && joint(to, b))
+			shapes.push_back({ a, b, radius, part });
+	};
+	// 太さは身長約18(騎士・Sword and Shield Pack とも)に合わせた値。
+	// 骨から作るので、前転で体を丸める・攻撃で踏み込むといった姿勢がそのまま判定になる。
+	addBone(CanonicalJoint::Hips, CanonicalJoint::Neck, 2.8f, HitPart::Body);
+	Vector3 neck{};
+	Vector3 head{};
+	if (joint(CanonicalJoint::Neck, neck) && joint(CanonicalJoint::Head, head))
+	{
+		// 頭の骨は頭の付け根にあるので、首→頭の向きへ頭の大きさ分だけ延ばす。
+		Vector3 up = head - neck;
+		if (up.LengthSquared() > 0.0001f)
+			up.Normalize();
+		else
+			up = Vector3(0.0f, 1.0f, 0.0f);
+		shapes.push_back({ head, head + up * 1.6f, 1.6f, HitPart::Head });
+	}
+	addBone(CanonicalJoint::LeftUpperArm, CanonicalJoint::LeftLowerArm, 1.1f, HitPart::ArmL);
+	addBone(CanonicalJoint::LeftLowerArm, CanonicalJoint::LeftHand, 1.0f, HitPart::ArmL);
+	addBone(CanonicalJoint::RightUpperArm, CanonicalJoint::RightLowerArm, 1.1f, HitPart::ArmR);
+	addBone(CanonicalJoint::RightLowerArm, CanonicalJoint::RightHand, 1.0f, HitPart::ArmR);
+	addBone(CanonicalJoint::LeftUpperLeg, CanonicalJoint::LeftLowerLeg, 1.5f, HitPart::LegL);
+	addBone(CanonicalJoint::LeftLowerLeg, CanonicalJoint::LeftFoot, 1.2f, HitPart::LegL);
+	addBone(CanonicalJoint::RightUpperLeg, CanonicalJoint::RightLowerLeg, 1.5f, HitPart::LegR);
+	addBone(CanonicalJoint::RightLowerLeg, CanonicalJoint::RightFoot, 1.2f, HitPart::LegR);
+
+	// 胴の骨が取れないモデルでは、体を包む箱から縦長のカプセルを1つ作る(以前の箱とほぼ同じ広さ)。
+	const bool hasBody = std::any_of(shapes.begin(), shapes.end(),
+		[](const Combat::HitCapsule& shape) { return shape.part == HitPart::Body; });
+	if (!hasBody)
+	{
+		shapes.clear();
+		const float radius = std::max(0.5f, std::min(playerObb.lengthx, playerObb.lengthz) * 0.5f);
+		const float halfCore = std::max(0.0f, playerObb.lengthy * 0.5f - radius);
+		shapes.push_back({
+			playerObb.worldcenter - playerObb.axisY * halfCore,
+			playerObb.worldcenter + playerObb.axisY * halfCore,
+			radius, HitPart::Body });
+	}
+	return shapes;
 }
 
 float GameScene::EnemyRoarClipTime(enemy::MotionState state) const
@@ -6306,6 +6905,10 @@ void GameScene::DebugCollision()
 		ImGui::Indent();
 		ImGui::Checkbox("物陰でも透けて見せる", &m_drawAttackCollisionXray);
 		ImGui::SeparatorText("表示する判定");
+		ImGui::Checkbox("敵の部位(受ける形・緑)", &m_drawEnemyHurtShapes);
+		ImGui::Checkbox("プレイヤーの部位(受ける形・水色)", &m_drawPlayerHurtShapes);
+		ImGui::Checkbox("敵の攻撃する部位(橙)", &m_drawEnemyAttackShapes);
+		ImGui::Checkbox("プレイヤーの剣(攻撃する形・黄。攻撃中だけ)", &m_drawSwordShapes);
 		ImGui::Checkbox("プレイヤーのOBB", &m_drawPlayerObb);
 		ImGui::Checkbox("敵のOBB", &m_drawEnemyObb);
 		ImGui::Checkbox("敵のAABB(粗い判定)", &m_drawEnemyAabb);
@@ -6317,7 +6920,34 @@ void GameScene::DebugCollision()
 	ImGui::Checkbox("旧デバッグ表示(球・座標軸)", &m_drawLegacyPhysicsDebug);
     ImGui::Separator();
 	const auto& collision = m_combat.GetCollisionDebugState();
-	ImGui::Text("判定の流れ: AABBで粗く絞る → OBBで正確に判定");
+	ImGui::Text("判定の流れ: AABBで粗く絞る → %s",
+		collision.partShapesUsed ? "部位ごとのカプセルで正確に判定" : "OBBで正確に判定(部位の骨が取れない)");
+	ImGui::Text("敵の攻撃の判定: %s",
+		collision.enemyAttackUsesShapes ? "振っている部位の形 × プレイヤーの部位" : "距離と角度(従来)");
+	// どの部位どうしが当たったか(当たったフレームだけ出る。部位の形で判定したとき)。
+	static std::string lastSwordHit = "-";
+	static std::string lastEnemyHit = "-";
+	if (collision.narrowPhaseHit && collision.enemyHurtHitIndex >= 0 &&
+		collision.enemyHurtHitIndex < static_cast<int>(collision.enemyHurtShapes.size()))
+		lastSwordHit = Combat::HitPartDebugName(collision.enemyHurtShapes[static_cast<size_t>(collision.enemyHurtHitIndex)].part);
+	if (collision.enemyAttackHitIndex >= 0 && collision.playerHurtHitIndex >= 0 &&
+		collision.enemyAttackHitIndex < static_cast<int>(collision.enemyAttackShapes.size()) &&
+		collision.playerHurtHitIndex < static_cast<int>(collision.playerHurtShapes.size()))
+	{
+		lastEnemyHit = std::string(Combat::HitPartDebugName(collision.enemyAttackShapes[static_cast<size_t>(collision.enemyAttackHitIndex)].part)) +
+			" → " + Combat::HitPartDebugName(collision.playerHurtShapes[static_cast<size_t>(collision.playerHurtHitIndex)].part);
+	}
+	ImGui::Text("最後に剣が触れた敵の部位: %s", lastSwordHit.c_str());
+	ImGui::Text("最後に敵の攻撃が触れた部位: %s", lastEnemyHit.c_str());
+	ImGui::Text("部位の数: 敵 %d / プレイヤー %d / 敵の攻撃 %d",
+		static_cast<int>(collision.enemyHurtShapes.size()),
+		static_cast<int>(collision.playerHurtShapes.size()),
+		static_cast<int>(collision.enemyAttackShapes.size()));
+	// 受ける形の太さが、モデルの実際の太さと合っているかを今の姿勢で測る。
+	if (ImGui::Button("敵の部位の太さをモデルと比べる"))
+		m_hitFitReport = MeasureEnemyHurtShapeFit();
+	if (!m_hitFitReport.empty())
+		ImGui::TextUnformatted(m_hitFitReport.c_str());
     ImGui::Text("攻撃判定: %s", m_combat.IsPlayerAttackActive() ? "出ている" : "出ていない");
 	ImGui::Text("剣の姿勢: %s", collision.swordTransformValid ? "取得できている" : "取得できていない");
 	ImGui::Text("プレイヤーのOBB: %.1f x %.1f x %.1f",
@@ -6351,7 +6981,10 @@ void GameScene::DebugCollision()
 	ImGui::TextColored(ImVec4(0.20f, 0.75f, 1.0f, 1.0f), "明るい青: プレイヤーのOBB");
 	ImGui::TextColored(ImVec4(0.25f, 1.0f, 0.35f, 1.0f), "緑: 敵のOBB");
 	ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.05f, 1.0f), "橙・紫: 剣のOBB");
-	ImGui::TextColored(ImVec4(1.0f, 0.08f, 0.04f, 1.0f), "赤: 正確な判定で命中");
+	ImGui::TextColored(ImVec4(1.0f, 0.08f, 0.04f, 1.0f), "赤: 正確な判定で命中(当たった部位)");
+	ImGui::TextColored(ImVec4(0.20f, 1.0f, 0.40f, 1.0f), "緑のカプセル: 敵の部位(剣が当たる)");
+	ImGui::TextColored(ImVec4(0.15f, 0.75f, 1.0f, 1.0f), "水色のカプセル: プレイヤーの部位(敵の攻撃が当たる)");
+	ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.05f, 1.0f), "橙のカプセル: 敵の攻撃している部位(判定中)");
     ImGui::EndTabItem();
 }
 

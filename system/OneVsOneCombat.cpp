@@ -127,7 +127,8 @@ namespace
         const Vector3& previousSwordTip,
         bool swordTransformValid,
         const BoundingBoxOBB& playerObb,
-        const BoundingBoxOBB& enemyObb)
+        const BoundingBoxOBB& enemyObb,
+        const Combat::HitShapeList* enemyHurtShapes)
     {
         OneVsOneCombat::CollisionDebugState result{};
         result.swordTransformValid = swordTransformValid;
@@ -135,6 +136,15 @@ namespace
         result.enemyObb = enemyObb;
         result.playerBroadPhase = GM31::GE::Collision::BuildWorldAABBFromOBB(playerObb);
         result.enemyBroadPhase = GM31::GE::Collision::BuildWorldAABBFromOBB(enemyObb);
+        // 部位の形があれば、粗い判定の箱も部位の形を包む箱にする。
+        // モデルの休止姿勢の箱だと、振り回した尾や伸ばした首がはみ出すため。
+        const bool useParts = enemyHurtShapes != nullptr && !enemyHurtShapes->empty();
+        if (useParts)
+        {
+            result.partShapesUsed = true;
+            result.enemyHurtShapes = *enemyHurtShapes;
+            Combat::HitShapesBounds(*enemyHurtShapes, result.enemyBroadPhase.min, result.enemyBroadPhase.max);
+        }
         if (!swordTransformValid)
             return result;
 
@@ -142,12 +152,30 @@ namespace
         result.tipSweepObb = MakeSegmentObb(previousSwordTip, swordTip, 2.2f);
         result.attackBroadPhase = MakePointCloudAabb(
             swordBase, swordTip, previousSwordTip, 1.1f);
+        // 剣は「刃(柄→剣先)」「剣先の通り道(前の剣先→今の剣先)」「柄→前の剣先」の3本のカプセルで表す。
+        // 太さは箱のとき(刃1.4・通り道2.2)と同じ。3本目は、刃が1フレームで掃いた三角形の
+        // もう1辺で、速い振りで細い部位(首・脚)をすり抜けないようにするため。
+        // 粗い判定で外れても描けるよう、先に作って残しておく。
+        result.swordShapes = {
+            { swordBase, swordTip, 0.7f, Combat::HitPart::Claw },
+            { previousSwordTip, swordTip, 1.1f, Combat::HitPart::Claw },
+            { swordBase, previousSwordTip, 0.7f, Combat::HitPart::Claw },
+        };
         result.broadPhaseOverlap = OverlapsAabb(
             result.attackBroadPhase, result.enemyBroadPhase);
         if (!result.broadPhaseOverlap)
             return result;
 
         result.narrowPhaseTested = true;
+        if (useParts)
+        {
+            const Combat::HitShapeContact contact = Combat::FindFirstOverlap(result.swordShapes, *enemyHurtShapes);
+            result.narrowPhaseHit = contact.hit;
+            result.swordHitIndex = contact.attackIndex;
+            result.enemyHurtHitIndex = contact.hurtIndex;
+            result.swordContactPoint = contact.point;
+            return result;
+        }
         result.narrowPhaseHit = OverlapsObb(result.bladeObb, result.enemyObb) ||
             OverlapsObb(result.tipSweepObb, result.enemyObb);
         return result;
@@ -166,6 +194,8 @@ void OneVsOneCombat::Reset()
     m_enemyAttack = {};
     m_collisionDebug = {};
 	m_playerHitGrace = 0.0f;
+	m_graceContactValid = false;
+	m_playerHitContactValid = false;
 }
 
 void OneVsOneCombat::ClearEnemyCollisionDebug()
@@ -175,6 +205,14 @@ void OneVsOneCombat::ClearEnemyCollisionDebug()
 	m_collisionDebug.narrowPhaseHit = false;
 	m_collisionDebug.enemyBroadPhase = {};
 	m_collisionDebug.enemyObb = {};
+	m_collisionDebug.partShapesUsed = false;
+	m_collisionDebug.enemyHurtShapes.clear();
+	m_collisionDebug.enemyHurtHitIndex = -1;
+	m_collisionDebug.enemyAttackShapes.clear();
+	m_collisionDebug.enemyAttackLive = false;
+	m_collisionDebug.enemyAttackUsesShapes = false;
+	m_collisionDebug.enemyAttackHitIndex = -1;
+	m_collisionDebug.playerHurtHitIndex = -1;
 }
 
 OneVsOneCombat::CollisionDebugState OneVsOneCombat::EvaluateSwordCollisionPreview(
@@ -182,10 +220,11 @@ OneVsOneCombat::CollisionDebugState OneVsOneCombat::EvaluateSwordCollisionPrevie
 	const Vector3& swordTip,
 	const Vector3& previousSwordTip,
 	const BoundingBoxOBB& playerObb,
-	const BoundingBoxOBB& enemyObb)
+	const BoundingBoxOBB& enemyObb,
+	const Combat::HitShapeList* enemyHurtShapes)
 {
 	return EvaluateSwordCollision(
-		swordBase, swordTip, previousSwordTip, true, playerObb, enemyObb);
+		swordBase, swordTip, previousSwordTip, true, playerObb, enemyObb, enemyHurtShapes);
 }
 
 void OneVsOneCombat::UpdatePlayerCollisionDebug(
@@ -198,6 +237,7 @@ void OneVsOneCombat::UpdatePlayerCollisionDebug(
 	ClearEnemyCollisionDebug();
 	m_collisionDebug.swordTransformValid = swordTransformValid;
 	m_collisionDebug.playerObb = playerObb;
+	m_collisionDebug.playerHurtShapes = m_playerHurtShapes;
 	m_collisionDebug.playerBroadPhase =
 		GM31::GE::Collision::BuildWorldAABBFromOBB(playerObb);
 	m_collisionDebug.attackBroadPhase = {};
@@ -271,8 +311,14 @@ void OneVsOneCombat::Update(
         previousSwordTip,
         swordTransformValid,
         playerObb,
-        enemyObb);
+        enemyObb,
+        &m_enemyHurtShapes);
+	m_collisionDebug.playerHurtShapes = m_playerHurtShapes;
+	m_collisionDebug.enemyAttackShapes = m_enemyAttackShapes;
+	m_playerHitContactValid = false;
 	m_playerHitGrace = std::max(0.0f, m_playerHitGrace - deltaSeconds);
+	if (m_playerHitGrace <= 0.0f)
+		m_graceContactValid = false;
 	if ((m_playerAttack.phase == Phase::Windup ||
 		m_playerAttack.phase == Phase::Active) &&
 		m_collisionDebug.narrowPhaseHit)
@@ -281,6 +327,8 @@ void OneVsOneCombat::Update(
 		// 60Hz更新では、振りかぶり中に剣が交差して次のダメージ開始フレームで
 		// すでに離れていることがあるためである。
 		m_playerHitGrace = 0.12f;
+		m_graceContactValid = m_collisionDebug.partShapesUsed;
+		m_graceContact = m_collisionDebug.swordContactPoint;
 	}
 
     m_enemyCooldown = std::max(0.0f, m_enemyCooldown - deltaSeconds);
@@ -338,12 +386,56 @@ void OneVsOneCombat::Update(
 			// 尾回転は半回転ごとに1回まで当たる。半回転の間の一拍では判定を出さない
 			// (尾が止まっているので、そこへ歩いて当たるのは見た目と合わない)。
 			const int maxHits = Combat::EnemyMaxHitsOf(m_enemyAttackKind, m_enemySpinHalfTurns);
-			const bool spinPausing = tailArc &&
-				Combat::EnemySpinPhaseAt(m_enemyAttack.elapsed, m_enemySpinHalfTurns).pausing;
-			if (m_enemyAttack.hitCount < maxHits &&
+			const Combat::EnemySpinPhase spinPhase =
+				Combat::EnemySpinPhaseAt(m_enemyAttack.elapsed, m_enemySpinHalfTurns);
+			const bool spinPausing = tailArc && spinPhase.pausing;
+			// 部位の形(攻撃する形とプレイヤーの受ける形)がそろっていれば、それで当たりを見る。
+			// 以前の「距離と角度(扇形)」では、前脚を振り下ろす攻撃で爪の内側(懐)に入っていても
+			// 扇形の中にいるだけで当たっていた(審査会での指摘)。
+			const bool useShapes = !m_enemyAttackShapes.empty() && !m_playerHurtShapes.empty();
+			m_collisionDebug.enemyAttackUsesShapes = useShapes;
+			if (useShapes &&
+				m_enemyAttack.hitCount < maxHits &&
+				!spinPausing &&
+				// 尾回転は回り始めの時刻から、ほかは判定が出ている間ずっと見る。
+				// 判定の時間(Active)そのものが「振り下ろしの前後だけ」に絞ってあるので、
+				// その間に爪・頭・尾が実際にプレイヤーの体へ触れたときだけ当てる。
+				m_enemyAttack.elapsed >= (tailArc ? firstHitTime : 0.0f))
+			{
+				// 尾回転は半回転ごとに1回まで(同じ半回転の中で重なり続けても1回)。
+				const int segment = tailArc ? spinPhase.segmentIndex : 0;
+				if (segment != m_enemyAttack.lastHitSegment)
+				{
+					m_collisionDebug.enemyAttackLive = true;
+					const Combat::HitShapeContact contact =
+						Combat::FindFirstOverlap(m_enemyAttackShapes, m_playerHurtShapes);
+					// 尾回転の懐(尾が頭上を通る距離)は、形が重なっても当てない。
+					// 「踏み込んで避ける」答えを残すための決まりで、形の判定より優先する。
+					const float minHitRange = Combat::EnemyMinHitRangeOf(m_enemyAttackKind);
+					const bool wouldHit = contact.hit && distance >= minHitRange;
+					if (wouldHit)
+					{
+						m_collisionDebug.enemyAttackHitIndex = contact.attackIndex;
+						m_collisionDebug.playerHurtHitIndex = contact.hurtIndex;
+						if (!playerInvincible)
+						{
+							m_enemyHitLanded = true;
+							if (!m_playerDebugInvincible)
+								DamagePlayer(static_cast<float>(enemyAttack.damage));
+						}
+						// 当たったとき、または前転の無敵でくぐり抜けたときに権利を使う。
+						// 外れている間は使わない(振っている部位が届いたときだけ当たる)。
+						++m_enemyAttack.hitCount;
+						m_enemyAttack.lastHitSegment = segment;
+					}
+				}
+			}
+			else if (!useShapes &&
+				m_enemyAttack.hitCount < maxHits &&
 				!spinPausing &&
 				m_enemyAttack.elapsed >= firstHitTime)
 			{
+				// --- 従来の判定(骨が取れないモデル用): 距離と正面からの角度 ---
 				// 射程は攻撃の種類ごとに違う。噛みつきは近距離だけ、薙ぎ払いは広い。
 				const float hitRange = enemyAttack.broadPhaseFilter.maxDistance;
 				// 尾回転には近すぎて当たらない距離がある(尾が頭上を通る懐)。
@@ -456,6 +548,8 @@ void OneVsOneCombat::UpdateWithoutEnemy(
 		0.1f);
 	// 当たる相手がいないので、境界での接触の保持も持ち越さない。
 	m_playerHitGrace = 0.0f;
+	m_graceContactValid = false;
+	m_playerHitContactValid = false;
 	m_playerHitLanded = false;
 	m_enemyHitLanded = false;
 	if (IsPlayerDefeated())
@@ -517,6 +611,17 @@ void OneVsOneCombat::AdvancePlayerAttack(
 				// 当たったことは無敵の設定に関係なく記録する(火花・ヒットストップ・怯みはこれで出す)。
 				// 撮影・調整用の「敵を無敵」では、体力だけ減らさない(倒れず、弱り具合も変わらない)。
 				m_playerHitLanded = true;
+				// 火花を出す位置。今のフレームで触れていればその点、境界の持ち越しならそのときの点。
+				if (m_collisionDebug.narrowPhaseHit && m_collisionDebug.partShapesUsed)
+				{
+					m_playerHitContactValid = true;
+					m_playerHitContact = m_collisionDebug.swordContactPoint;
+				}
+				else if (m_graceContactValid)
+				{
+					m_playerHitContactValid = true;
+					m_playerHitContact = m_graceContact;
+				}
 				if (!m_enemyDebugInvincible)
 				{
 					const float damage = m_playerAttack.kind == AttackKind::Heavy ? HEAVY_DAMAGE : PLAYER_DAMAGE;
