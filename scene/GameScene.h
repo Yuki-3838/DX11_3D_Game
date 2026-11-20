@@ -322,6 +322,23 @@ private:
 	const EnemyAttackClipBinding* EnemyAttackBindingFor(Combat::EnemyAttackKind kind) const;
 	bool GetEnemyBoneWorld(EnemyBone role, Vector3& out) const;
 	bool GetEnemyStrikeSegment(EnemyStrikePart part, Vector3& root, Vector3& tip) const;
+	// --- 部位ごとの当たり判定(CombatHitShapes.h)。骨の位置から毎フレーム作る ---
+	// 敵の受ける形(頭・首・胴・尾・脚・翼)。プレイヤーの剣が当たるかはこれで見る。
+	Combat::HitShapeList BuildEnemyHurtShapes() const;
+	// 受ける形がモデルの実際の太さに合っているかを測り、部位ごとの表(文字列)にする。
+	// 今の姿勢でスキニングした頂点を一番近いカプセルの芯へ割り当て、芯からの距離と、両端からのはみ出しを見る。
+	std::string MeasureEnemyHurtShapeFit() const;
+	// 敵の今の攻撃で振っている部位(爪・頭・尾、突進なら体)。前のフレームからの先端の通り道も足す。
+	// 先端の位置を覚えるので、毎フレーム1回だけ呼ぶ。
+	Combat::HitShapeList BuildEnemyAttackShapes();
+	// プレイヤーの受ける形(頭・胴・腕・脚)。骨が取れなければ体を包む箱から縦長のカプセルを1つ作る。
+	Combat::HitShapeList BuildPlayerHurtShapes(const GM31::GE::Collision::BoundingBoxOBB& playerObb) const;
+	// プレイヤーの骨の名前(モデルの表の canonicalAliases から、読み込んだモデルにある名前を選んだもの)。
+	std::array<std::string, static_cast<size_t>(CanonicalJoint::Count)> m_playerJointBones;
+	void ResolvePlayerJointBones();
+	// 攻撃する部位の先端の前のフレームの位置(EnemyStrikePart の並び)。速く振ったときのすり抜けを防ぐ。
+	std::array<Vector3, 3> m_enemyStrikePreviousTip{};
+	std::array<bool, 3> m_enemyStrikePreviousTipValid{};
 	int m_enemyAnimationFrame = 0;
 	// 次のキーまでの進み具合(0〜1)。経過時間で進める(fpsに依存させない)。
 	float m_enemyAnimationTick = 0.0f;
@@ -632,6 +649,13 @@ private:
 	bool m_drawEnemyAabb = false;
 	bool m_drawSwordObb = false;
 	bool m_drawAttackAabb = false;
+	// 部位ごとの判定(カプセル)。剣の判定の箱と同じく、当たり判定の形を描くときに出す。
+	bool m_drawEnemyHurtShapes = true;
+	bool m_drawPlayerHurtShapes = true;
+	bool m_drawEnemyAttackShapes = true;
+	bool m_drawSwordShapes = true;  ///< 剣の攻撃する形。攻撃の判定が出ている間だけ描く
+	// 「モデルとの太さを測る」の結果(デバッグ表示の当たり判定タブに出す)。
+	std::string m_hitFitReport;
 	bool m_drawLegacyPhysicsDebug = false;
 	// 攻撃ごとの構えを見比べるための調整用(デバッグ表示からのみ操作する)。
 	bool m_forceEnemyAttack = false;
@@ -658,6 +682,8 @@ private:
 	bool m_captureFlight = false;
 	// capture_ui=1 のときは、体力バーなどのUIも写した絵を保存する(既定は3D描画だけ)。
 	bool m_captureUi = false;
+	// capture_hit_fit=1 のときは、撮るたびに受ける形とモデルの太さの比べを capture_dir\hit_fit.txt へ足す。
+	bool m_captureHitFit = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
 	float m_battleSeconds = 0.0f;
 

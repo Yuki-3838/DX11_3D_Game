@@ -96,6 +96,7 @@
     <ClInclude Include="..\system\scenemanager.h" />
     <ClInclude Include="..\system\SoundManager.h" />
     <ClInclude Include="..\system\OneVsOneCombat.h" />
+    <ClInclude Include="..\system\CombatHitShapes.h" />
     <ClInclude Include="..\system\AttackTimelineEditor.h" />
     <ClInclude Include="..\system\AttackTimelineFile.h" />
     <ClInclude Include="..\system\ArenaFloor.h" />
