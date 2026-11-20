@@ -243,6 +243,12 @@
     <ClInclude Include="..\system\ArenaFloor.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
+    <ClInclude Include="..\system\ArenaOutskirts.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
+    <ClInclude Include="..\system\ArenaWallVisual.h">
+      <Filter>ヘッダー ファイル</Filter>
+    </ClInclude>
     <ClInclude Include="..\system\GameInput.h">
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>

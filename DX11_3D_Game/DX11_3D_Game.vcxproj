@@ -99,6 +99,8 @@
     <ClInclude Include="..\system\AttackTimelineEditor.h" />
     <ClInclude Include="..\system\AttackTimelineFile.h" />
     <ClInclude Include="..\system\ArenaFloor.h" />
+    <ClInclude Include="..\system\ArenaOutskirts.h" />
+    <ClInclude Include="..\system\ArenaWallVisual.h" />
     <ClInclude Include="..\system\MotionBlur.h" />
     <ClInclude Include="..\system\EnemyModelProfile.h" />
     <ClInclude Include="..\system\EnemyPreload.h" />

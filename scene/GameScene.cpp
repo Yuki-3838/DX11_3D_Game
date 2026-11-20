@@ -171,6 +171,56 @@ namespace {
 	}
 	const Color ARENA_WALL_COLOR(0.38f, 0.27f, 0.19f, 1.0f);
 
+	/**
+	 * @brief 球(中心と半径)を闘技場の内側へ戻すための移動量を返す。内側にいれば0。
+	 *
+	 * 壁の処理(calcWallSlideMove)は「動いた先」が壁に触れているかしか見ないので、
+	 * 次の2つで壁の外へ出られてしまっていた。
+	 * - プレイヤーと敵の体の押し合い(resolvePlayerEnemyCollisions)は壁を見ずに位置をずらす。
+	 *   壁際で大きな敵に押されると、壁の向こうへ押し出された。
+	 * - 1フレームの移動が大きい(処理落ちしたフレームの回避など)と、動いた先がもう壁の向こうで、
+	 *   壁に触れていないとみなされた。
+	 * 闘技場は凸の多角形なので、16枚の壁の平面すべての内側にいれば闘技場の中にいる。
+	 * 外にはみ出した分だけ、壁の向き(中心から外向き)と逆へ戻す。角では2枚に掛かるので2回くり返す。
+	 */
+	/**
+	 * @brief プレイヤーの壁の判定に使う半径。
+	 *
+	 * モデルの頂点から求めた境界球(m_localbsplayer)は、騎士のモデルでは半径が約0.1しかない。
+	 * 壁の判定は「動いた先が壁から半径以内か」を見るので、半径がほぼ0だと1歩で壁の面を越え、
+	 * 壁を素通りして闘技場の外へ出られた。体の太さ(PLAYER_BODY_RADIUS)を下回らないようにする。
+	 * さらに壁の平面は壁パネルの中心(厚みの真ん中)を通るので、厚みの半分を足して、
+	 * 体が見た目の壁の内側の面で止まるようにする。
+	 */
+	float PlayerWallRadius(float sphereRadius)
+	{
+		return std::max(sphereRadius, PLAYER_BODY_RADIUS) + ARENA_WALL_DEPTH * 0.5f;
+	}
+
+	Vector3 arenaContainmentPush(const Vector3& center, float radius)
+	{
+		Vector3 push(0.0f, 0.0f, 0.0f);
+		// 壁の処理と同じく、壁パネルの中心を通る平面から半径だけ内側までを動ける範囲にする。
+		const float limit = ARENA_RADIUS - radius;
+		for (int iteration = 0; iteration < 2; ++iteration)
+		{
+			for (int i = 0; i < ARENA_WALL_SEGMENTS; ++i)
+			{
+				const float angle = (2.0f * PI * static_cast<float>(i)) /
+					static_cast<float>(ARENA_WALL_SEGMENTS);
+				const float outwardX = std::sinf(angle);
+				const float outwardZ = std::cosf(angle);
+				const float distance = outwardX * (center.x + push.x) + outwardZ * (center.z + push.z);
+				if (distance > limit)
+				{
+					push.x -= outwardX * (distance - limit);
+					push.z -= outwardZ * (distance - limit);
+				}
+			}
+		}
+		return push;
+	}
+
 	std::array<Vector3, 8> GetAabbCorners(
 		const GM31::GE::Collision::BoundingBoxAABB& box)
 	{
@@ -1380,16 +1430,18 @@ void GameScene::update(uint64_t deltatime)
 	Vector3 playerMove = nextPlayerSphere.center - prevPlayerSphere.center;
 	// 壁に当たったら止めずに、壁に沿って滑らせる。
 	// 歩き・回避・吹き飛ばし・攻撃の踏み込みのどれも、ここを通る。
+	// 壁の判定に使う太さは PlayerWallRadius を参照(モデルの境界球のままだと細すぎて壁を素通りした)。
+	const float playerWallRadius = PlayerWallRadius(prevPlayerSphere.radius);
 	Vector3 adjustedPlayerMove = calcWallSlideMove(
 		walldatas,
-		prevPlayerSphere.radius,
+		playerWallRadius,
 		prevPlayerSphere.center,
 		playerMove);
 
 	if (adjustedPlayerMove.Length() < playerMove.Length()) {
 		auto playerHitWalls = checkWallCollision(
 			walldatas,
-			prevPlayerSphere.radius,
+			playerWallRadius,
 			prevPlayerSphere.center,
 			playerMove);
 		appendHitWalls(m_hitWallObjects, playerHitWalls);
@@ -1675,6 +1727,33 @@ void GameScene::update(uint64_t deltatime)
 		m_localbsplayer,
 		m_localbsenemy,
 		lockPlayerMovement);
+	// 動きと押し合いがすべて終わった後で、プレイヤーと敵を闘技場の内側へ戻す(壁の外へ出られないように)。
+	{
+		SRT playerSrtAfterPush = m_player->getSRT();
+		const GM31::GE::Collision::BoundingSphere playerSphere =
+			transformBSphere(m_localbsplayer, playerSrtAfterPush);
+		const Vector3 playerPush = arenaContainmentPush(
+			playerSphere.center, PlayerWallRadius(playerSphere.radius));
+		if (playerPush.LengthSquared() > 0.0f)
+		{
+			playerSrtAfterPush.pos += playerPush;
+			m_player->setSRT(playerSrtAfterPush);
+		}
+		for (auto& e : m_enemies)
+		{
+			if (!e)
+				continue;
+			SRT enemySrtAfterPush = e->getSRT();
+			const GM31::GE::Collision::BoundingSphere enemySphere =
+				transformBSphere(m_localbsenemy, enemySrtAfterPush);
+			const Vector3 enemyPush = arenaContainmentPush(enemySphere.center, enemySphere.radius);
+			if (enemyPush.LengthSquared() > 0.0f)
+			{
+				enemySrtAfterPush.pos += enemyPush;
+				e->setSRT(enemySrtAfterPush);
+			}
+		}
+	}
 	// 命中演出の残り時間を減らす。
 	m_enemyHitFlashTime = std::max(0.0f, m_enemyHitFlashTime - deltaSeconds);
 	m_playerDamageFlashTime = std::max(0.0f, m_playerDamageFlashTime - deltaSeconds);
@@ -3455,7 +3534,8 @@ void GameScene::draw(uint64_t deltatime)
 		}
 	}
 
-	m_field->draw(deltatime);
+	// 闘技場の外の地面。床より十分下に置いてあり、闘技場の内側では床に隠れる。
+	m_outskirts.Draw();
 
 	// 闘技場に石の床と外周ブロックを描画する。
 	// 実際の衝突平面は後で描画し、ここでは見た目だけの外殻として
@@ -3464,15 +3544,24 @@ void GameScene::draw(uint64_t deltatime)
 	m_arenaFloor.Draw();
 
 	Renderer::DisableCulling(false);
-	m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
-	m_arenaWallCapVisual.SetSize(ARENA_WALL_WIDTH + 6.0f, 8.0f, ARENA_WALL_DEPTH + 8.0f);
-	for (const auto& arenaWall : m_walls)
+	if (m_arenaStoneWall.IsReady())
 	{
-		SRT wallSrt = arenaWall->getSRT();
-		// 壁は全周を同じ色で見せるため、照明による面ごとの明暗を付けない。
-		m_arenaWallVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
-		wallSrt.pos.y = ARENA_WALL_HEIGHT + 4.0f;
-		m_arenaWallCapVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+		// 胸壁の付いた石の城壁(Poly Haven「Modular Fort 01」のモデルを16枚並べたもの)。
+		m_arenaStoneWall.Draw();
+	}
+	else
+	{
+		// 石の写真が読めなかったときは、以前の一色の箱で描く。
+		m_arenaWallVisual.SetSize(ARENA_WALL_WIDTH, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
+		m_arenaWallCapVisual.SetSize(ARENA_WALL_WIDTH + 6.0f, 8.0f, ARENA_WALL_DEPTH + 8.0f);
+		for (const auto& arenaWall : m_walls)
+		{
+			SRT wallSrt = arenaWall->getSRT();
+			// 壁は全周を同じ色で見せるため、照明による面ごとの明暗を付けない。
+			m_arenaWallVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+			wallSrt.pos.y = ARENA_WALL_HEIGHT + 4.0f;
+			m_arenaWallCapVisual.DrawUnlit(wallSrt, ARENA_WALL_COLOR);
+		}
 	}
 	Renderer::DisableCulling(true);
 
@@ -4567,7 +4656,17 @@ void GameScene::init()
 	// 床。以前の床(厚さ0.6の箱を-0.59に置いたもの)と上面の高さをそろえる(-0.29)。
 	// 色は試遊での指摘(距離感が分かりにくい)を受けて、まずはトレーニングステージ風にする。
 	// デバッグ表示の「撮影・調整用」から石の色合いへ切り替えられる。
-	m_arenaFloor.Initialize(ARENA_RADIUS * 2.0f, -0.29f, ArenaFloor::TrainingPalette());
+	// 形は壁の多角形に合わせる(壁の外へはみ出さない)。
+	m_arenaFloor.Initialize(
+		ARENA_RADIUS, ARENA_WALL_SEGMENTS, ARENA_WALL_DEPTH, ARENA_FLOOR_TOP_Y, ArenaFloor::TrainingPalette());
+	// 床の見た目(既定は砂+薄い線)。撮影・比較用に dev_settings.ini の floor=sand / grid でも選べる。
+	{
+		const std::string floorSetting = GetDevSetting("floor", "sand_lines");
+		if (floorSetting == "sand")
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Sand);
+		else if (floorSetting == "grid")
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+	}
 
 	// 大型の敵は、戦闘カメラを引いて注視点を上げ、頭が画面の上で切れないようにする。
 	// 倍率2(背丈がプレイヤーの約1.8倍)で距離1.5倍・注視点1.35倍がちょうど頭まで収まった(撮影で確認)ので、
@@ -4794,8 +4893,7 @@ void GameScene::init()
 				m_enemyProfile->bodyCollisionRadius };
 		}
 	}
-	m_field = std::make_unique<field>(this);
-	m_field->init();
+	m_outskirts.Initialize();
 
 	m_flightBackdrop.Initialize();
 
@@ -5011,6 +5109,8 @@ void GameScene::FinishSceneInit()
 		arenaWall->calcEqation();
 		m_walls.push_back(std::move(arenaWall));
 	}
+	// 見た目の石の壁。m_walls と同じ並び・大きさで作る(衝突は m_walls のまま)。
+	m_arenaStoneWall.Initialize(ARENA_RADIUS, ARENA_WALL_SEGMENTS, ARENA_WALL_HEIGHT, ARENA_WALL_DEPTH);
 
 	m_enemies.reserve(INITIAL_ENEMYNUM);
 	for (int ecnt = 0; ecnt < INITIAL_ENEMYNUM; ecnt++) { 		Vector3 enemyPos = m_enemyIntroLandingPosition; 		float enemyRotY = 0.0f; 		m_enemies.push_back(createEnemyObject(this, m_player.get(), enemyPos, enemyRotY, m_enemyModelScale)); 	}
@@ -6541,14 +6641,26 @@ void GameScene::DebugCombat()
 	// 撮影・調整用。動画を撮るときに、倒れない的を置いたり、自分が倒れないようにしたりする。
 	ImGui::SeparatorText("撮影・調整用");
 	{
-		// 床の色合い。マス目の大きさは同じ(1マス10単位=約1m、太線は4マスごと)。
-		ImGui::TextUnformatted("床の色");
+		// 床の見た目。目盛りの大きさはどれも同じ(1マス10単位=約1m、太線は4マスごと)。
+		ImGui::TextUnformatted("床");
 		ImGui::SameLine();
-		if (ImGui::Button("トレーニングステージ風"))
+		if (ImGui::RadioButton("砂+薄い線", m_arenaFloor.GetSurface() == ArenaFloor::Surface::SandWithLines))
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::SandWithLines);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("砂だけ", m_arenaFloor.GetSurface() == ArenaFloor::Surface::Sand))
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Sand);
+		ImGui::SameLine();
+		if (ImGui::RadioButton("マス目(トレーニングステージ風)", false))
+		{
 			m_arenaFloor.SetPalette(ArenaFloor::TrainingPalette());
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+		}
 		ImGui::SameLine();
-		if (ImGui::Button("闘技場の石"))
+		if (ImGui::RadioButton("マス目(石)", false))
+		{
 			m_arenaFloor.SetPalette(ArenaFloor::StonePalette());
+			m_arenaFloor.SetSurface(ArenaFloor::Surface::Grid);
+		}
 		ImGui::Checkbox("操作説明を画面の右下に出す", &m_showControlGuide);
 		const GameInput& gameInput = GameInput::Get();
 		ImGui::Text("ゲームパッド: %s / 操作説明: %s",
