@@ -443,14 +443,14 @@ void TitleScene::init()
 
     // キャラクターに付属する歩きモーションを使用する。
     // モデルパックには別名の候補もあるため、読み込み失敗時は2つ目を試す。
-    const aiScene* walkScene = m_playerAnimationData.LoadAnimation(
+    bool walkLoaded = m_playerAnimationData.LoadAnimation(
         "assets/motion/sword and shield walk.fbx", "walk");
-    if (walkScene == nullptr || walkScene->mNumAnimations == 0)
+    if (!walkLoaded)
     {
-        walkScene = m_playerAnimationData.LoadAnimation(
+        walkLoaded = m_playerAnimationData.LoadAnimation(
             "assets/motion/sword and shield walk (2).fbx", "walk");
     }
-    if (walkScene != nullptr && walkScene->mNumAnimations > 0)
+    if (walkLoaded)
         m_playerWalkAnimation = m_playerAnimationData.GetAnimation("walk", 0);
 
     LogStartup("title: walk clip loaded");

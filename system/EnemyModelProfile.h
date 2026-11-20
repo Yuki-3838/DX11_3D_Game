@@ -52,6 +52,12 @@ enum class EnemyBone : unsigned char
     WingRootR,
     WingTipL,
     WingTipR,
+    BreathSpine, ///< 息づかいで胸を上下させる背骨(腰寄り)。無いモデルは胸を動かさない
+    FrontAnkleL, ///< 前脚の足首(胸を上下させても前足を地面に残すIKで使う)。無いモデルは空
+    FrontAnkleR,
+    ChestTwist,  ///< 胸から前を左右へひねる背骨(BreathSpine より先)。無いモデルはひねらない
+    BackAnkleL,  ///< 後脚の足首(かかと。尾回転で後ろ足を地面に固定するIKで使う)。無いモデルは空
+    BackAnkleR,
     Count
 };
 
@@ -169,6 +175,39 @@ struct EnemyModelProfile
     std::string attackClip;  ///< 共通の攻撃クリップ(専用が無い攻撃に使う)
     std::string dieClip;
     std::string flyClip;     ///< 飛来の場面・登場の落下中。無ければ待機の姿勢に手続きで翼を広げる
+    /**
+     * その場で足を踏み替えて回るクリップ(左回り・右回り)。向き直りと尾回転で使う。
+     * 空なら歩きのクリップを速く回して代わりにする(前へ歩く脚のまま体だけ回るので、滑って見える)。
+     */
+    std::string turnLeftClip;
+    std::string turnRightClip;
+    /// 踏み替えのクリップを1倍で再生したときに見合う回る速さ(度/秒)。実際に回っている速さから再生の速さを決める。
+    float turnClipDegreesPerSecond = 60.0f;
+    /**
+     * 尾回転のモーション(左回り・右回り)。溜め・半回転・一拍・隙を1本にまとめ、体の向きの回転(半回転)も入っている。
+     * 区切りの並びは Combat::EnemySpinClipSeconds を参照。tools/blender_make_wyvern_tail_spin.py で作る。
+     * 空(またはファイルが無い)なら、待機の立ち姿勢を手続きで回し、足を IK で運ぶ従来のやり方になる。
+     */
+    std::string tailSpinLeftClip;
+    std::string tailSpinRightClip;
+    /**
+     * 立ち止まっている間(隙・予兆・怯みなど)に待機のクリップをループで流すか。
+     * false なら待機の最初のコマで止める(Cethiel は待機の途中で上体を起こして後ろ足が浮き、影が離れるため)。
+     * 止めたままだと剥製のように固まって見えるので、足が浮かない待機のあるモデルは true にする。
+     */
+    bool loopIdleClip = false;
+    /// 怯みのクリップ(殴られてのけぞる)。空なら立ち姿勢に手続きで体を傾ける。
+    std::string damageClip;
+    /// 威嚇のクリップ(攻撃の合間に、うなって頭を振る)。空なら威嚇しない。
+    std::string threatClip;
+    /// 瀕死のときの歩き(足を引きずる)。空ならふだんの歩き・走りのまま。
+    std::string weakWalkClip;
+    float weakWalkGroundSpeed = 0.0f; ///< 瀕死の歩きで地面に着いた足が後ろへ流れる速さ(モデルの長さ/秒)
+    /// 前脚が翼を兼ねているか(Wyvern)。true なら前脚を振り上げる手続きの構え(frontLegLift)を使わない。
+    bool frontLegsAreWings = false;
+    /// 前脚のIK(足を地面に留める・浮かせる)で、向きを元のまま残す前腕の子の骨(左・右)。
+    /// 翼膜の付け根を入れる。入れないと、前腕を回したぶん膜の先が床へ振り下ろされて突き抜けた。
+    std::array<std::vector<std::string>, 2> frontLegKeepOrientation;
 
     EnemyAttackClipBinding slamClip;
     EnemyAttackClipBinding biteClip;
@@ -392,6 +431,21 @@ inline const EnemyModelProfile& GetWyvernProfile()
         set(EnemyBone::BackFootL, "back_toe_Middle1_L");
         set(EnemyBone::BackFootR, "back_toe_Middle1_R");
         set(EnemyBone::RightClaw, "front_toe_Middle3_R");
+        // 息づかい: spine2 から先(胸・肩・首・頭)を持ち上げ、前足は足首からのIKで地面に残す。
+        set(EnemyBone::BreathSpine, "spine2");
+        set(EnemyBone::FrontAnkleL, "front_Foot_L");
+        set(EnemyBone::FrontAnkleR, "front_Foot_R");
+        set(EnemyBone::BackAnkleL, "back_Foot_L");
+        set(EnemyBone::BackAnkleR, "back_Foot_R");
+        // 背骨のしなり: spine3 から先(胸・肩・前脚・首)を左右へひねる。
+        set(EnemyBone::ChestTwist, "spine3");
+        // 前脚が翼になっている(膜が前脚に付いている)。前脚を振り上げる手続きの構えは使わない
+        // (突進の溜めで地面を掻く動きにすると、翼ごとばたついて見えた)。
+        p.frontLegsAreWings = true;
+        // 翼膜(winger_*)は前腕(front_Shin)の子で、手首から後ろ上へ伸びている。
+        p.frontLegKeepOrientation = { {
+            { "winger_Outer_L", "winger_Inner_L" },
+            { "winger_Outer_R", "winger_Inner_R" } } };
         // 翼は前脚に付いていて、飛ぶ動きはクリップ(Fly)にある。手続きで広げる翼は使わない。
         // 翼の受ける形: 前脚の手首から2本の指(Inner は上へ高く伸びる前縁、Outer は体の横を後ろへ伸びる)が出て、
         // その間に膜が張っている。指の骨に沿ったカプセルと、2本の指の同じ段どうしを結ぶカプセルで膜を覆う。
@@ -462,6 +516,24 @@ inline const EnemyModelProfile& GetWyvernProfile()
         p.runClip = "assets/model/Wyvern/anim/Anim_Wyvern_Run.fbx";
         p.dieClip = "assets/model/Wyvern/anim/Anim_Wyvern_Death.fbx";
         p.flyClip = "assets/model/Wyvern/anim/Anim_Wyvern_Fly.fbx";
+        // 待機(3.4秒のループ)は4本の足が地面に着いたまま、首と尾がゆっくり揺れて息をする(Blenderで足の高さを確認)。
+        p.loopIdleClip = true;
+        // left / right は腰の向きが元へ戻る1.7秒のループで、その場で足を踏み替える(回る量は体の向きで付ける)。
+        // left は頭が左(モデルの +X)へ先に振れる。
+        p.turnLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_left.fbx";
+        p.turnRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_right.fbx";
+        p.turnClipDegreesPerSecond = 60.0f;
+        // 尾回転は買ったクリップに無いので、Blender で骨ごとに動きを付けて作った(tools/blender_make_wyvern_tail_spin.py)。
+        p.tailSpinLeftClip = "assets/model/Wyvern/anim/Anim_Wyvern_TailSpin_L.fbx";
+        p.tailSpinRightClip = "assets/model/Wyvern/anim/Anim_Wyvern_TailSpin_R.fbx";
+        // Damage(0.53秒): 体が沈み、頭が跳ね上がり、尾が振れる。足は地面に着いたまま。
+        p.damageClip = "assets/model/Wyvern/anim/Anim_Wyvern_Damage.fbx";
+        // Scream2(3.5秒): 前半身を起こして頭を地面へ叩きつけるようにうなり、頭を左右に振って威嚇する。
+        p.threatClip = "assets/model/Wyvern/anim/Anim_Wyvern_Scream2.fbx";
+        // crawl(2.4秒): 腰を約1m落とし、頭を下げて這うように歩く。瀕死で足を引きずる歩きに使う。
+        // 地面に着いた足が流れる速さは約165cm/秒(歩きの約半分。Blenderで測った値)。
+        p.weakWalkClip = "assets/model/Wyvern/anim/Anim_Wyvern_crawl.fbx";
+        p.weakWalkGroundSpeed = 165.0f;
         // 当たる瞬間は骨の動きを測って決めた(右前脚の爪・頭・尾の先が一番前へ出る/地面を打つ時刻)。
         // 叩き付け: 右前脚を高く振り上げて(0.5秒)、前へ振り下ろす(0.72秒で爪が一番前・下)。
         p.slamClip = { "assets/model/Wyvern/anim/Anim_Wyvern_Swipe.fbx", 0.0f, 0.72f, 1.17f, EnemyStrikePart::RightClaw };

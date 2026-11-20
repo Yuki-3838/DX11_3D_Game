@@ -171,6 +171,23 @@ public:
         out = m_playerHitContact;
         return true;
     }
+    // この更新で敵の攻撃判定を「使った」ときの中身(戦闘記録用)。
+    // 当たったか・無敵で受けたか・射程外か・角度外かを後から数えるために残す。
+    // 通常の近接は判定の瞬間に1回、尾回転・突進はプレイヤーの方を通ったときだけ記録される。
+    struct EnemyHitCheck
+    {
+        bool checked = false;          ///< この更新で判定を使ったか
+        float distance = 0.0f;         ///< 敵中心からプレイヤーまで(水平)
+        float angleDegrees = 0.0f;     ///< 判定の基準の向きからの角度
+        float minRange = 0.0f;
+        float maxRange = 0.0f;
+        float halfAngleDegrees = 0.0f;
+        bool inRange = false;
+        bool inArc = false;
+        bool playerInvincible = false; ///< 前転・吹き飛ばしの無敵(調整用の無敵は含まない)
+        bool playerDebugInvincible = false;
+    };
+    const EnemyHitCheck& GetEnemyHitCheck() const { return m_enemyHitCheck; }
     bool IsPlayerDefeated() const { return m_playerHp <= 0.0f; }
     bool IsEnemyDefeated() const { return m_enemyHp <= 0.0f; }
 	bool CanStartPlayerAttack() const { return m_playerAttack.phase == Phase::Ready && !IsPlayerDefeated() && !IsEnemyDefeated(); }
@@ -272,4 +289,5 @@ private:
 	Combat::HitShapeList m_enemyHurtShapes;
 	Combat::HitShapeList m_playerHurtShapes;
 	Combat::HitShapeList m_enemyAttackShapes;
+	EnemyHitCheck m_enemyHitCheck{};
 };

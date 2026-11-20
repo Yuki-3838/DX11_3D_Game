@@ -12,6 +12,8 @@
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
 #include "../system/ArenaFloor.h"
+#include "../system/ArenaOutskirts.h"
+#include "../system/ArenaWallVisual.h"
 #include "../system/AttackTimelineEditor.h"
 #include "../system/HitEffect.h"
 #include "../system/EnemyFireball.h"
@@ -181,6 +183,141 @@ private:
 	Vector3 m_enemyLocomotionPreviousPosition{};
 	bool m_enemyLocomotionPreviousValid = false;
 	float m_enemyLocomotionSpeed = 0.0f;
+	// 正面へ進んでいる速さ(後ろへ下がっているときは負)。下がる間は歩きのクリップを逆に流す。
+	float m_enemyForwardSpeed = 0.0f;
+	// 体の向きが回っている速さ(ラジアン/秒。左回りが正)。踏み替えのクリップの速さと、尾の遅れに使う。
+	float m_enemyPreviousYaw = 0.0f;
+	float m_enemyYawRate = 0.0f;
+	// 向き直りで使う踏み替えのクリップの向き(+1 左回り / -1 右回り)。回りが遅い瞬間にちらつかないよう覚えておく。
+	float m_enemyTurnClipSign = 1.0f;
+	// その場で足を踏み替えて回るクリップ(Wyvern)。無ければ歩きを速く回す。
+	aiAnimation* m_enemyTurnLeftAnimation = nullptr;
+	aiAnimation* m_enemyTurnRightAnimation = nullptr;
+	// 尾回転のモーション(左回り・右回り)。体の向きの回転まで入っている(enemy::setTailSpinFromClip)。
+	aiAnimation* m_enemyTailSpinAnimations[2]{};
+	// 前の更新で尾回転のモーションを当てていたか(抜けるときのつなぎの始まりを差し替えるため)。
+	bool m_enemyTailSpinClipWasActive = false;
+	// 怯み(Damage)・威嚇(Scream2)・瀕死の歩き(crawl)。無いモデルは nullptr。
+	aiAnimation* m_enemyDamageAnimation = nullptr;
+	aiAnimation* m_enemyThreatAnimation = nullptr;
+	aiAnimation* m_enemyWeakWalkAnimation = nullptr;
+	static constexpr float ENEMY_DAMAGE_BLEND_SECONDS = 0.06f;
+	// 待機・歩き・走り・踏み替えの切り替えのつなぎ。攻撃の入り(0.14秒)より長く、重い体が移り変わる感じを出す。
+	static constexpr float ENEMY_LOCOMOTION_BLEND_SECONDS = 0.32f;
+	// 尾回転で脚を踏み替え始めるときのつなぎ。半回転が0.42秒と短いので、つなぎも短くする。
+	static constexpr float ENEMY_SPIN_LEG_BLEND_SECONDS = 0.10f;
+
+	// --- 生き物らしさの二次的な動き(首と尾) ---
+	// クリップの上から、首はハンターを目で追い、尾は体の回転に遅れてついてくる(止まると振り戻る)。
+	// 攻撃の予兆・判定の間は構え(EnemyTellPose)の形を崩さないよう、効きを0へ落とす。
+	float m_enemySecondaryWeight = 0.0f;
+	float m_enemyLookYaw = 0.0f;
+	float m_enemyTailLag = 0.0f;
+	float m_enemyTailLagVelocity = 0.0f;
+	float m_enemyTailTip = 0.0f;
+	float m_enemyTailTipVelocity = 0.0f;
+	// 息づかい(胸の上下・首・口)。呼吸の進み具合(0〜1)・効き・息の上がり具合(攻撃・走りで上がる)。
+	float m_enemyBreathPhase = 0.0f;
+	// 向き直りの間に尾を持ち上げる量(ならした値)。
+	float m_enemyTurnTailLift = 0.0f;
+	// 突進の溜めで後ろ足が土を蹴った回数(揺するたびに1回。同じ揺すりで2度出さないため)。
+	int m_enemyChargeKickCount = -1;
+	float m_enemyBreathWeight = 0.0f;
+	float m_enemyExertion = 0.0f;
+	// 吸い込みの深さ(0〜1。撮影の記録用)。
+	float m_enemyInhale = 0.0f;
+	// 止まる・動き出すときに胸がのめる・残る量(ばね)。
+	float m_enemyBrakeLean = 0.0f;
+	float m_enemyBrakeLeanVelocity = 0.0f;
+	float m_enemyPreviousForwardSpeed = 0.0f;
+	// よだれ。次に垂れるまでの時間と、間隔の揺らぎ。
+	float m_enemyDroolTimer = 0.0f;
+	float m_droolJitter = 0.37f;
+	void UpdateEnemyDrool(float deltaSeconds);
+	// --- 尾回転の足の固定と踏み替え ---
+	// 体は半回転0.42秒で回るのに、踏み替えのクリップの足運びはその数分の1の速さなので、
+	// クリップのままだと4本の足が地面の上を流れる(審査会の指摘「回転攻撃で足が滑る」)。
+	// 地面に着いた足はワールドのその場所へIKで留め、クリップの足の位置から離れすぎたら
+	// 足を持ち上げて素早く次の場所へ踏み出す(軸足で踏ん張りながら、足を踏み鳴らして回る)。
+	struct EnemyPlantedFoot
+	{
+		bool planted = false;   // 地面に着いてその場に留まっている
+		bool stepping = false;  // 持ち上げて次の場所へ運んでいる
+		Vector3 plantWorld{};   // 着いている場所(ワールド。高さは使わない)
+		Vector3 stepFrom{};     // 踏み出した場所
+		Vector3 landWorld{};    // 着く場所(運び終えたら決まる)
+		float stepTime = 0.0f;
+		// 前足を浮かせている具合(0〜1)。体が勢いよく回る間、前足は地面から浮かせて後ろ足を軸に回り、
+		// 回り終わりの一拍で叩きつける(地面に留めたまま毎秒600°で回ると、翼の腕がねじれて翼膜が床へ刺さった)。
+		float air = 0.0f;
+		float airReach = 0.0f;  // この浮かせの間に一番浮いた具合(浮かせ始めの位置から、体についていく位置へ移す割合)
+		Vector3 airFrom{};      // 浮かせ始めたときの足の場所
+		Vector3 lastGoal{};     // 前回の更新で足を置いた場所(ワールド)
+		bool hasLastGoal = false;
+		// 足(足首)のワールドでの向き。地面に着いている間は向きも留める
+		// (位置だけ留めると、体が回る分だけ足が指の付け根を軸に床の上で回り、滑って見えた)。
+		Quaternion plantRot{};    // 着いている足の向き
+		Quaternion stepFromRot{}; // 踏み出したときの向き
+		Quaternion landRot{};     // 着くときの向き(運び終えたら決まる)
+		Quaternion airFromRot{};  // 浮かせ始めたときの向き
+		Quaternion lastRot{};     // 前回の更新で足に与えた向き
+		bool hasRot = false;
+		// 尾回転の跳び(4本とも地面から離れて空中で回る)の途中か。
+		bool hopping = false;
+	};
+	EnemyPlantedFoot m_enemyPlantedFeet[4]{};
+	// 前の更新で足(つま先)があった場所(ワールド)。固定を始めるときにここへ留める。
+	Vector3 m_enemyFootLastWorld[4]{};
+	bool m_enemyFootLastWorldValid[4]{};
+	// 前の更新の足(足首)のワールドでの向き。固定を始めるときは向きもここに留める。
+	Quaternion m_enemyFootLastRot[4]{};
+	bool m_enemyFootLastRotValid[4]{};
+	// 固定の効き(0〜1)。回り始めで上げ、回り終わって足を元の位置へ戻してから下げる。
+	float m_enemyFootPlantWeight = 0.0f;
+	// 回り終わってからの時間(足を戻しきれなくても、これを過ぎたら固定を外す)。
+	float m_enemyFootPlantReleaseTime = 0.0f;
+	// 前回の更新のモデル→ワールドの変換(足の位置が体の回転でどれだけ動いたかを求める)。
+	Matrix4x4 m_enemyPrevModelToWorld{};
+	bool m_enemyPrevModelToWorldValid = false;
+	// 撮影の記録用: 踏み替えた回数と、地面に着いている足がワールドで動いた速さの最大(前回の記録から)。
+	int m_enemyFootStepCount = 0;
+	float m_enemyFootSlideMax = 0.0f;
+	float m_enemyFootPlantErrorMax = 0.0f;
+	// 前の更新の接地の高さ(足を全部持ち上げている間はこれを保つ)。
+	float m_enemyHeldGroundOffsetY = 0.0f;
+	bool m_enemyHeldGroundOffsetValid = false;
+	int m_enemyFootSlideFoot = -1; // 一番速く滑った足(ENEMY_FOOT_BONES の並び)
+	Vector3 m_enemyFootPrevWorld[4]{};
+	Vector3 m_enemyAnklePrevWorld[4]{};
+	bool m_enemyFootPrevValid = false;
+	// 足の固定を使うか(dev_settings.ini の enemy_foot_plant=0 で切って、前と比べられる)。
+	bool m_enemyFootPlantEnabled = true;
+	static constexpr float ENEMY_FOOT_STEP_SECONDS = 0.12f;
+	// hopProgress: 尾回転で跳んでいる区間の中の進み(0〜1)。跳んでいなければ負。
+	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, float deltaSeconds);
+	// 尾回転の跳びで体を持ち上げる高さ(ワールドの長さ。接地の高さに足す)。
+	float m_enemyHopOffsetY = 0.0f;
+	void MeasureEnemyFootSlide(float deltaSeconds);
+	// 首と尾の二次的な動きを求めて構えに足す。毎更新1回だけ呼ぶ(ばねの状態を進めるため)。
+	void AddEnemySecondaryMotion(Combat::EnemyTellPose& tell, float deltaSeconds);
+	// クリップのキーの数(一番多いチャンネル)。
+	static unsigned int EnemyClipKeyCount(const aiAnimation* clip);
+	// 足の骨(指の付け根)が足の裏からどれだけ上にあるか(モデルの長さ)。待機の最初のコマで測る。
+	// 0 なら足で立たせず、従来どおり一番低い頂点を床に合わせる。
+	float m_enemyFootClearance = 0.0f;
+	// 待機の最初のコマ(4本の足が地面に着いた立ち姿勢)を床に置く描画の持ち上げ量(ワールドの長さ)。
+	// 尾回転の専用モーションは、地面に着いた足をこの立ち姿勢の足の高さに置いて作ってあるので、この値で描く。
+	float m_enemyStandingGroundOffsetY = 0.0f;
+	bool m_enemyStandingGroundOffsetValid = false;
+	// 走りの間、体をクリップの高さより下へ引き下ろさない効き目(0〜1。走りのクリップに入ると0.2秒で1)。
+	float m_enemyRunGroundWeight = 0.0f;
+	// 足で立たせたときに、床へ入るのを許す深さ(ワールドの長さ)。歩きで爪の先が約3〜5入る(記録で確認)。
+	static constexpr float ENEMY_MAX_GROUND_SINK = 4.0f;
+	// 足で立たせたときに、床より下へ入った頂点の深さ(ワールドの長さ。撮影の記録用)。
+	float m_enemyGroundSink = 0.0f;
+	// そのとき一番低かった頂点の骨(床へ入った部位。撮影の記録用)。
+	std::string m_enemyGroundSinkBone;
+	void MeasureEnemyFootClearance();
 	aiAnimation* EnemyAttackAnimationFor(Combat::EnemyAttackKind kind) const;
 	const EnemyAttackClipBinding* EnemyAttackBindingFor(Combat::EnemyAttackKind kind) const;
 	bool GetEnemyBoneWorld(EnemyBone role, Vector3& out) const;
@@ -225,17 +362,30 @@ private:
 	bool m_enemyAttackBlendActive = false;
 	// 直前に当てていたクリップ。決着で倒れるクリップなどへ移るときのつなぎ元にする。
 	aiAnimation* m_enemyLastSampledAnimation = nullptr;
+	// つなぎ元の姿勢そのもの(つなぎを始めた瞬間に画面に出ていたクリップの姿勢)。
+	// つなぎの途中で次のつなぎを始めると、つなぎ元のクリップのコマは画面の姿勢(2つが混ざったもの)と違う。
+	// コマからつなぎ直していたので、隙→後退→走り→周回のように続けて切り替わる所で、
+	// 後ろ足が一瞬17ほど跳ね上がる・体が5ほど上下するなど、1フレームで姿勢が飛んでいた。
+	std::unordered_map<std::string, SRTQ> m_enemyAttackBlendFromPose;
+	bool m_enemyAttackBlendFromPoseValid = false;
+	// 直前に描いた姿勢を、そのままつなぎ元に使えるか(尾回転から抜けるときは使わない。下の処理を参照)。
+	bool m_enemyLastPoseUsableAsBlendFrom = false;
+	// つなぎを始めるときに、いま画面に出ている姿勢をつなぎ元として控える。
+	void CaptureEnemyBlendFromPose();
 	enemy::MotionState m_previousEnemyMotionState = enemy::MotionState::Approach;
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ
-	std::unique_ptr<field>	m_field;						//	フィールド
+	// 闘技場の外の地面。遠くほど空の色に溶ける(以前の草の field は床とちらつき、飛来の場面で端が見えていた)。
+	ArenaOutskirts m_outskirts;
 	std::vector<std::unique_ptr<wall>>	m_walls;			//	ｗａｌｌ
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	// 見た目だけの闘技場パーツ。衝突判定はm_wallsが担当し、
 	// デバッグ編集画面とゲームプレイが同じ境界を共有する。
 	// 床はマス目付き(距離感をつかみやすくするため)。
 	ArenaFloor m_arenaFloor;
+	// 石の城壁のモデル(16枚を1つのメッシュに焼き込んだもの)。読めなかったときだけ下の一色の箱で描く。
+	ArenaWallVisual m_arenaStoneWall;
 	Box m_arenaWallVisual{1.0f, 1.0f, 1.0f};
 	Box m_arenaWallCapVisual{1.0f, 1.0f, 1.0f};
 	// 影生成パス用のシェーダー(深度だけを書き込む)。
@@ -299,6 +449,13 @@ private:
 	bool m_mouseLookCaptured = true;
 	// 戦闘中の一時停止(Esc・パッドのSTART)。止めている間は update の大半を通さない。
 	bool m_paused = false;
+	// 調整用: 動きをゆっくり・止めて見る(devmode のときだけ)。
+	// F7 で 1 → 0.5 → 0.25 → 0.1 倍と遅くし、F8 で止める・再開、止めている間 F9 で1コマ進める。
+	// カメラは遅くしない(止めている間も回り込んで見られる)。
+	float m_debugTimeScale = 1.0f;
+	bool m_debugTimeFrozen = false;
+	bool m_debugStepRequested = false;
+	void DrawDebugTimeOverlay();
 	// 足の接地(フットロック)。移動中、接地している足のつま先をワールドへ固定して脚をIKで合わせる。
 	void UpdateFootLock(float deltaSeconds);
 	// 撮影・調整用: 動かない・攻撃しない・倒れない敵(練習台)をプレイヤーの正面へ置く。
@@ -364,6 +521,8 @@ private:
 	BufferedAction m_bufferedAction = BufferedAction::None;
 	float m_bufferedActionTime = 0.0f;
 	static constexpr float INPUT_BUFFER_SECONDS = 0.3f;
+	// 回避中に押した攻撃の予約を、回避が終わるまで保つか(false で以前の扱い。比較用)。
+	bool m_holdAttackBufferDuringDodge = true;
 	bool m_resultRequested = false;
 
 	// --- 決着の演出 ---
@@ -377,6 +536,8 @@ private:
 	// 演出の進行(咆哮・地響き・カメラ・リザルトへの移動)。実時間を渡す。
 	void UpdateBattleFinish(float realDeltaSeconds);
 	void UpdateBattleFinishCamera(float realDeltaSeconds);
+	// 倒した敵の大きさ(ワールドの長さ)。x = 体の前後の長さ、y = 高さ、z = 左右の幅(翼を含む)。
+	Vector3 MeasureEnemyFinishExtents(const enemy& foe) const;
 	void DrawBattleFinishOverlay();
 	BattleFinish m_battleFinish = BattleFinish::None;
 	float m_battleFinishTime = 0.0f;            ///< 決着してからの実時間(秒)
@@ -388,6 +549,11 @@ private:
 	Vector3 m_finishFocusOffset{};              ///< 倒れる敵の足元の位置から注視点までのずれ
 	float m_finishCameraYaw = 0.0f;
 	float m_finishCameraOrbitDelta = 0.0f;      ///< 演出の間に回り込む角度(ラジアン)
+	// 討伐のカメラの距離と高さ(倒した敵の大きさから決める。BeginBattleFinish)。
+	float m_finishVictoryDistance = FINISH_VICTORY_CAMERA_DISTANCE;
+	float m_finishVictoryHeight = 26.0f;
+	// 力尽きたときに回り込む向き(-1で上から見て反時計回り、+1で時計回り)。
+	float m_finishDefeatSpinSign = -1.0f;
 	// 撮影・調整用(dev_settings.ini の debug_finish)を1回だけ効かせる。
 	bool m_debugFinishDone = false;
 	// 時間配分(どれも実時間の秒)。討伐は倒れるクリップ(2.5秒)を最後まで見せてから暗くする。
@@ -398,11 +564,19 @@ private:
 	static constexpr float FINISH_DEFEAT_FREEZE_END = 0.06f;
 	static constexpr float FINISH_DEFEAT_SLOW_END = 0.75f;
 	static constexpr float FINISH_DEFEAT_RECOVER_END = 1.05f;
-	static constexpr float FINISH_DEFEAT_FADE_START = 3.60f;
+	// 力尽きたときは、倒れたハンターを画面の中央に映したまま8秒ほど見せてから暗くする
+	// (モンハンの初期作〜MHXX では約10秒映す。決定ボタンで飛ばせる)。
+	static constexpr float FINISH_DEFEAT_FADE_START = 8.00f;
 	static constexpr float FINISH_FADE_SECONDS = 1.00f;
 	// カメラの距離と、闘技場の内側に収める半径(壁の少し手前)。
 	static constexpr float FINISH_VICTORY_CAMERA_DISTANCE = 115.0f;
-	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_END = 62.0f;
+	// 力尽きたとき、渦を巻いて引いていくカメラの最初と最後の距離・高さ。
+	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_START = 34.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_DISTANCE_END = 125.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_HEIGHT_START = 16.0f;
+	static constexpr float FINISH_DEFEAT_CAMERA_HEIGHT_END = 85.0f;
+	// 回り込む速さ(ラジアン/秒)。8秒で約140度。
+	static constexpr float FINISH_DEFEAT_SPIN_SPEED = 0.30f;
 	static constexpr float FINISH_CAMERA_SAFE_RADIUS = 280.0f;
 	// これより後なら決定ボタンで飛ばせる(回避を連打していて誤って飛ばさないよう、すぐには受け付けない)。
 	static constexpr float FINISH_SKIP_ALLOWED_AFTER = 1.50f;
@@ -420,9 +594,9 @@ private:
 	void LoadPlayerAssetsOnWorker();
 	void FinishSceneInit();
 	std::future<void> m_loadFuture;
-	std::unique_ptr<CStaticMesh> m_pendingPlayerMesh;   ///< 裏で読んだメッシュ。登録は仕上げで行う
 	bool m_flightLoadFinished = false;
-	bool m_flightSkipRequested = false;
+	float m_flightLoadFinishedTime = 0.0f;  ///< 読み込みが終わった時刻(m_flightTime)。押すボタンの案内を浮かび上がらせるのに使う
+	bool m_flightStartRequested = false;  ///< 読み込みの後に決定ボタンが押された(降下して戦いへ入る)
 	void DrawDragonFlight();
 	// 飛んでいる姿勢(骨の名前 → 重ねる回転)。dive は急降下へ移る度合い(0〜1)。
 	std::unordered_map<std::string, Matrix4x4> BuildEnemyFlightRotations(float flapPhase, float dive) const;
@@ -440,11 +614,10 @@ private:
 	SRT m_flightDragonSrt{};
 	FlightBackdrop m_flightBackdrop;
 	static constexpr float FLIGHT_FADE_IN_SECONDS = 0.35f;
-	// 遠くから迫ってくる時間。読み込みが先に終わっても、ここまでは見せる。
+	// 遠くから迫ってくる時間。これより前に決定ボタンが押されたら、降下は見せずに白まで飛ばす。
 	static constexpr float FLIGHT_APPROACH_SECONDS = 3.00f;
 	static constexpr float FLIGHT_DIVE_SECONDS = 0.90f;     ///< 降下してから白くなり始めるまで
 	static constexpr float FLIGHT_WHITE_SECONDS = 0.25f;
-	static constexpr float FLIGHT_SKIP_ALLOWED_AFTER = 0.30f;
 	static constexpr float FLIGHT_CAMERA_DISTANCE_START = 1000.0f;  ///< 最初のカメラとの距離
 	static constexpr float FLIGHT_CAMERA_DISTANCE_END = 125.0f;     ///< 迫り切ったときの距離
 	static constexpr float FLIGHT_DIVE_DROP = 240.0f;               ///< 白くなるまでに下へ抜ける距離
@@ -513,6 +686,41 @@ private:
 	bool m_captureHitFit = false;
 	// 登場演出が終わってからの経過秒。撮影の開始時刻の基準にする。
 	float m_battleSeconds = 0.0f;
+
+	// --- 戦闘記録(比較用) ---
+	// dev_settings.ini の combat_log=ファイル名 で、一戦を通して「出来事」ごとに1行書く。
+	// 撮影用の enemy_log.csv(毎フレーム・枚数に上限)とは別に、
+	// 回避・攻撃の入力がどう扱われたか(予約・実行・期限切れ)と、
+	// 敵の攻撃がどう外れたか(前転の無敵・射程外・角度外)を後から数えるために使う。
+	// 根拠: docs/戦闘設計分析_ヒットアンドアウェイの単調化と隙をつく体験.txt の13-1・第20章。
+	void OpenCombatLog();
+	void LogCombatEvent(const char* event, const char* detail = "", float value = 0.0f, const char* note = "");
+	// 敵の攻撃の始まり・判定・出し切り・立て直しを、状態の変化から書く。
+	void LogEnemyAttackProgress();
+	FILE* m_combatLog = nullptr;
+	int m_enemyAttackSeq = 0;                ///< 一戦の中で何回目の敵の攻撃か
+	std::array<int, 6> m_enemyAttackKindCount{}; ///< 攻撃の種類ごとの回数
+	int m_enemyAttackKindTry = 0;            ///< いまの攻撃が、その種類の何回目か
+	Combat::EnemyAttackKind m_loggedEnemyAttackKind = Combat::EnemyAttackKind::Slam;
+	enemy::MotionState m_loggedEnemyState = enemy::MotionState::Standby;
+	bool m_loggedDodging = false;
+	bool m_loggedDodgeInvincible = false;
+
+	// --- 回避中の攻撃入力の自動確認 ---
+	// dev_settings.ini の input_probe=dodge_attack で、敵を動かさない状態にして
+	// 「回避を押す → input_probe_offsets 秒後に攻撃を1回だけ押す」を順に試し、戦闘記録へ結果を書く。
+	// 回避の早い時点で押した攻撃が、回避の終わりまでに予約切れで消えるかを確かめるため(分析文書の第20章)。
+	// input_probe_exit=1 なら試し終えたらゲームを終える。
+	void UpdateInputProbe(float realDeltaSeconds, bool& pressAttack, bool& pressDodge);
+	bool m_inputProbeEnabled = false;
+	bool m_inputProbeExit = false;
+	std::vector<float> m_inputProbeOffsets;
+	int m_inputProbeIndex = -1;              ///< いま試している番号。-1は開始前
+	float m_inputProbeTime = 0.0f;           ///< いまの試行を始めてからの秒(開始前は待ち時間)
+	bool m_inputProbeAttackSent = false;
+	bool m_inputProbeDodgeSent = false;
+	static constexpr float INPUT_PROBE_START_DELAY = 1.5f;  ///< 戦闘開始から最初の試行までの秒
+	static constexpr float INPUT_PROBE_TRIAL_SECONDS = 2.5f; ///< 1回の試行の長さ(攻撃が終わり、スタミナが戻るまで)
 
 	GM31::GE::Collision::BoundingSphere m_localbsplayer;	//  プレイヤBS（）ローカル座標系
 	GM31::GE::Collision::BoundingSphere m_worldbsplayer;	//  プレイヤBS（）ワールド座標系

@@ -394,3 +394,6 @@ assets/model/Knight/
 
 # 実行時にコンパイルしたシェーダーのバイトコード(system/ShaderBlobCache.h)。消してもよい。
 shader_cache/
+
+# 読み込みの保存ファイル(system/ModelCache.h)。初回の読み込みで作られる。
+/cache/

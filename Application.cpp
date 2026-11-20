@@ -99,6 +99,10 @@ void Application::TermApp()
  */
 bool Application::InitWnd()
 {
+    // Windows の表示の拡大(125% など)で、ウィンドウを勝手に引き伸ばされないようにする。
+    // これがないと、画面の大きさも拡大後の小さな値で見えてしまい、ぼやけた表示になる。
+    SetProcessDPIAware();
+
     // インスタンスハンドルを取得.
     auto hInst = GetModuleHandle(nullptr);
     if (hInst == nullptr)
@@ -127,14 +131,42 @@ bool Application::InitWnd()
     // インスタンスハンドル設定.
     m_hInst = hInst;
 
-    // ウィンドウのサイズを設定.
+    // ウィンドウの置き場所と形を決める.
+    // 枠付きのウィンドウが画面(タスクバーを除いた範囲)に収まるなら、枠付きで画面の真ん中に置く。
+    // 収まらないとき(1920x1080 の画面で 1920x1080 のゲームを出すと、タイトルバーの分だけ下が切れる)は、
+    // 枠なしで画面全体を覆う。画面の大きさとゲームの大きさが同じなら、ぴったり全部が見える。
+    // 画面のほうが小さいときは、描画は main.h の大きさのまま行い、表示のときに画面へ縮めて出す。
+    const POINT origin{ 0, 0 };
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    GetMonitorInfo(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor);
+    const RECT& screen = monitor.rcMonitor;
+    const RECT& work = monitor.rcWork;
+
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     RECT rc = {};
     rc.right = static_cast<LONG>(m_Width);
     rc.bottom = static_cast<LONG>(m_Height);
-
-    // ウィンドウサイズを調整.
-    auto style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRect(&rc, style, FALSE);
+    int windowWidth = rc.right - rc.left;
+    int windowHeight = rc.bottom - rc.top;
+    int windowX = 0;
+    int windowY = 0;
+    const int workWidth = work.right - work.left;
+    const int workHeight = work.bottom - work.top;
+    if (windowWidth <= workWidth && windowHeight <= workHeight)
+    {
+        windowX = work.left + (workWidth - windowWidth) / 2;
+        windowY = work.top + (workHeight - windowHeight) / 2;
+    }
+    else
+    {
+        style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX;
+        windowX = screen.left;
+        windowY = screen.top;
+        windowWidth = screen.right - screen.left;
+        windowHeight = screen.bottom - screen.top;
+    }
 
     // ウィンドウを生成.
     m_hWnd = CreateWindowEx(
@@ -142,10 +174,10 @@ bool Application::InitWnd()
         ClassName,
         WindowName,
         style,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        rc.right - rc.left,
-        rc.bottom - rc.top,
+        windowX,
+        windowY,
+        windowWidth,
+        windowHeight,
         nullptr,
         nullptr,
         m_hInst,

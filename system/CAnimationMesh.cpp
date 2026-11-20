@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include	"CAnimationMesh.h"
 #include	"utility.h"
 #include	"meshmanager.h"
@@ -557,18 +558,12 @@ void CAnimationMesh::InitRenderResources()
 		m_swordRenderer.Init(*m_swordMesh);
 }
 
-void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
+/**
+ * @brief Assimp の作業領域(AssimpPerse)から、ボーン辞書・ボーン名ツリー・休止姿勢を受け取る。
+ * CStaticMesh::LoadWithAssimp の直後に呼ぶ(作業領域は次の読み込みで上書きされる)。
+ */
+void CAnimationMesh::TakeSkeletonFromAssimp()
 {
-	// 読み込みの作業領域(AssimpPerse)は共有なので、取り出し終わるまで排他する(敵の先読みが裏のスレッドで読むため)。
-	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
-	// メッシュ読み込み
-	// アニメーション用メッシュはボーン変換を後段で適用するため、
-	// Assimp の静的頂点変換は行わない。
-	CStaticMesh::Load(filename, texturedirectory, false);
-	m_BoneDictionary.clear();
-	m_RestLocalMatrices.clear();
-	m_RestGlobalMatrices.clear();
-
 	// アニメーションデータ(ASSIMP用）
 	std::unordered_map<std::string, GM31::GE::myAssimp::BONE> assimp_BoneDictionary{};	// 20240714 DX化
 
@@ -607,6 +602,177 @@ void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::strin
 	{
 		m_RestLocalMatrices[name] = utility::aiMtxToDxMtx(matrix);
 	}
+}
+
+namespace
+{
+	// 保存ファイル(ModelCache.h)の構造体の大きさ。どれかが変わったら古い保存ファイルは使わない。
+	std::vector<uint32_t> SkinnedMeshCacheLayout()
+	{
+		return {
+			static_cast<uint32_t>(sizeof(VERTEX_3D)),
+			static_cast<uint32_t>(sizeof(MATERIAL)),
+			static_cast<uint32_t>(sizeof(Matrix4x4)) };
+	}
+
+	void WriteNameTree(ModelCache::Writer& writer, const CTreeNode<std::string>& node)
+	{
+		writer.String(node.m_nodedata);
+		writer.U32(static_cast<uint32_t>(node.m_children.size()));
+		for (const auto& child : node.m_children)
+			WriteNameTree(writer, *child);
+	}
+
+	bool ReadNameTree(ModelCache::Reader& reader, CTreeNode<std::string>& node, int depth)
+	{
+		if (depth > 512)
+			return false; // 壊れた保存ファイルで止まらないように
+		node.m_nodedata = reader.String();
+		node.m_children.clear();
+		const uint32_t childCount = reader.U32();
+		for (uint32_t i = 0; i < childCount && reader.Ok(); ++i)
+		{
+			auto child = std::make_unique<CTreeNode<std::string>>();
+			child->m_parent = &node;
+			if (!ReadNameTree(reader, *child, depth + 1))
+				return false;
+			node.Addchild(std::move(child));
+		}
+		return reader.Ok();
+	}
+}
+
+/** 保存ファイルへ、ボーン辞書・ボーン名ツリー・休止姿勢を書く(頂点などの後ろへ続ける)。 */
+void CAnimationMesh::WriteSkeletonCache(ModelCache::Writer& writer) const
+{
+	writer.U32(static_cast<uint32_t>(m_BoneDictionary.size()));
+	for (const auto& [key, bone] : m_BoneDictionary)
+	{
+		writer.String(key);
+		writer.String(bone.bonename);
+		writer.String(bone.meshname);
+		writer.String(bone.armaturename);
+		writer.Pod(bone.Matrix);
+		writer.Pod(bone.AnimationMatrix);
+		writer.Pod(bone.OffsetMatrix);
+		writer.Pod(static_cast<int32_t>(bone.idx));
+		writer.U32(static_cast<uint32_t>(bone.weights.size()));
+		for (const WEIGHT& weight : bone.weights)
+		{
+			writer.String(weight.bonename);
+			writer.String(weight.meshname);
+			writer.Pod(weight.weight);
+			writer.Pod(static_cast<int32_t>(weight.vertexindex));
+		}
+	}
+	WriteNameTree(writer, m_AssimpNodeNameTree);
+	writer.U32(static_cast<uint32_t>(m_RestLocalMatrices.size()));
+	for (const auto& [name, matrix] : m_RestLocalMatrices)
+	{
+		writer.String(name);
+		writer.Pod(matrix);
+	}
+}
+
+/** WriteSkeletonCache で書いたものを読む。 */
+bool CAnimationMesh::ReadSkeletonCache(ModelCache::Reader& reader)
+{
+	m_BoneDictionary.clear();
+	m_RestLocalMatrices.clear();
+	const uint32_t boneCount = reader.U32();
+	m_BoneDictionary.reserve(boneCount);
+	for (uint32_t i = 0; i < boneCount && reader.Ok(); ++i)
+	{
+		const std::string key = reader.String();
+		BONE bone;
+		bone.bonename = reader.String();
+		bone.meshname = reader.String();
+		bone.armaturename = reader.String();
+		bone.Matrix = reader.Pod<Matrix4x4>();
+		bone.AnimationMatrix = reader.Pod<Matrix4x4>();
+		bone.OffsetMatrix = reader.Pod<Matrix4x4>();
+		bone.idx = reader.Pod<int32_t>();
+		const uint32_t weightCount = reader.U32();
+		for (uint32_t w = 0; w < weightCount && reader.Ok(); ++w)
+		{
+			WEIGHT weight;
+			weight.bonename = reader.String();
+			weight.meshname = reader.String();
+			weight.weight = reader.Pod<float>();
+			weight.vertexindex = reader.Pod<int32_t>();
+			bone.weights.push_back(std::move(weight));
+		}
+		m_BoneDictionary[key] = std::move(bone);
+	}
+	m_AssimpNodeNameTree = CTreeNode<std::string>{};
+	if (!reader.Ok() || !ReadNameTree(reader, m_AssimpNodeNameTree, 0))
+		return false;
+	const uint32_t matrixCount = reader.U32();
+	m_RestLocalMatrices.reserve(matrixCount);
+	for (uint32_t i = 0; i < matrixCount && reader.Ok(); ++i)
+	{
+		std::string name = reader.String();
+		m_RestLocalMatrices[std::move(name)] = reader.Pod<Matrix4x4>();
+	}
+	return reader.Ok();
+}
+
+void CAnimationMesh::LoadWithoutRenderResources(std::string filename, std::string texturedirectory)
+{
+	// 読み込みの作業領域(AssimpPerse)は共有なので、取り出し終わるまで排他する(敵の先読みが裏のスレッドで読むため)。
+	std::lock_guard<std::recursive_mutex> assimpLock(GM31::GE::myAssimp::LoadMutex());
+	m_BoneDictionary.clear();
+	m_RestLocalMatrices.clear();
+	m_RestGlobalMatrices.clear();
+
+	// 保存ファイル(ModelCache.h)が使えれば、頂点・テクスチャ・ボーン・休止姿勢をそこから読む(Assimp を通らない)。
+	// 無い・古いときは Assimp で読み、次から使えるよう保存する。
+	ModelCache::Header cacheHeader;
+	const bool useCache = ModelCache::Enabled() &&
+		ModelCache::MakeHeader("anim", filename, texturedirectory, SkinnedMeshCacheLayout(), cacheHeader);
+	const std::filesystem::path cachePath = useCache
+		? ModelCache::PathFor(cacheHeader.kind, filename, texturedirectory)
+		: std::filesystem::path();
+	bool loadedFromCache = false;
+	if (useCache)
+	{
+		ModelCache::Reader reader;
+		loadedFromCache = reader.Open(cachePath) && ModelCache::ReadAndCheckHeader(reader, cacheHeader) &&
+			ReadMeshCache(reader) && ReadSkeletonCache(reader) && reader.AtEnd();
+		if (!loadedFromCache)
+		{
+			m_BoneDictionary.clear();
+			m_RestLocalMatrices.clear();
+		}
+	}
+	if (!loadedFromCache)
+	{
+		{
+			std::optional<ModelCache::KeepPixelsScope> keepPixels;
+			if (useCache)
+				keepPixels.emplace();
+			// メッシュ読み込み
+			// アニメーション用メッシュはボーン変換を後段で適用するため、
+			// Assimp の静的頂点変換は行わない。
+			CStaticMesh::LoadWithAssimp(filename, texturedirectory, false);
+		}
+		TakeSkeletonFromAssimp();
+		if (useCache)
+		{
+			cacheHeader.dependencies = TextureDependencies();
+			ModelCache::Writer writer;
+			ModelCache::WriteHeader(writer, cacheHeader);
+			const bool written = WriteMeshCache(writer);
+			ReleaseTexturePixels();
+			if (written)
+			{
+				WriteSkeletonCache(writer);
+				if (writer.SaveTo(cachePath))
+					std::cout << "[ModelCache] saved " << cachePath.string() << std::endl;
+			}
+		}
+	}
+
 
 	// glTFの逆バインド行列は従来のPMX/FBX経路と読み込み規約が異なる。
 	// バインド姿勢を安定させるため休止階層から再構築する。
@@ -828,12 +994,15 @@ void CAnimationMesh::BuildLocalPoseMap(
 			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 0)].mValue,
 			nodeAnim->mRotationKeys[keyIndex(nodeAnim->mNumRotationKeys, 1)].mValue, blend);
 		rot.Normalize();
-		// 敵のワールド位置と接地はGameScene側のSRTで管理している。
-		// 位置キーまで補間すると、ルートを含むアニメーションの上下移動が
-		// 描画SRTへ重なり、敵が地面へ埋まることがある。位置は従来どおり
-		// 現在のキーから読み、今回の補間対象は回転だけに限定する。
-		const aiVector3D pos =
+		// 位置もキーの間を補間する。以前は現在のキーの値だけを読んでいたため、腰(根元の骨)が動くクリップでは
+		// 回転は滑らかに進むのに腰の位置だけがキーごとに段々に飛び、地面に着けた足が前後に揺れて滑って見えた
+		// (尾回転のモーションで、軸足が毎秒60〜280で揺れ、前足を下ろす所で体が0.2ほど上下した。撮影の記録で確認)。
+		// 補間しても腰の動きそのもの(上下の幅)は変わらない。敵のワールド位置と接地は引き続きGameScene側のSRTで管理する。
+		const aiVector3D posA =
 			nodeAnim->mPositionKeys[keyIndex(nodeAnim->mNumPositionKeys, 0)].mValue;
+		const aiVector3D posB =
+			nodeAnim->mPositionKeys[keyIndex(nodeAnim->mNumPositionKeys, 1)].mValue;
+		const aiVector3D pos = posA + (posB - posA) * blend;
 
 		// assimp SRT=>DX版　SRT
 		Vector3 s = { 1.0f,1.0f,1.0f };		// 20240714 DX化
@@ -898,7 +1067,7 @@ void CAnimationMesh::Update(BoneCombMatrix& bonecombarray,int& CurrentFrame,
 		// ローカル座標からボーンのアニメーション行列を作成
 		bone->AnimationMatrix = scalemtx * rotmtx * transmtx;
 	}
-
+	m_LastSampledPose = std::move(localpose);
 
 	UpdateBoneMatrix(&m_AssimpNodeNameTree, Matrix4x4::Identity);		// 20240714 DX化	
 
@@ -943,7 +1112,38 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 			toFrameFraction,
 			loopToAnimation);
 	}
+	ApplyBlendedRotationPose(bonecombarray, fromPose, toPose, blendRate);
+}
 
+void CAnimationMesh::UpdateBlendedRotationAnimation(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, SRTQ>& fromPose,
+	const aiAnimation* toAnimation,
+	int toFrame,
+	float toFrameFraction,
+	bool loopToAnimation,
+	float blendRate)
+{
+	m_DebugBoneMatrices.clear();
+	std::unordered_map<std::string, SRTQ> toPose;
+	if (toAnimation != nullptr)
+	{
+		BuildLocalPoseMap(
+			toAnimation,
+			toFrame,
+			toPose,
+			toFrameFraction,
+			loopToAnimation);
+	}
+	ApplyBlendedRotationPose(bonecombarray, fromPose, toPose, blendRate);
+}
+
+void CAnimationMesh::ApplyBlendedRotationPose(
+	BoneCombMatrix& bonecombarray,
+	const std::unordered_map<std::string, SRTQ>& fromPose,
+	std::unordered_map<std::string, SRTQ>& toPose,
+	float blendRate)
+{
 	const float rate = std::clamp(blendRate, 0.0f, 1.0f);
 	std::unordered_map<std::string, SRTQ> blendedPose;
 	blendedPose.reserve(std::max(fromPose.size(), toPose.size()));
@@ -996,6 +1196,8 @@ void CAnimationMesh::UpdateBlendedRotationAnimation(
 	for (const auto& bone : m_BoneDictionary)
 		bonecombarray.ConstantBufferMemory.BoneCombMtx[bone.second.idx] =
 			bone.second.Matrix.Transpose();
+	// 混ざった姿勢を控える(つなぎの途中で次のつなぎを始めるときのつなぎ元)。
+	m_LastSampledPose = std::move(blendedPose);
 }
 
 float CAnimationMesh::GetAnimatedLocalMaxZ() const
@@ -1072,11 +1274,36 @@ float CAnimationMesh::GetAnimatedLowestAlong(const Vector3& upAxis) const
 		}
 
 		const float height = skinned.Dot(upAxis);
-		lowestHeight = std::min(lowestHeight, height);
+		if (height < lowestHeight)
+		{
+			lowestHeight = height;
+			// 一番強く効いている骨を控える(どの部位が一番低いかを記録に出すため)。
+			int strongest = -1;
+			float strongestWeight = 0.0f;
+			for (int slot = 0; slot < 4; ++slot)
+			{
+				if (vertex.BoneWeight[slot] > strongestWeight)
+				{
+					strongestWeight = vertex.BoneWeight[slot];
+					strongest = vertex.BoneIndex[slot];
+				}
+			}
+			m_lastLowestBoneIndex = strongest;
+		}
 		hasVertex = true;
 	}
 
 	return hasVertex ? lowestHeight : 0.0f;
+}
+
+std::string CAnimationMesh::GetLastLowestBoneName() const
+{
+	for (const auto& [name, bone] : m_BoneDictionary)
+	{
+		if (bone.idx == m_lastLowestBoneIndex)
+			return name;
+	}
+	return {};
 }
 
 void CAnimationMesh::ApplyAnimationToBones(
@@ -1489,7 +1716,8 @@ bool CAnimationMesh::SolveLegIK(
 	const LegIKChain& chain,
 	const Vector3& targetToeModelPosition,
 	float maxExtensionRatio,
-	float softening)
+	float softening,
+	const Matrix4x4* footModelOrientation)
 {
 	auto upperIt = m_BoneDictionary.find(chain.upperLeg);
 	auto lowerIt = m_BoneDictionary.find(chain.lowerLeg);
@@ -1525,7 +1753,15 @@ bool CAnimationMesh::SolveLegIK(
 	const Vector3 a = MatrixPosition(upperGlobal);
 	const Vector3 b = MatrixPosition(lowerGlobal);
 	const Vector3 c = MatrixPosition(footGlobal);
-	const Vector3 toeToFoot = MatrixPosition(footGlobal) - MatrixPosition(toeGlobal);
+	// 足首の向きを指定されたときは、その向きで足を置いたときの「足首とつま先の差」を使う。
+	Matrix4x4 footOrientation = footGlobal;
+	if (footModelOrientation != nullptr)
+		footOrientation = *footModelOrientation;
+	footOrientation._41 = 0.0f;
+	footOrientation._42 = 0.0f;
+	footOrientation._43 = 0.0f;
+	const Vector3 toeInFoot = MatrixPosition(toeGlobal * footGlobal.Invert());
+	const Vector3 toeToFoot = -Vector3::Transform(toeInFoot, footOrientation);
 	Vector3 t = targetToeModelPosition + toeToFoot;
 
 	const float lab = (b - a).Length();
@@ -1599,8 +1835,8 @@ bool CAnimationMesh::SolveLegIK(
 	const Matrix4x4 lowerGlobalNew = lowerGlobalAfterHip * kneeTransform;
 	const Matrix4x4 footGlobalChain = footGlobalAfterHip * kneeTransform;
 
-	// 足首は元の向きのまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
-	Matrix4x4 footGlobalNew = footGlobal;
+	// 足首は元の向き(指定があればその向き)のまま残し、位置だけ脚についていく(足の裏が地面と平行なまま残る)。
+	Matrix4x4 footGlobalNew = footOrientation;
 	const Vector3 footPosition = MatrixPosition(footGlobalChain);
 	footGlobalNew._41 = footPosition.x;
 	footGlobalNew._42 = footPosition.y;
@@ -1611,6 +1847,23 @@ bool CAnimationMesh::SolveLegIK(
 	upperIt->second.AnimationMatrix = upperGlobalNew * upperParent.Invert();
 	lowerIt->second.AnimationMatrix = lowerGlobalNew * upperGlobalNew.Invert();
 	footIt->second.AnimationMatrix = footGlobalNew * lowerGlobalNew.Invert();
+	// 膝の骨のほかの子(翼膜の付け根など)は、足首と同じく向きを元のまま残し、位置だけ脚についていかせる。
+	const Matrix4x4 lowerInverse = lowerGlobal.Invert();
+	const Matrix4x4 lowerNewInverse = lowerGlobalNew.Invert();
+	for (const std::string& childName : chain.keepOrientation)
+	{
+		auto childIt = m_BoneDictionary.find(childName);
+		const auto childGlobalIt = m_DebugBoneMatrices.find(childName);
+		if (childIt == m_BoneDictionary.end() || childGlobalIt == m_DebugBoneMatrices.end())
+			continue;
+		const Matrix4x4 childGlobal = childGlobalIt->second;
+		const Vector3 followed = MatrixPosition(childGlobal * lowerInverse * lowerGlobalNew);
+		Matrix4x4 childGlobalNew = childGlobal;
+		childGlobalNew._41 = followed.x;
+		childGlobalNew._42 = followed.y;
+		childGlobalNew._43 = followed.z;
+		childIt->second.AnimationMatrix = childGlobalNew * lowerNewInverse;
+	}
 	return true;
 }
 
