@@ -12,6 +12,8 @@
 #include "../system/CShader.h"
 #include "../system/WeaponTrail.h"
 #include "../system/ArenaFloor.h"
+#include "../system/ArenaOutskirts.h"
+#include "../system/ArenaWallVisual.h"
 #include "../system/AttackTimelineEditor.h"
 #include "../system/HitEffect.h"
 #include "../system/EnemyFireball.h"
@@ -212,13 +214,16 @@ private:
 	std::array<std::unique_ptr<Segment>,3> m_segments;		// ローカル軸表示用線分
 
 	std::unique_ptr<player>	m_player;						//	プレイヤ
-	std::unique_ptr<field>	m_field;						//	フィールド
+	// 闘技場の外の地面。遠くほど空の色に溶ける(以前の草の field は床とちらつき、飛来の場面で端が見えていた)。
+	ArenaOutskirts m_outskirts;
 	std::vector<std::unique_ptr<wall>>	m_walls;			//	ｗａｌｌ
 	std::vector<std::unique_ptr<enemy>>	m_enemies;			//	敵
 	// 見た目だけの闘技場パーツ。衝突判定はm_wallsが担当し、
 	// デバッグ編集画面とゲームプレイが同じ境界を共有する。
 	// 床はマス目付き(距離感をつかみやすくするため)。
 	ArenaFloor m_arenaFloor;
+	// 石の城壁のモデル(16枚を1つのメッシュに焼き込んだもの)。読めなかったときだけ下の一色の箱で描く。
+	ArenaWallVisual m_arenaStoneWall;
 	Box m_arenaWallVisual{1.0f, 1.0f, 1.0f};
 	Box m_arenaWallCapVisual{1.0f, 1.0f, 1.0f};
 	// 影生成パス用のシェーダー(深度だけを書き込む)。

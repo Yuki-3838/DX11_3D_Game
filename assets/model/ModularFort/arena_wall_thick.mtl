@@ -1,0 +1,24 @@
+# Blender 5.3.0 MTL File: 'None'
+# www.blender.org
+
+newmtl modular_fort_01_trim_1
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd modular_fort_01_trim_diff_2k.jpg
+map_Ns modular_fort_01_trim_rough_2k.png
+map_Bump -bm 1.000000 modular_fort_01_trim_nor_gl_2k.png
+
+newmtl modular_fort_01_wall_1
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd modular_fort_01_wall_diff_2k.jpg
+map_Ns modular_fort_01_wall_rough_2k.png
+map_Bump -bm 1.000000 modular_fort_01_wall_nor_gl_2k.png
