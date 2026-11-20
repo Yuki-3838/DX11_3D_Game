@@ -1108,9 +1108,32 @@ void GameScene::update(uint64_t deltatime)
 	if (m_player)
 	{
 		static const std::string autoWalk = GetDevSetting("auto_walk", "0");
+		// auto_walk_tap=押す秒数,離す秒数 で、移動を小刻みに入れたり切ったりする
+		// (連打したときに歩きが途切れず続くかを、キー入力を送らずに確かめるため)。
+		static const std::string autoWalkTap = GetDevSetting("auto_walk_tap", "");
+		static float tapOnSeconds = 0.0f;
+		static float tapOffSeconds = 0.0f;
+		static bool tapParsed = false;
+		if (!tapParsed)
+		{
+			tapParsed = true;
+			const size_t comma = autoWalkTap.find(',');
+			if (comma != std::string::npos)
+			{
+				tapOnSeconds = std::stof(autoWalkTap.substr(0, comma));
+				tapOffSeconds = std::stof(autoWalkTap.substr(comma + 1));
+			}
+		}
+		bool tapHeld = true;
+		if (tapOnSeconds > 0.0f && tapOffSeconds > 0.0f)
+		{
+			const float cycle = tapOnSeconds + tapOffSeconds;
+			tapHeld = std::fmod(m_battleSeconds, cycle) < tapOnSeconds;
+		}
+		const float tap = tapHeld ? 1.0f : 0.0f;
 		m_player->setDebugForcedMove(
-			autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f),
-			autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f));
+			tap * (autoWalk == "1" ? 1.0f : (autoWalk == "4" ? -1.0f : 0.0f)),
+			tap * (autoWalk == "2" ? 1.0f : (autoWalk == "3" ? -1.0f : 0.0f)));
 	}
 	// 飛来の場面(ローディング画面)の間は、ほかの更新を通さない。
 	// 終わったフレームは下へ進み、そのまま登場演出の最初のコマを作る(白の下で姿勢が切り替わる)。
@@ -1498,7 +1521,12 @@ void GameScene::update(uint64_t deltatime)
 				m_player->getMotionTime(),
 				deltaSeconds,
 				velocityRight,
-				velocityForward
+				velocityForward,
+				true,
+				// 移動を押しているか。離したあとの減速中は「止まろうとしている」として、
+				// 一歩を踏み切って足を揃えにいく(CCharacterAnimator::UpdateLocomotionBlendSpace)。
+				m_player->getMotionState() == player::MotionState::Walk ||
+				m_player->getMotionState() == player::MotionState::Run
 			});
 
 
@@ -4953,6 +4981,10 @@ void GameScene::LoadPlayerAssetsOnWorker()
 	m_playerAnimationMesh = std::make_unique<CAnimationMesh>();
 	m_playerAnimationMesh->LoadWithoutRenderResources(g_loadmodel[0].filename, g_loadmodel[0].texdirectoryname);
 	m_playerAnimationMesh->ApplyModelProfile(playerProfile);
+	// 前転中と倒れている間は、接地を頂点の最下点(GetAnimatedLocalMinY)で求めるので、毎フレーム全頂点をCPUで変形する。
+	// 騎士は頂点が多く、Debugビルドでは前転の間ずっと1フレームに約39msかかり、前転のたびに止まっていた(実測)。
+	// 敵と同じく、間引いた頂点で最下点を求める(間引いた後は約4.5ms)。
+	m_playerAnimationMesh->SetGroundingSampleBudget(8000);
 	m_playerAnimator.Initialize(*m_playerAnimationMesh, playerProfile);
 	// クリップはモデルごとの表(CharacterModelProfile)から引く。iniのキーで差し替えられる。
 	const auto locomotionClip = [&playerProfile](LocomotionClipSlot slot) {
