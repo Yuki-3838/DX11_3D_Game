@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "CombatAttackTable.h"
+#include "CombatHitShapes.h"
 
 /**
  * 敵(ドラゴン)のモデルごとの違いをまとめた表。
@@ -96,6 +97,52 @@ struct EnemyBodySphere
     float radius = 0.0f;
 };
 
+/**
+ * 部位ごとの当たり判定(CombatHitShapes.h)の太さ(カプセルの半径)。
+ * 骨と骨を結ぶ線分をこの半径で太らせて、受ける形・攻撃する形にする。
+ * 半径は combatReferenceScale の大きさのときのワールドの長さ(実際には Combat::EnemyReachScale を掛ける)。
+ * 値は壁の押し出しの球(bodySpheres)の半径を元にした。
+ */
+struct EnemyHitRadii
+{
+    // 受ける形(プレイヤーの剣が当たる)
+    // 頭は首の先(Neck3)から口先までを2つに分ける。後ろ(頭蓋・顎の付け根)は太く、前(鼻先)は細い。
+    // 1本の太いカプセルにすると、鼻先の周りと口先の先(カプセルの丸い端)が大きくはみ出していた
+    // (Wyvern の頂点を測ると、芯からの距離の75%は 後ろから 9.6 / 6.5 / 2.4 / 1.8 だった。半径は1本で 7.3)。
+    float head = 4.5f;       ///< 頭の後ろ半分(頭蓋)
+    float headSnout = 1.8f;  ///< 頭の前半分(鼻先)。丸い端が口先で止まるよう、芯の先はこの半径だけ手前で止める
+    float headSplit = 0.5f;  ///< 頭の芯の、どこで後ろと前を分けるか(0 = 首の先、1 = 口先)
+    float headSnoutReach = 0.0f; ///< 鼻先の丸い端が、口先の点からさらに先へ届く長さ(口先の点がモデルの先端より内側にあるモデル用)
+    float neck = 5.0f;
+    float body = 8.0f;
+    float tail = 4.0f;
+    float tailTip = 3.0f;
+    float upperLeg = 3.5f;
+    float lowerLeg = 2.5f;
+    float wing = 2.5f;
+    // 攻撃する形(プレイヤーに当たる)。見た目の太さに合わせ、大きくしすぎない
+    // (太くすると「懐にいるのに当たる」が戻ってしまう)。
+    float strikeHead = 4.5f;       ///< 噛みつき・頭を振る攻撃の、頭の後ろ半分
+    float strikeHeadSnout = 2.0f;  ///< 同じく前半分(噛みつく口先)
+    float strikeClaw = 3.0f;
+    float strikeTail = 3.5f;
+};
+
+/**
+ * 役割の骨(EnemyBone)では表せない部位の受ける形。骨の名前を順に結んだ線分を、同じ半径のカプセルにする。
+ * Wyvern の翼(前脚の手首から伸びる2本の指と、その間の膜)のように、モデルにしか無い骨に使う。
+ * 半径は EnemyHitRadii と同じく combatReferenceScale の大きさのときの長さ。
+ */
+struct EnemyHitChain
+{
+    std::vector<std::string> bones;
+    float radius = 3.0f;
+    Combat::HitPart part = Combat::HitPart::Body;
+    /// 最後の骨より先へ延ばす割合。最後のカプセルの先 = 最後の骨 + (最後の骨 - 一つ前の骨) * この値
+    /// (尾の先のように、骨の先にも体がある所に使う)。
+    float tipExtend = 0.0f;
+};
+
 struct EnemyModelProfile
 {
     const char* id = "";
@@ -113,6 +160,13 @@ struct EnemyModelProfile
     float mouthRadius = 4.0f;
     float tailTipRadius = 3.0f;
     std::vector<EnemyBodySphere> bodySpheres;
+    EnemyHitRadii hitRadii;
+    std::vector<EnemyHitChain> extraHurtChains; ///< 役割の骨の形に足す受ける形
+    /// 脚の受ける形を役割の骨(上・下・足)で作るか。false なら脚も extraHurtChains で表す
+    /// (Wyvern は足首・手首で大きく曲がるので、脛から指へ真っすぐ結ぶと足首が形から外れる)。
+    bool hurtLegsFromRoles = true;
+    /// 尾の受ける形を役割の骨(Tail1〜Tail3 と先の延長)で作るか。false なら尾も extraHurtChains で表す。
+    bool hurtTailFromRoles = true;
 
     // クリップ。空なら使わない。
     std::string idleClip;
@@ -286,6 +340,22 @@ inline const EnemyModelProfile& GetCethielDragonProfile()
             { "Armature_leg_back_foot_L", 4.0f },
             { "Armature_leg_back_foot_R", 4.0f },
         };
+        // 部位ごとの判定の太さ。上の球と同じく、胴は横幅約23の半分。
+        // 頭は前後でほぼ同じ太さ(頂点の芯からの距離が約5)で、口先の点より約4先まで顔がある。
+        p.hitRadii.head = 5.5f;
+        p.hitRadii.headSnout = 5.0f;
+        p.hitRadii.headSnoutReach = 4.0f;
+        p.hitRadii.neck = 7.0f;
+        p.hitRadii.body = 11.0f;
+        p.hitRadii.tail = 5.5f;
+        p.hitRadii.tailTip = 3.5f;
+        p.hitRadii.upperLeg = 4.5f;
+        p.hitRadii.lowerLeg = 3.5f;
+        p.hitRadii.wing = 3.0f;
+        p.hitRadii.strikeHead = 5.5f;
+        p.hitRadii.strikeHeadSnout = 5.0f;
+        p.hitRadii.strikeClaw = 3.5f;
+        p.hitRadii.strikeTail = 4.0f;
         p.idleClip = "assets/model/CethielDragon/dragon_idle.dae";
         p.walkClip = "assets/model/CethielDragon/dragon_walk.dae";
         p.attackClip = "assets/model/CethielDragon/dragon_attack.dae";
@@ -377,6 +447,48 @@ inline const EnemyModelProfile& GetWyvernProfile()
             { "winger_Outer_L", "winger_Inner_L" },
             { "winger_Outer_R", "winger_Inner_R" } } };
         // 翼は前脚に付いていて、飛ぶ動きはクリップ(Fly)にある。手続きで広げる翼は使わない。
+        // 翼の受ける形: 前脚の手首から2本の指(Inner は上へ高く伸びる前縁、Outer は体の横を後ろへ伸びる)が出て、
+        // その間に膜が張っている。指の骨に沿ったカプセルと、2本の指の同じ段どうしを結ぶカプセルで膜を覆う。
+        for (const char* side : { "L", "R" })
+        {
+            const Combat::HitPart part = std::string(side) == "L" ? Combat::HitPart::WingL : Combat::HitPart::WingR;
+            const auto bone = [side](const char* base) { return std::string(base) + "_" + side; };
+            // 膜は薄く、頂点は指や結んだ線から1〜2しか離れていないので細くする(2.5 では膜の両側へ2ほどはみ出していた)。
+            p.extraHurtChains.push_back({ { bone("winger_Inner"), bone("winger_Inner_001"), bone("winger_Inner_002"),
+                bone("winger_Inner_003"), bone("winger_Inner_004") }, 1.8f, part });
+            p.extraHurtChains.push_back({ { bone("winger_Outer"), bone("winger_Outer_001"), bone("winger_Outer_002"),
+                bone("winger_Outer_003") }, 1.8f, part });
+            p.extraHurtChains.push_back({ { bone("winger_Inner_001"), bone("winger_Outer_001") }, 2.4f, part });
+            p.extraHurtChains.push_back({ { bone("winger_Inner_002"), bone("winger_Outer_002") }, 2.4f, part });
+            p.extraHurtChains.push_back({ { bone("winger_Inner_003"), bone("winger_Outer_003") }, 2.4f, part });
+            p.extraHurtChains.push_back({ { bone("winger_Inner_004"), bone("winger_Outer_003") }, 2.4f, part });
+        }
+        // 脚は 付け根→膝(肘)→足首(手首)→指 の3本に分ける。後脚はかかとが高く後ろへ曲がり、
+        // 前脚は手首から翼の指が出るので、脛から指へ真っすぐ結ぶと足首・手首が形から外れていた。
+        p.hurtLegsFromRoles = false;
+        for (const char* side : { "L", "R" })
+        {
+            const bool left = std::string(side) == "L";
+            const auto bone = [side](const char* base) { return std::string(base) + "_" + side; };
+            const Combat::HitPart front = left ? Combat::HitPart::FrontLegL : Combat::HitPart::FrontLegR;
+            const Combat::HitPart back = left ? Combat::HitPart::BackLegL : Combat::HitPart::BackLegR;
+            // 肩(背骨の付け根から前脚の付け根まで)。肩の盛り上がりが前脚の芯の手前に大きくはみ出していた。
+            p.extraHurtChains.push_back({ { bone("clavicle"), bone("front_UpperLeg") }, 5.0f, front });
+            p.extraHurtChains.push_back({ { bone("front_UpperLeg"), bone("front_Shin") }, 3.5f, front });
+            p.extraHurtChains.push_back({ { bone("front_Shin"), bone("front_Foot") }, 2.5f, front });
+            // 指は地面に伸びているので、指の付け根で止めず爪の先(Middle3)まで結ぶ。
+            p.extraHurtChains.push_back({ { bone("front_Foot"), bone("front_toe_Middle1"), bone("front_toe_Middle3") }, 3.0f, front });
+            p.extraHurtChains.push_back({ { bone("back_UpperLeg"), bone("back_Shin") }, 4.0f, back });
+            p.extraHurtChains.push_back({ { bone("back_Shin"), bone("back_Foot") }, 3.0f, back });
+            p.extraHurtChains.push_back({ { bone("back_Foot"), bone("back_toe_Middle1"), bone("back_toe_Middle3") }, 3.0f, back });
+        }
+        // 尾は10本の骨で先が上へ反り、先の棘(stinger)は tail_009 の先にある。
+        // 役割の3本(002・005・008)を真っすぐ結んで延ばすと反りから外れるので、骨を1本ずつ結ぶ。
+        p.hurtTailFromRoles = false;
+        // 根元側は胴のカプセルが太く覆うので、ここは尾そのものの太さ。先は棘とトゲの分だけ太い。
+        p.extraHurtChains.push_back({ { "tail_002", "tail_003", "tail_004", "tail_005", "tail_006", "tail_007" }, 3.0f, Combat::HitPart::Tail });
+        p.extraHurtChains.push_back({ { "tail_007", "tail_008" }, 3.6f, Combat::HitPart::Tail });
+        p.extraHurtChains.push_back({ { "tail_008", "tail_009" }, 4.0f, Combat::HitPart::Tail, 1.8f });
         p.mouthExtend = 2.6f;
         // tail_008 の先、尾の先端(約256cm先)までは tail_005→tail_008(約345cm)の約0.75倍。
         p.tailTipExtend = 0.75f;

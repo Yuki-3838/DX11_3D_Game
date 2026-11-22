@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 #include <SimpleMath.h>
 
 #include "collision.h"
 #include "CombatAttackTable.h"
+#include "CombatHitShapes.h"
 
 class OneVsOneCombat
 {
@@ -25,6 +27,24 @@ public:
 		GM31::GE::Collision::BoundingBoxOBB tipSweepObb{};
 		GM31::GE::Collision::BoundingBoxOBB playerObb{};
 		GM31::GE::Collision::BoundingBoxOBB enemyObb{};
+
+		// --- 部位ごとの判定(CombatHitShapes.h) ---
+		// partShapesUsed: 剣と敵を、敵の箱ではなく部位の形で見たか。
+		// enemyHurtHitIndex: 剣が当たった敵の部位(enemyHurtShapes の番号)。当たっていなければ -1。
+		bool partShapesUsed = false;
+		Combat::HitShapeList enemyHurtShapes;
+		int enemyHurtHitIndex = -1;
+		DirectX::SimpleMath::Vector3 swordContactPoint{};
+		// 剣の攻撃する形(刃・剣先の通り道・柄→前の剣先の3本)。swordHitIndex は当たった形の番号、無ければ -1。
+		Combat::HitShapeList swordShapes;
+		int swordHitIndex = -1;
+		// 敵の攻撃。enemyAttackLive は、この更新で攻撃する形を当てに行ったか(判定が出ているか)。
+		Combat::HitShapeList playerHurtShapes;
+		Combat::HitShapeList enemyAttackShapes;
+		bool enemyAttackLive = false;
+		bool enemyAttackUsesShapes = false;
+		int enemyAttackHitIndex = -1;
+		int playerHurtHitIndex = -1;
 	};
 
     enum class Phase
@@ -51,6 +71,13 @@ public:
 	void SetEnemySpinHalfTurns(int halfTurns) { m_enemySpinHalfTurns = halfTurns; }
 	// プレイヤーが走っているか。走りながら弱攻撃を押すとダッシュ攻撃になる(Update前に設定する)。
 	void SetPlayerSprinting(bool sprinting) { m_playerSprinting = sprinting; }
+	// 部位ごとの判定の形(Update前に毎フレーム設定する。骨の位置から作る)。
+	//  - 敵の受ける形: 剣が当たるかを、敵の全体を包む箱ではなくこれで見る
+	//  - プレイヤーの受ける形と、敵の攻撃する形: 敵の攻撃が当たるかを、距離と角度(扇形)ではなくこれで見る
+	// 空のとき(骨が取れないモデル)は従来の判定(箱・扇形)に戻す。
+	void SetEnemyHurtShapes(Combat::HitShapeList shapes) { m_enemyHurtShapes = std::move(shapes); }
+	void SetPlayerHurtShapes(Combat::HitShapeList shapes) { m_playerHurtShapes = std::move(shapes); }
+	void SetEnemyAttackShapes(Combat::HitShapeList shapes) { m_enemyAttackShapes = std::move(shapes); }
 	bool IsPlayerDashAttack() const { return m_playerAttack.dash && m_playerAttack.comboStep == 1; }
 	void ClearCollisionDebug()
 	{
@@ -65,7 +92,8 @@ public:
 		const DirectX::SimpleMath::Vector3& swordTip,
 		const DirectX::SimpleMath::Vector3& previousSwordTip,
 		const GM31::GE::Collision::BoundingBoxOBB& playerObb,
-		const GM31::GE::Collision::BoundingBoxOBB& enemyObb);
+		const GM31::GE::Collision::BoundingBoxOBB& enemyObb,
+		const Combat::HitShapeList* enemyHurtShapes = nullptr);
 	void UpdatePlayerCollisionDebug(
 		const DirectX::SimpleMath::Vector3& swordBase,
 		const DirectX::SimpleMath::Vector3& swordTip,
@@ -135,6 +163,14 @@ public:
     // 命中の演出は体力の増減ではなくこれで出す(無敵でも演出は出したいため)。
     bool DidPlayerHitLand() const { return m_playerHitLanded; }
     bool DidEnemyHitLand() const { return m_enemyHitLanded; }
+    // この更新で剣が当たった位置(部位の形で判定したときの接触点)。箱で判定したときは false。
+    bool GetPlayerHitContact(DirectX::SimpleMath::Vector3& out) const
+    {
+        if (!m_playerHitLanded || !m_playerHitContactValid)
+            return false;
+        out = m_playerHitContact;
+        return true;
+    }
     // この更新で敵の攻撃判定を「使った」ときの中身(戦闘記録用)。
     // 当たったか・無敵で受けたか・射程外か・角度外かを後から数えるために残す。
     // 通常の近接は判定の瞬間に1回、尾回転・突進はプレイヤーの方を通ったときだけ記録される。
@@ -173,6 +209,7 @@ public:
 	bool IsPlayerComboQueued() const { return m_playerAttack.comboQueued > 0; }
 	const CollisionDebugState& GetCollisionDebugState() const { return m_collisionDebug; }
     bool IsEnemyAttacking() const { return m_enemyAttack.phase == Phase::Windup || m_enemyAttack.phase == Phase::Active || m_enemyAttack.phase == Phase::Recovery; }
+    bool IsEnemyAttackActive() const { return m_enemyAttack.phase == Phase::Active; }
     std::string_view GetStateName() const;
 
 private:
@@ -197,6 +234,8 @@ private:
 		int comboQueued = 0;
 		// 走りから出したダッシュ攻撃か。1段目だけダッシュ攻撃のクリップと時間を使う。
 		bool dash = false;
+		// 敵の尾回転で、最後に当てた(またはくぐり抜けられた)半回転の番号。半回転ごとに1回だけ当てる。
+		int lastHitSegment = -1;
     };
 
     // 攻撃の時間・威力の定義元は system/CombatAttackTable.h に集約している。
@@ -242,5 +281,13 @@ private:
 	bool m_playerDebugInvincible = false;
 	bool m_playerHitLanded = false;
 	bool m_enemyHitLanded = false;
+	bool m_playerHitContactValid = false;
+	DirectX::SimpleMath::Vector3 m_playerHitContact{};
+	// 判定の境界で剣が触れた位置(m_playerHitGrace の間だけ持ち越す)。
+	bool m_graceContactValid = false;
+	DirectX::SimpleMath::Vector3 m_graceContact{};
+	Combat::HitShapeList m_enemyHurtShapes;
+	Combat::HitShapeList m_playerHurtShapes;
+	Combat::HitShapeList m_enemyAttackShapes;
 	EnemyHitCheck m_enemyHitCheck{};
 };
