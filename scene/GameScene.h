@@ -197,6 +197,27 @@ private:
 	aiAnimation* m_enemyTailSpinAnimations[2]{};
 	// 前の更新で尾回転のモーションを当てていたか(抜けるときのつなぎの始まりを差し替えるため)。
 	bool m_enemyTailSpinClipWasActive = false;
+	// 尾回転のモーションを最後に当てていたときの状態(隙まで流しきったか、回っている途中で抜けたかを見分ける)。
+	enemy::MotionState m_enemyTailSpinClipLastState = enemy::MotionState::Approach;
+	// 尾回転のモーションを途中で抜けたつなぎの間か(enemy::setSpinExitYawWeight で描く向きを合わせる)。
+	bool m_enemySpinExitBlend = false;
+	// 描く向きを合わせる割合 = m_enemySpinExitYawScale × (1 − つなぎの進み)。
+	// つなぎの途中で次のつなぎが始まると(咆哮の入りなど)、つなぎ元はその時点の混ざった姿勢になり、
+	// 体の回転はもう一部しか残っていない。そのときの割合を引き継がないと、描く向きだけが回り始めの向きへ戻り、
+	// 体がぐるりと回ってから戻った(記録で6フレームの間に約130°)。
+	float m_enemySpinExitYawScale = 1.0f;
+	float m_enemySpinExitYawWeightLast = 0.0f;
+	// 画面に描いた体の向き(後ろ脚の付け根の左右を結ぶ線の向き、ワールドの水平の角度)。前の更新の値。
+	// 尾回転のクリップは体の向きの回転まで入っていて、回っている途中のクリップの向きは物理の向きと一致しない
+	// (記録では回る向きが物理の向きと逆で、半回転の途中で最大約140°ずれた)。途中で抜けるときは、
+	// 物理の向きを画面に描いていた向きへ合わせてからつなぐ(合わせないと、つなぎの間に体がぐるりと回った)。
+	float m_enemyLastHipHeading = 0.0f;
+	bool m_enemyLastHipHeadingValid = false;
+	// 上の角度と物理の向きの差(立ち姿勢のときの値。尾回転の溜めの間に測る)。
+	float m_enemySpinHeadingOffset = 0.0f;
+	bool m_enemySpinHeadingOffsetValid = false;
+	// 尾回転を途中で抜けるときのつなぎの長さ。怯みのつなぎ(0.06秒)のままだと、浮かせた前足が4フレームで床へ落ちた。
+	static constexpr float ENEMY_SPIN_INTERRUPT_BLEND_SECONDS = 0.15f;
 	// 怯み(Damage)・威嚇(Scream2)・瀕死の歩き(crawl)。無いモデルは nullptr。
 	aiAnimation* m_enemyDamageAnimation = nullptr;
 	aiAnimation* m_enemyThreatAnimation = nullptr;

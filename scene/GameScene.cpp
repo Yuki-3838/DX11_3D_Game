@@ -3663,11 +3663,31 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	// 尾回転のモーションから抜けるとき。回った後(判定・隙)のクリップの姿勢は体が半回転した向きなので、
 	// そこからつなぐと、描画の向き(抜けた瞬間に回った後の向きへ移る)と二重に回り、つなぎの間だけ体がぐるりと回る。
 	// 隙の終わりは待機の最初のコマを半回転させた姿勢にしてあるので、つなぎの始まりを待機の最初のコマに差し替える。
+	// ただし回っている途中(判定の間)で抜けたとき(怯む・倒れる)は、差し替えずに画面の姿勢からつなぎ、
+	// 二重に回らないよう、つなぎの間は描く向きを回り始めの向きから物理の向きへ移す(enemy::setSpinExitYawWeight)。
+	// 差し替えると、浮かせた前足・持ち上げた体が1フレームで待機の姿勢へ落ちた(記録で足が1フレームに約8下がり、
+	// その画面はモーションブラーで大きくぶれた)。
+	bool spinInterrupted = false;
 	{
 		const bool tailSpinTurned = tailSpinClip != nullptr && animation == tailSpinClip &&
 			(state == enemy::MotionState::Active || state == enemy::MotionState::Recovery);
 		const bool tailSpinClipNow = tailSpinClip != nullptr && animation == tailSpinClip;
-		if (m_enemyTailSpinClipWasActive && !tailSpinClipNow)
+		if (m_enemyTailSpinClipWasActive && !tailSpinClipNow &&
+			m_enemyTailSpinClipLastState == enemy::MotionState::Active)
+		{
+			spinInterrupted = true;
+			// 物理の向きを、前の更新で画面に描いた体の向きへ合わせる(つなぎの終わりの向き = 抜けた瞬間の見た目の向き)。
+			if (m_enemyLastHipHeadingValid && m_enemySpinHeadingOffsetValid)
+			{
+				SRT srt = m_enemies.front()->getSRT();
+				float yaw = m_enemyLastHipHeading - m_enemySpinHeadingOffset;
+				while (yaw > PI) yaw -= PI * 2.0f;
+				while (yaw < -PI) yaw += PI * 2.0f;
+				srt.rot.y = yaw;
+				m_enemies.front()->setSRT(srt);
+			}
+		}
+		else if (m_enemyTailSpinClipWasActive && !tailSpinClipNow)
 		{
 			const auto isSpinClip = [this](const aiAnimation* clip)
 			{
@@ -3688,6 +3708,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			}
 		}
 		m_enemyTailSpinClipWasActive = tailSpinTurned;
+		m_enemies.front()->setRenderSpinFromClip(tailSpinTurned);
+		if (tailSpinClipNow)
+			m_enemyTailSpinClipLastState = state;
 	}
 
 	// 時刻で再生位置を決めるクリップ(羽ばたき・咆哮)に入る・出るときは、直前の姿勢から短くつなぐ。
@@ -3761,6 +3784,15 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyAttackBlendActive = true;
 		m_enemyGenericBlend = true;
 	}
+	// 尾回転を途中で抜けたつなぎ(上のどれかで始まったもの)。少し長めにつなぎ、描く向きも合わせる。
+	if (spinInterrupted && m_enemyAttackBlendActive)
+	{
+		m_enemyAttackBlendDuration = std::max(m_enemyAttackBlendDuration, ENEMY_SPIN_INTERRUPT_BLEND_SECONDS);
+		m_enemySpinExitBlend = true;
+		m_enemySpinExitYawScale = 1.0f;
+	}
+	// このフレームの姿勢に混ぜた、つなぎ元の割合(尾回転を途中で抜けたつなぎの間だけ使う)。
+	float spinExitYawWeight = 0.0f;
 
 	bool blendedIntroThisUpdate = false;
 	if (animation != nullptr)
@@ -3802,6 +3834,8 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			// 攻撃の入り・決着の後の動きの入り。直前の姿勢から次のクリップの再生位置へ短くつなぐ。
 			const float blendRate = std::clamp(
 				m_enemyAttackBlendTime / m_enemyAttackBlendDuration, 0.0f, 1.0f);
+			if (m_enemySpinExitBlend)
+				spinExitYawWeight = m_enemySpinExitYawScale * (1.0f - blendRate);
 			m_enemyLastSampledAnimation = animation;
 			m_enemyLastSampledFrame = m_enemyAnimationFrame;
 			m_enemyLastSampledFraction = fraction;
@@ -3861,6 +3895,10 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		m_enemyAnimationMesh->UpdateManualPose(m_enemyBoneComb, {});
 		m_enemyLastPoseUsableAsBlendFrom = false;
 	}
+	m_enemies.front()->setSpinExitYawWeight(spinExitYawWeight);
+	m_enemySpinExitYawWeightLast = spinExitYawWeight;
+	if (spinExitYawWeight <= 0.0f)
+		m_enemySpinExitBlend = false;
 	// 攻撃ごとのシルエット。クリップの姿勢の上から首・あご・尾・前脚を回し、
 	// 3種類の攻撃を遠目にも見分けられるようにする(接地の計算より前に済ませる)。
 	// 攻撃ごとに専用のクリップがあるモデル(Wyvern)は、クリップの動きだけで見分けられるので構えを重ねない
@@ -4049,6 +4087,26 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		{
 			if (enemyObject)
 				enemyObject->setVisualGroundOffsetY(visualGroundOffsetY);
+		}
+	}
+	// 画面に描く体の向き(後ろ脚の付け根の左右を結ぶ線)を控える。尾回転を途中で抜けたときに物理の向きを合わせるのに使う。
+	{
+		Vector3 hipL{}, hipR{};
+		m_enemyLastHipHeadingValid = GetEnemyBoneWorld(EnemyBone::BackUpperL, hipL) &&
+			GetEnemyBoneWorld(EnemyBone::BackUpperR, hipR) &&
+			(std::abs(hipR.x - hipL.x) + std::abs(hipR.z - hipL.z)) > 0.001f;
+		if (m_enemyLastHipHeadingValid)
+		{
+			m_enemyLastHipHeading = std::atan2(hipR.x - hipL.x, hipR.z - hipL.z);
+			// 溜めの間は描く向き = 物理の向きで、クリップもほぼ立ち姿勢なので、ここで差を測っておく。
+			if (tailSpinAttack && state == enemy::MotionState::Windup)
+			{
+				float offset = m_enemyLastHipHeading - m_enemies.front()->getSRT().rot.y;
+				while (offset > PI) offset -= PI * 2.0f;
+				while (offset < -PI) offset += PI * 2.0f;
+				m_enemySpinHeadingOffset = offset;
+				m_enemySpinHeadingOffsetValid = true;
+			}
 		}
 	}
 	m_enemyBoneComb.Update();
@@ -4677,6 +4735,14 @@ void GameScene::WriteCaptureLog()
 		if (GetEnemyBoneWorld(ENEMY_FOOT_BONES[i], foot))
 			footHeight[i] = foot.y - ARENA_FLOOR_TOP_Y;
 	}
+	// 体の向き(尾の根元から首の根元へ向かう向き、度)。描く向きとクリップの体の回転を合わせた、見た目の向き。
+	// 尾回転を途中で抜けたときなどに、見た目の向きが飛ばないかを確かめる。
+	float bodyDirection = 0.0f;
+	{
+		Vector3 tail{}, neck{};
+		if (GetEnemyBoneWorld(EnemyBone::Tail1, tail) && GetEnemyBoneWorld(EnemyBone::Neck1, neck))
+			bodyDirection = std::atan2(neck.x - tail.x, neck.z - tail.z) * 180.0f / PI;
+	}
 	// 胴の高さ(倒れるクリップで体が地面へ着く瞬間を測る)と、プレイヤーの描画の高さ(接地の確認)。
 	Vector3 enemyBody{};
 	const float bodyHeight = GetEnemyBoneWorld(EnemyBone::Body, enemyBody)
@@ -4725,7 +4791,7 @@ void GameScene::WriteCaptureLog()
 			attackGap = (std::min)(attackGap, distance - attackShape.radius - hurtShape.radius);
 		}
 	}
-	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d,%.2f,%s,%.3f,%.2f,%.2f,%zu,%.3f,%.1f,%d,%.2f,%.2f,%d,%.2f,%d,%d\n",
+	fprintf(m_captureLog, "%.2f,%d,%d,%.1f,%.1f,%.0f,%.0f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%zu,%zu,%.2f,%.1f,%.3f,%.2f,%.2f,%.3f,%.2f,%.1f,%d,%.1f,%.1f,%.1f,%.1f,%d,%.2f,%s,%.3f,%.2f,%.2f,%zu,%.3f,%.1f,%d,%.2f,%.2f,%d,%.2f,%d,%d,%.1f\n",
 		m_battleSeconds,
 		static_cast<int>(e.getMotionState()),
 		static_cast<int>(e.getAttackKind()),
@@ -4765,7 +4831,8 @@ void GameScene::WriteCaptureLog()
 		m_enemyFootSlideFoot,
 		attackGap,
 		collision.enemyAttackLive ? 1 : 0,
-		collision.playerHurtHitIndex);
+		collision.playerHurtHitIndex,
+		bodyDirection);
 	m_enemyFootSlideMax = 0.0f;
 	m_enemyFootSlideFoot = -1;
 	m_enemyFootPlantErrorMax = 0.0f;
@@ -7138,6 +7205,9 @@ void GameScene::CaptureEnemyBlendFromPose()
 		!m_enemyAnimationMesh->GetLastSampledPose().empty();
 	if (m_enemyAttackBlendFromPoseValid)
 		m_enemyAttackBlendFromPose = m_enemyAnimationMesh->GetLastSampledPose();
+	// 尾回転を途中で抜けたつなぎの途中で次のつなぎが始まった。つなぎ元に残っている体の回転の割合を引き継ぐ。
+	if (m_enemySpinExitBlend)
+		m_enemySpinExitYawScale = m_enemyAttackBlendFromPoseValid ? m_enemySpinExitYawWeightLast : 0.0f;
 }
 
 void GameScene::MeasureEnemyFootSlide(float deltaSeconds)
