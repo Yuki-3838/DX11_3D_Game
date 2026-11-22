@@ -3200,6 +3200,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 
 	// 倒れた敵。倒れるクリップを1回だけ再生して最後の姿勢で止まる。
 	const bool enemyDead = state == enemy::MotionState::Dead;
+	// その場で向き直る間は、地面に着いた足を留めて踏み替えながら回る(下の ApplyEnemyFootPlant)。
+	const bool enemyTurnFootPlant = state == enemy::MotionState::Turn && m_enemyFootPlantEnabled &&
+		m_enemyIdleAnimation != nullptr;
 	// 決着の後の動きへ移るときは、直前の姿勢から短くつなぐ(攻撃の途中で倒れても姿勢が飛ばないように)。
 	const bool finishBlendState = enemyDead ||
 		(m_battleFinish != BattleFinish::None &&
@@ -3446,6 +3449,11 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 		// 無ければ歩きを遅めに回す(前へ歩く脚のままなので、滑って見えるのは残る)。
 		case enemy::MotionState::Turn:
 			holdStandingPose = m_enemies.front()->isPassive();
+			// 足の固定(ApplyEnemyFootPlant)を使うときは、尾回転と同じく脚は立ち姿勢のままにして、
+			// 足は地面に留め、離れすぎたら持ち上げて踏み替える。踏み替えのクリップは足を決まった周期で動かすだけで、
+			// 地面に着いている間も体の回転と一緒に足が流れていた(記録で振り向きの98%のコマが毎秒30以上、中央値は毎秒97)。
+			if (enemyTurnFootPlant)
+				holdStandingPose = true;
 			if (!holdStandingPose)
 			{
 				aiAnimation* const turnClip = m_enemyTurnClipSign > 0.0f ? m_enemyTurnLeftAnimation : m_enemyTurnRightAnimation;
@@ -3841,10 +3849,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			? ENEMY_SPIN_HOP_HEIGHT * 4.0f * hopProgress * (1.0f - hopProgress)
 			: 0.0f;
 		ApplyEnemyFootPlant(
-			m_enemyFootPlantEnabled && tailSpinAttack && !enemyDead && !spinFromClip &&
-				(state == enemy::MotionState::Windup || state == enemy::MotionState::Active),
+			(m_enemyFootPlantEnabled && tailSpinAttack && !enemyDead && !spinFromClip &&
+				(state == enemy::MotionState::Windup || state == enemy::MotionState::Active)) ||
+				enemyTurnFootPlant,
 			spinning,
 			hopProgress,
+			enemyTurnFootPlant,
 			deltaSeconds);
 	}
 	// 敵の静的AABBだけでは、スキニングで脚や胴が沈んだ姿勢のときに
@@ -3886,8 +3896,14 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 			float footLowest = (std::numeric_limits<float>::max)();
 			// 尾回転で足を留めている間は、体を支えるのは地面に留めた足だけ。持ち上げて運んでいる足・浮かせた前足を
 			// 床に合わせると、その足が一番低いときに体ごと下がり、持ち上げたはずの足が床をこすって流れた。
+			// 向き直りでは使わず、IKをかける前のクリップのままの足の高さ(4本のうち一番低い足)で決める。
+			// 向き直りの入りは歩きから立ち姿勢へつないでいる途中で、4本の足の高さがそろっていない。
+			// 留めた足だけで決めると、宙にある足に合わせて体が約3.5沈み、IKをかけた後の足で決めると、
+			// 一番低い足が踏み出した瞬間に次に低い足(約2上)へ合わせ直して体が1フレームで約2下がった(記録)。
+			// クリップのままの足で決めれば、足を固定しない時と同じように体の高さがなめらかに変わる。
+			const bool turnClipGround = m_enemyFootPlantTurnRelease && m_enemyFootPlantWeight > 0.0f;
 			bool anyPlanted = false;
-			if (m_enemyFootPlantWeight > 0.0f)
+			if (m_enemyFootPlantWeight > 0.0f && !m_enemyFootPlantTurnRelease)
 			{
 				for (const EnemyPlantedFoot& planted : m_enemyPlantedFeet)
 					anyPlanted = anyPlanted || (planted.planted && planted.air <= 0.0f);
@@ -3900,7 +3916,9 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				if (anyPlanted && !(planted.planted && planted.air <= 0.0f))
 					continue;
 				Vector3 foot{};
-				if (!m_enemyProfile->HasBone(footBone) ||
+				if (turnClipGround && m_enemyFootClipModelValid[footIndex])
+					foot = m_enemyFootClipModel[footIndex];
+				else if (!m_enemyProfile->HasBone(footBone) ||
 					!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(footBone), foot))
 					continue;
 				// GetAnimatedLowestLocalHeight と同じ向きの高さ(-y*sin(p) - z*cos(p))。
@@ -5468,6 +5486,8 @@ void GameScene::init()
 	m_combat.SetPlayerDebugInvincible(GetDevSetting("player_invincible", "0") == "1");
 	// 比較用: enemy_foot_plant=0 で尾回転の足の固定を切る(前の、足が流れる回り方に戻る)。
 	m_enemyFootPlantEnabled = GetDevSetting("enemy_foot_plant", "1") != "0";
+	m_enemyTurnStepSeconds = std::stof(GetDevSetting("enemy_turn_step_seconds", "0.20"));
+	m_enemyTurnStepDistance = std::stof(GetDevSetting("enemy_turn_step_distance", "0.42"));
 	// 調整用: time_scale=0.25 のように書くと、最初からゆっくり動かす(F7 で変えられる)。
 	try { m_debugTimeScale = std::clamp(std::stof(GetDevSetting("time_scale", "1")), 0.05f, 1.0f); }
 	catch (...) { m_debugTimeScale = 1.0f; }
@@ -6486,7 +6506,8 @@ void GameScene::PushEnemyBodyOutOfWalls()
 	}
 }
 
-void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, float deltaSeconds)
+void GameScene::ApplyEnemyFootPlant(
+	bool active, bool frontAirborne, float hopProgress, bool turnInPlace, float deltaSeconds)
 {
 	if (!m_enemyAnimationMesh || !m_enemyProfile || m_enemies.empty() || !m_enemies.front())
 		return;
@@ -6541,6 +6562,7 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 	{
 		m_enemyFootPlantReleaseTime = 0.0f;
 		m_enemyFootPlantWeight = 1.0f;
+		m_enemyFootPlantTurnRelease = turnInPlace;
 	}
 	else if (m_enemyFootPlantWeight > 0.0f)
 	{
@@ -6555,18 +6577,40 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 	}
 	if (starting)
 	{
+		// 始めた時に宙にある足(歩きの途中から入ると、運んでいる足が上がっている)は地面に留めず、
+		// 踏み出している途中として扱って、そのまま下ろして着かせる。
+		// 宙の足まで留めると、体の高さは「留めた足のうち一番低い足」で決めるので、地面の足が踏み出した瞬間に
+		// 宙の足に合わせて体が約4下がり、次に着いた足でまた上がった(向き直りの入りの記録)。
+		constexpr float START_AIRBORNE_HEIGHT = 1.5f;
+		float lowestFoot = (std::numeric_limits<float>::max)();
+		for (int i = 0; i < 4; ++i)
+		{
+			if (m_enemyFootLastWorldValid[i])
+				lowestFoot = std::min(lowestFoot, m_enemyFootLastWorld[i].y);
+		}
 		for (int i = 0; i < 4; ++i)
 		{
 			if (!m_enemyFootLastWorldValid[i])
 				continue;
-			m_enemyPlantedFeet[i] = EnemyPlantedFoot{};
-			m_enemyPlantedFeet[i].planted = true;
-			m_enemyPlantedFeet[i].plantWorld = m_enemyFootLastWorld[i];
+			EnemyPlantedFoot& foot = m_enemyPlantedFeet[i];
+			foot = EnemyPlantedFoot{};
+			foot.plantWorld = m_enemyFootLastWorld[i];
 			if (m_enemyFootLastRotValid[i])
 			{
-				m_enemyPlantedFeet[i].plantRot = m_enemyFootLastRot[i];
-				m_enemyPlantedFeet[i].lastRot = m_enemyFootLastRot[i];
-				m_enemyPlantedFeet[i].hasRot = true;
+				foot.plantRot = m_enemyFootLastRot[i];
+				foot.lastRot = m_enemyFootLastRot[i];
+				foot.hasRot = true;
+			}
+			if (m_enemyFootLastWorld[i].y - lowestFoot > START_AIRBORNE_HEIGHT)
+			{
+				foot.stepping = true;
+				foot.stepFrom = m_enemyFootLastWorld[i];
+				foot.stepFromRot = foot.plantRot;
+				foot.stepTime = 0.0f;
+			}
+			else
+			{
+				foot.planted = true;
 			}
 		}
 	}
@@ -6633,6 +6677,29 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 	// 跳んでいる間に後ろ足を体へ引き寄せる高さ(ワールドの長さ)。
 	constexpr float HOP_TUCK_HEIGHT = 3.0f;
 
+	for (bool& valid : m_enemyFootClipModelValid)
+		valid = false;
+	// クリップのままの足の高さ(ワールド)。向き直りで、体を支える足が無くなる踏み出しを止めるのに使う。
+	float clipFootY[4]{};
+	bool clipFootValid[4]{};
+	float lowestClipFootY = (std::numeric_limits<float>::max)();
+	for (int i = 0; i < 4; ++i)
+	{
+		Vector3 toeModel{};
+		clipFootValid[i] = m_enemyProfile->HasBone(LEGS[i].toe) &&
+			m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(LEGS[i].toe), toeModel);
+		if (!clipFootValid[i])
+			continue;
+		clipFootY[i] = Vector3::Transform(toeModel, modelToWorld).y;
+		lowestClipFootY = std::min(lowestClipFootY, clipFootY[i]);
+	}
+	// この高さ(一番低い足から)までの足は、体を支えている(体の高さを決めている)とみなす。
+	constexpr float SUPPORT_HEIGHT = 1.0f;
+	// 踏み替え1歩にかける時間。向き直りは尾回転より遅く回るので、大きくゆっくり踏む。
+	// 向き直りが終わって固定を外していく間も同じ時間で運ぶ(尾回転の短い時間に戻すと、運んでいる途中の足が
+	// 「もう着く時間を過ぎた」ことになって1フレームで下りた。記録で足が1フレームに約4飛んだ)。
+	const float stepSeconds =
+		turnInPlace || m_enemyFootPlantTurnRelease ? m_enemyTurnStepSeconds : ENEMY_FOOT_STEP_SECONDS;
 	int steppingCount = 0;
 	for (const EnemyPlantedFoot& foot : m_enemyPlantedFeet)
 		steppingCount += foot.stepping ? 1 : 0;
@@ -6653,6 +6720,8 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 			!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.ankle), ankleModel) ||
 			!m_enemyAnimationMesh->GetBoneModelPosition(m_enemyProfile->Bone(leg.toe), toeModel))
 			continue;
+		m_enemyFootClipModel[i] = toeModel;
+		m_enemyFootClipModelValid[i] = true;
 		// クリップのままの足の位置(ワールド)と、体の回転・移動だけでその位置が動く速さ(クリップの足運びは含めない)。
 		const Vector3 natural = Vector3::Transform(toeModel, modelToWorld);
 		Vector3 carried = (natural - Vector3::Transform(toeModel, prevModelToWorld)) / dt;
@@ -6779,7 +6848,9 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 		const float driftX = natural.x - foot.plantWorld.x;
 		const float driftZ = natural.z - foot.plantWorld.z;
 		const float drift = std::sqrt(driftX * driftX + driftZ * driftZ);
-		const float stepDistance = (active ? STEP_DISTANCE_SPINNING : STEP_DISTANCE_SETTLING) * legLength;
+		const float stepDistance =
+			(active ? (turnInPlace ? m_enemyTurnStepDistance : STEP_DISTANCE_SPINNING) : STEP_DISTANCE_SETTLING) *
+			legLength;
 		// 留めた場所が股から脚の届く長さ近くまで離れたら踏み出す(届かない分は足が引きずられて滑る)。
 		const Vector3 hipWorld = Vector3::Transform(upperModel, modelToWorld);
 		// IKが届かせるのは足首なので、留めた場所に足を置いたときの足首の位置で測る。
@@ -6791,9 +6862,35 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 		const float twistLimit = active ? STEP_TWIST_LIMIT : STEP_TWIST_LIMIT * 0.3f;
 		const bool twisted = foot.planted && hasRot &&
 			rotationAngle(foot.plantRot, naturalRot) > twistLimit;
-		if (foot.planted &&
+		// 向き直りでは、前足どうし・後ろ足どうしを同時に持ち上げない(対角の足で踏み替える)。
+		// 2本ずつ上げてよいだけだと、前足2本・後ろ足2本がそろって浮くコマが多く(記録で向き直りの59%)、跳ねて見えた。
+		const bool partnerStepping = turnInPlace && m_enemyPlantedFeet[i ^ 1].stepping;
+		// 向き直りでは、着いた足は少しの間地面に置いておく(着いた次のフレームにまた持ち上げると、
+		// 床をつま先でたたいたように見えた。記録で足が1フレームに約4上下した)。
+		constexpr float TURN_MIN_PLANT_SECONDS = 0.12f;
+		if (foot.planted)
+			foot.plantedTime += dt;
+		const bool justLanded = turnInPlace && foot.plantedTime < TURN_MIN_PLANT_SECONDS;
+		// 向き直りでは、体を支えている足(一番低い足)は、ほかに地面で支える足があるときだけ踏み出す。
+		// 向き直りの入りは歩きから立ち姿勢へつないでいる途中で、ほかの足はまだ姿勢の上で宙にある。
+		// そこで一番低い足を持ち上げると、4本とも床から浮いた(記録で向き直りの15%のコマ)。
+		bool keepsSupport = false;
+		if (turnInPlace && clipFootValid[i] && clipFootY[i] - lowestClipFootY <= SUPPORT_HEIGHT)
+		{
+			keepsSupport = true;
+			for (int j = 0; j < 4; ++j)
+			{
+				if (j != i && clipFootValid[j] && m_enemyPlantedFeet[j].planted && m_enemyPlantedFeet[j].air <= 0.0f &&
+					clipFootY[j] - lowestClipFootY <= SUPPORT_HEIGHT)
+					keepsSupport = false;
+			}
+		}
+		// 向き直りの終わりは踏み戻さない(固定を外していく間に足を持ち上げると、攻撃の構えの途中で足が浮く)。
+		const bool releasingTurn = !active && m_enemyFootPlantTurnRelease;
+		if (foot.planted && !releasingTurn &&
 			(drift > STEP_DISTANCE_FORCED * legLength ||
-			 ((outOfReach || twisted || drift > stepDistance) && steppingCount < maxSteppingFeet)))
+			 ((outOfReach || twisted || drift > stepDistance) && steppingCount < maxSteppingFeet && !partnerStepping &&
+				 !keepsSupport && !justLanded)))
 		{
 			foot.planted = false;
 			foot.stepping = true;
@@ -6809,10 +6906,10 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 		if (foot.stepping)
 		{
 			foot.stepTime += dt;
-			const float t = std::clamp(foot.stepTime / ENEMY_FOOT_STEP_SECONDS, 0.0f, 1.0f);
+			const float t = std::clamp(foot.stepTime / stepSeconds, 0.0f, 1.0f);
 			// 着く場所: 着くまでの残りの時間と、さらに少し先まで体が回る分だけ、クリップの足の位置より先へ置く。
 			Vector3 lead = active
-				? carried * (ENEMY_FOOT_STEP_SECONDS * (1.0f - t) + STEP_LEAD_SECONDS)
+				? carried * (stepSeconds * (1.0f - t) + STEP_LEAD_SECONDS)
 				: Vector3(0.0f, 0.0f, 0.0f);
 			const float leadLength = lead.Length();
 			if (leadLength > STEP_LEAD_LIMIT * legLength)
@@ -6822,7 +6919,9 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 			const float carry = std::clamp((t - 0.05f) / 0.75f, 0.0f, 1.0f);
 			// 着く場所は運んでいる間だけ体についていかせ、運び終えたら決める。
 			// 下ろしている間も体と一緒に動かしていたので、着地の瞬間に足が床すれすれを流れていた(撮影の記録で毎秒200)。
-			if (carry < 1.0f)
+			// 向き直りが終わって固定を外していく間は、着く場所を決めたまま動かさない(体はもう回らないので、
+			// 回り続ける分だけ先へ置いていた分が急に消え、運んでいる足が1フレームで約4飛んだ)。
+			if (carry < 1.0f && !releasingTurn)
 			{
 				foot.landWorld = natural + lead;
 				foot.landRot = naturalRot;
@@ -6842,6 +6941,7 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 			{
 				foot.stepping = false;
 				foot.planted = true;
+				foot.plantedTime = 0.0f;
 				foot.plantWorld = land;
 				foot.plantRot = foot.landRot;
 				++m_enemyFootStepCount;
@@ -6877,8 +6977,16 @@ void GameScene::ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopPr
 	}
 
 	// 回り終わったら、足を元の位置まで踏み戻してから固定を外す。
-	if (!active && (allHome || m_enemyFootPlantReleaseTime > PLANT_RELEASE_LIMIT_SECONDS))
+	// 向き直りの後は踏み戻しを待たずに、すぐ少しずつ外して次の攻撃のモーションへ足を渡す。
+	// 踏み戻すまで留めていると、構えで体を起こすモーションと足の固定が引っ張り合い、体が沈みの上限まで
+	// 下がったまま0.35秒ほど止まり、外れた瞬間に約2.7落ちた(叩きつけの構えの記録)。
+	constexpr float TURN_RELEASE_SECONDS = 0.20f;
+	if (!active && m_enemyFootPlantTurnRelease)
+		m_enemyFootPlantWeight = std::max(0.0f, m_enemyFootPlantWeight - dt / TURN_RELEASE_SECONDS);
+	else if (!active && (allHome || m_enemyFootPlantReleaseTime > PLANT_RELEASE_LIMIT_SECONDS))
 		m_enemyFootPlantWeight = std::max(0.0f, m_enemyFootPlantWeight - dt / PLANT_FADE_OUT_SECONDS);
+	if (m_enemyFootPlantWeight <= 0.0f)
+		m_enemyFootPlantTurnRelease = false;
 }
 
 void GameScene::CaptureEnemyBlendFromPose()
