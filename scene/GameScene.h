@@ -247,6 +247,7 @@ private:
 		Vector3 stepFrom{};     // 踏み出した場所
 		Vector3 landWorld{};    // 着く場所(運び終えたら決まる)
 		float stepTime = 0.0f;
+		float plantedTime = 0.0f; // 着いてからの時間(着いた直後にまた持ち上げないように)
 		// 前足を浮かせている具合(0〜1)。体が勢いよく回る間、前足は地面から浮かせて後ろ足を軸に回り、
 		// 回り終わりの一拍で叩きつける(地面に留めたまま毎秒600°で回ると、翼の腕がねじれて翼膜が床へ刺さった)。
 		float air = 0.0f;
@@ -294,7 +295,18 @@ private:
 	bool m_enemyFootPlantEnabled = true;
 	static constexpr float ENEMY_FOOT_STEP_SECONDS = 0.12f;
 	// hopProgress: 尾回転で跳んでいる区間の中の進み(0〜1)。跳んでいなければ負。
-	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, float deltaSeconds);
+	// turnInPlace: その場で向き直っている(尾回転より遅く回るので、大きくゆっくり踏み替える)。
+	void ApplyEnemyFootPlant(bool active, bool frontAirborne, float hopProgress, bool turnInPlace, float deltaSeconds);
+	// 向き直りの踏み替えにかける時間(秒)と、踏み出すまでに足が離れる距離(脚の長さに対する割合)。
+	// dev_settings.ini の enemy_turn_step_seconds / enemy_turn_step_distance で調整できる。
+	float m_enemyTurnStepSeconds = 0.20f;
+	// 足の固定を、向き直りの終わりとして外している途中か(踏み戻しを待たずに、次の攻撃のモーションへ足を渡す)。
+	bool m_enemyFootPlantTurnRelease = false;
+	// 足の固定(IK)をかける前の、クリップのままの足(指の付け根)の位置(モデル空間)。
+	// 向き直りの間は、体の高さをこれで決める(IKで持ち上げた足・留めた足の高さに引っ張られないように)。
+	Vector3 m_enemyFootClipModel[4]{};
+	bool m_enemyFootClipModelValid[4]{};
+	float m_enemyTurnStepDistance = 0.42f;
 	// 尾回転の跳びで体を持ち上げる高さ(ワールドの長さ。接地の高さに足す)。
 	float m_enemyHopOffsetY = 0.0f;
 	void MeasureEnemyFootSlide(float deltaSeconds);
