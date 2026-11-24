@@ -159,7 +159,15 @@ inline constexpr float ENEMY_SWEEP_FIRST_HIT_TIME = ENEMY_SWEEP_CLIP.FirstHitSec
 inline constexpr float ENEMY_SPIN_ANTICIPATION = 1.15f;
 // 半回転1回分の時間。回転数(1回か2回)は攻撃ごとに敵AIが決める。
 // 2回のときは判定の時間もその分だけ長くなる(enemy::activeSeconds と OneVsOneCombat の両方で倍率を掛ける)。
-inline constexpr float ENEMY_SPIN_HALF_TURN_SECONDS = 0.42f;
+// 半回転を4拍に分け、対角の2本ずつ交互に踏み替えながら回る(ENEMY_SPIN_TURN_BEATS)。
+// 以前の0.42秒では足を踏み替える時間が無く、3本をまとめて浮かせて体と一緒に運んでいたので、
+// 4本の足が同時に体と一緒に回って見えた(実機での指摘)。前足は体の真下で伸び切って立っているので、
+// 足を地面に置いたまま体を回せるのは1歩で約40°まで。180°を4歩で回るために0.80秒にした。
+inline constexpr float ENEMY_SPIN_HALF_TURN_SECONDS = 0.80f;
+// 半回転を何拍(何歩)に分けるか。1拍で対角の2本を踏み替え、体は 180/拍数 度回る。
+inline constexpr int ENEMY_SPIN_TURN_BEATS = 4;
+// 体の回り方のうち、拍ごとの「浮いている足を運ぶ間に回る」分の割合(残りは半回転全体でなめらかに回る分)。
+inline constexpr float ENEMY_SPIN_TURN_PULSE_SHARE = 0.65f;
 // 半回転と半回転の間で止まっている時間(一拍)。
 // リオレウス・リオレイアの回転尾攻撃は、ぐるりと一周回すのではなく
 // 「半回転 → 一拍おいて構え直す → もう半回転」というリズムで来る。
@@ -189,6 +197,7 @@ inline constexpr float ENEMY_SPIN_HIT_HALF_ANGLE = 0.70f;
 // 回転中の移動。回りながら少し流れる程度にする(大きいと体ごと突っ込む攻撃に見える)。
 inline constexpr float ENEMY_SPIN_LUNGE_SPEED = 18.0f;
 // 半回転のうち、軽く跳んで4本の足を地面から離している区間(半回転の進み 0〜1 の範囲)。
+// (尾回転の専用モーションが無いモデルの作り方。以前の半回転0.42秒のときの説明)
 // 半回転0.42秒で180°(一番速いところで毎秒約640°)回るのを、地面に着いた足の踏み替えだけで支えることはできない。
 // 足を地面に着けたまま回すと、足が床の上で体と一緒に回り、滑って見えた(スローで見ての指摘)。
 // 回り始めと回り終わりのゆっくりの所(それぞれ約12°)だけ足を着け、速い所は跳んで空中で回る(飛竜の回転尾の跳び)。
@@ -883,16 +892,32 @@ struct EnemySpinPhase
     float segmentT = 0.0f;        ///< いまの区切りの進み具合(0→1)
 };
 
-/** 判定開始からの経過秒と半回転の回数から、いまどこにいるかを求める。 */
-inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
+/**
+ * @brief 半回転の進み(0〜1)から、向きの進み(0〜1)。
+ *
+ * 尾回転の専用モーション(tools/blender_make_wyvern_tail_spin.py の spin_curve)と同じ式。
+ * 当たり判定・敵AIが見る向きと、モーションで見える体の向きをそろえる。
+ * 拍ごとに、浮いている対角の2本を運ぶ間だけ速く回り(足が着く所でいったん緩む)、
+ * 全体としても出だしと止まり際をなめらかにする(等速だと止まった瞬間が分からず「一拍おいた」ように見えない)。
+ */
+inline float EnemySpinTurnCurve(float segmentT)
 {
-    // 出だしと止まり際をなめらかにする(半回転ごとに加速して減速する)。
-    // 等速で回すと、止まった瞬間が分からず「一拍おいた」ように見えない。
     const auto smoothStep = [](float t)
     {
         t = std::clamp(t, 0.0f, 1.0f);
         return t * t * (3.0f - 2.0f * t);
     };
+    const float u = std::clamp(segmentT, 0.0f, 1.0f);
+    const int beats = Tuning::ENEMY_SPIN_TURN_BEATS;
+    const int beat = std::min(static_cast<int>(u * static_cast<float>(beats)), beats - 1);
+    const float inBeat = u * static_cast<float>(beats) - static_cast<float>(beat);
+    const float pulse = (static_cast<float>(beat) + smoothStep(inBeat)) / static_cast<float>(beats);
+    return Tuning::ENEMY_SPIN_TURN_PULSE_SHARE * pulse + (1.0f - Tuning::ENEMY_SPIN_TURN_PULSE_SHARE) * smoothStep(u);
+}
+
+/** 判定開始からの経過秒と半回転の回数から、いまどこにいるかを求める。 */
+inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
+{
     EnemySpinPhase out{};
     const int turns = std::clamp(halfTurns, 1, Tuning::ENEMY_SPIN_MAX_HALF_TURNS);
     float time = std::max(0.0f, activeTime);
@@ -903,7 +928,7 @@ inline EnemySpinPhase EnemySpinPhaseAt(float activeTime, int halfTurns)
         {
             out.segmentIndex = index;
             out.segmentT = std::clamp(time / Tuning::ENEMY_SPIN_HALF_TURN_SECONDS, 0.0f, 1.0f);
-            out.turnedHalfTurns = static_cast<float>(index) + smoothStep(out.segmentT);
+            out.turnedHalfTurns = static_cast<float>(index) + EnemySpinTurnCurve(out.segmentT);
             return out;
         }
         time -= Tuning::ENEMY_SPIN_HALF_TURN_SECONDS;
