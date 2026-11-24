@@ -5,11 +5,12 @@ SamplerState g_SamplerState : register(s0);
 
 float4 main(in SKIN_PS_IN In) : SV_Target
 {
-    // 影は直接光の分にだけ掛ける。自分自身にも落ちるので、腕が胴へ落とす影なども出る。
-    // 光の裏側の面は直接光が0なので影の判定に左右されず、陰影だけで暗くなる
+    // 影は光源から届く明るさにだけ掛ける(環境光や底上げは残す)。自分自身にも落ちるので、
+    // 背中のとげが胴体へ落とす影や、腕が胴へ落とす影なども出る。
+    // 光の裏側の面は ShadowLoss が0で、陰影の計算だけで暗くなる
     // (以前は色全体に影を掛けていたため、裏側が二重に暗くなり、境目に縞が出ていた)。
     float4 lighting = In.Diffuse;
-    lighting.rgb += In.SunLight.rgb * CalcShadowVisibility(In.ShadowCoord);
+    lighting.rgb -= In.ShadowLoss.rgb * (1.0f - CalcShadowVisibility(In.ShadowCoord));
 
     float4 outDiffuse;
     if (Material.TextureEnable)

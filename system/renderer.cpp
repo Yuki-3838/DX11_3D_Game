@@ -311,8 +311,11 @@ void Renderer::Init()
     shadowRasterDesc.FillMode = D3D11_FILL_SOLID;
     shadowRasterDesc.CullMode = D3D11_CULL_NONE;
     shadowRasterDesc.DepthClipEnable = TRUE;
-    shadowRasterDesc.DepthBias = 2000;
-    shadowRasterDesc.SlopeScaledDepthBias = 2.0f;
+    // 大きすぎると、背中のとげが胴体へ落とす影のような、近い場所への影が消える
+    // (2000 / 2.0 では、とげの付け根の影がほとんど出なかった)。
+    // 光に対して斜めの面の縞は、シェーダー側で境目近くの影を弱めて抑えている。
+    shadowRasterDesc.DepthBias = 600;
+    shadowRasterDesc.SlopeScaledDepthBias = 1.5f;
     shadowRasterDesc.DepthBiasClamp = 0.0f;
     m_Device->CreateRasterizerState(&shadowRasterDesc, m_ShadowRasterizer.GetAddressOf());
 

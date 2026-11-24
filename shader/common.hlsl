@@ -109,16 +109,14 @@ struct PS_IN
 };
 
 // キャラクター(スキンメッシュ)用。光の当たり方を2つに分けて渡す。
-//   Diffuse : 影に入っても残る明るさ(環境光・底上げ・光の裏側の陰影)
-//   SunLight: 光源から直接届く分。ピクセルシェーダーで影の濃さを掛ける。
-// 以前は色全体に影を掛けていたため、光の裏側の面(陰影で既に暗い)まで
-// 自分自身の影で二重に暗くなり、明暗の境目には段々の縞が出ていた。
-// 直接光の分にだけ影を掛ければ、裏側の面は影の判定に左右されなくなる。
+//   Diffuse   : 影が無いときの明るさ(光の裏側の面の暗さは、ここに含めてある)
+//   ShadowLoss: 影に入ったときに失われる明るさ。ピクセルシェーダーで影の濃さを掛けて引く。
+// 光の裏側の面は ShadowLoss が0で、シャドウマップを見ない(CalcCharacterLight を参照)。
 struct SKIN_PS_IN
 {
     float4 Position		: SV_POSITION;
     float4 Diffuse		: COLOR0;
-    float4 SunLight		: COLOR1;
+    float4 ShadowLoss	: COLOR1;
     float2 TexCoord		: TEXCOORD0;
     float4 ShadowCoord	: TEXCOORD1;
 };
@@ -193,16 +191,45 @@ float CalcShadowFactor(float4 shadowCoord)
     return lerp(0.45f, 1.0f, CalcShadowVisibility(shadowCoord));
 }
 
+// --- キャラクターの陰影と影 ---
+// 光が当たる面が影に入ったときの明るさ(半ランバートの値)。
+// 0.25にすると、真上を向いた面は影の中で約45%の明るさになり、床の影(CalcShadowFactor)と濃さがそろう。
+// 以前は0.5(明暗の境目と同じ)にしていたが、光が強く明るい面が白飛びするため、
+// 背中のとげが胴体へ落とす影などが目で分からなかった。
+static const float CHARACTER_SHADOW_LEVEL = 0.25f;
+// 光の裏側の面を、影の中と同じ割合まで暗くする。0.5で半分。
+static const float CHARACTER_BACK_SIDE_SHADE = 0.5f;
+// 明暗の境目の両側で、影へ切り替える幅(光の向きと法線の内積で測る)。
+static const float CHARACTER_TERMINATOR_BLEND = 0.25f;
+
 /**
- * 半ランバートの明るさを「影に入っても残る分」と「直接光の分」に分ける。
- * 半ランバートは光に垂直な面(明暗の境目)で0.5になる。それより明るい分だけを直接光とみなす。
- * 影の中の面は境目と同じ明るさになり、光の裏側の面(0.5以下)と明るさが滑らかにつながる。
- * 戻り値: x = 影に入っても残る分、y = 直接光の分(影で消える)
+ * キャラクターの面の明るさ(半ランバート)と、影に入ったときに失われる分を求める。
+ * 戻り値: x = 影が無いときの明るさ、y = 影に入ったときに失われる明るさ
+ *
+ * 光の裏側の面は、自分自身の影の中にあるのと同じなので、シャドウマップを見ずに
+ * 計算だけで暗くする。裏側をシャドウマップで判定すると、明暗の境目で判定が際どくなって縞が出る。
+ * 境目では両側とも半ランバートの0.5のままにし、そこから離れるほど影の濃さへ近づける。
+ * これで、光の当たる面が影に入ったときの暗さと、裏側の面の暗さが同じ程度になり、
+ * 影の中の面が裏側より暗い(または明るい)という逆転が起きない。
  */
-float2 SplitHalfLambert(float halfLambert)
+float2 CalcCharacterLight(float3 worldNormal)
 {
-    const float ambientPart = min(halfLambert, 0.5f);
-    return float2(ambientPart, halfLambert - ambientPart);
+    const float cosLight = -dot(normalize(Light.Direction.xyz), worldNormal);
+    const float halfLambert = saturate(cosLight * 0.5f + 0.5f);
+
+    // 影を使わない場面(タイトルなど)では、以前と同じ半ランバートのままにする。
+    if (ShadowParams.y < 0.5f)
+        return float2(halfLambert, 0.0f);
+
+    if (cosLight <= 0.0f)
+    {
+        const float fade = smoothstep(0.0f, CHARACTER_TERMINATOR_BLEND, -cosLight);
+        return float2(halfLambert * lerp(1.0f, CHARACTER_BACK_SIDE_SHADE, fade), 0.0f);
+    }
+
+    // 光の当たる面。境目の近くでは影の判定が際どいので、影の効きを弱めて縞を出さない。
+    const float weight = smoothstep(0.0f, CHARACTER_TERMINATOR_BLEND, cosLight);
+    return float2(halfLambert, max(halfLambert - CHARACTER_SHADOW_LEVEL, 0.0f) * weight);
 }
 
 // 3x3 �t�s����v�Z����֐�

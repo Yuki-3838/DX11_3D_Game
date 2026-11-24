@@ -8474,9 +8474,9 @@ void GameScene::RenderShadowMap()
 
 	float orthoSize = 0.0f;
 	const Matrix4x4 lightViewProjection = BuildLightViewProjection(&orthoSize);
-	// キャラクターが自分の影を調べる位置を、法線の向きへ1.5テクセル分ずらす。
+	// キャラクターが自分の影を調べる位置を、法線の向きへ1テクセル分ずらす。
 	// 範囲を広げる登場演出ではテクセルも大きくなるので、範囲に合わせて変える。
-	constexpr float SHADOW_NORMAL_OFFSET_TEXELS = 1.5f;
+	constexpr float SHADOW_NORMAL_OFFSET_TEXELS = 1.0f;
 	const float normalOffset =
 		orthoSize / static_cast<float>(Renderer::SHADOW_MAP_SIZE) * SHADOW_NORMAL_OFFSET_TEXELS;
 	Renderer::SetLightViewProjection(lightViewProjection, true, normalOffset);
