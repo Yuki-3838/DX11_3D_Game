@@ -7,19 +7,24 @@
 
 動きの中身(回る向きを s とする。s=+1 は左回り):
   溜め   : 腰を落とし、体を回る向きへ開いた C の字に丸める(胸と首を回る向きへ曲げ、尾も同じ側へ巻き込む)。
-           回る内側の後ろ足(軸足)を体の下へ踏み込み、その上へ体を寄せる。ほかの3本も踏み替えて構え直し、
+           最初の拍で地面に残る対角の2本(回る向きと反対側の前足・回る内側の後ろ足)を、回る向きへ先に踏み込ませて構える。
            最後に首で回る先をはっきり見て「こっちへ回る」と見せる。溜め切って待つ間は尾の先を小刻みに振る。
-  半回転 : 捻りを戻しながら前半身を起こし、軸足の指の付け根を中心に体ごと回る(軸足は地面に着いたまま足先だけ向きを変える)。
-           前足と外側の後ろ足は浮かせて体と一緒に運び、回り終わりに下ろす。4本が同時に地面から離れることはない
-           (以前は軽く跳んで4本とも浮かせていたが、跳びはねに見えた。実機での指摘)。
+  半回転 : 4拍に分け、対角の2本ずつ交互に踏み替えながら回る(四足の動物がその場で向きを変える足運び)。
+           1拍で45°。浮いている2本を運ぶ間だけ体が速く回り、着いている2本は地面の同じ所に留めたまま。
+           同じ拍の2本も前足を少し先に上げ、少し先に下ろす(足音が4つに分かれる)。
+           以前は半回転0.42秒の間に前足2本と外側の後ろ足をまとめて浮かせて体と一緒に運び、軸足もその場で
+           向きを変えていたので、4本の足が同時に体と一緒に回って見えた(実機での指摘)。
+           前足は体の真下で伸び切って立っているので、足を地面に置いたまま体を回せるのは1歩で約40°まで。
+           半回転を4歩に分けるために、半回転を0.80秒にした。
            尾は最初は取り残されて遅れ、後半で回る向きへしなって振り抜く(根元から先へ遅れて伝わる)。
-           前足を下ろすときに腰を沈めて受け止める。
-  隙     : 沈んだ腰を戻し、寄せていた体を元の位置へ戻しながら4本を踏み替え、振り抜いた尾が揺り戻してから落ち着く。
+  隙     : 沈んだ腰を戻し、最後から2番目の拍で着いた2本を踏み直して、振り抜いた尾が揺り戻してから落ち着く。
            最後は待機の最初のコマと同じ姿勢・同じ位置(モデルの原点の上)。
-  一拍   : (半回転2回のとき)前足を下ろした受け止めから、もう一度捻り直して溜める。軸足は同じ足のまま。
+  一拍   : (半回転2回のとき)腰を落として受け止め、もう一度捻り直して溜める。次の最初の拍で地面に残る2本を
+           回る向きへ踏み込ませておく。
 
-軸足の上へ体を寄せておくのは、回る中心(軸足)とモデルの原点を合わせるため。原点の上で回るので、半回転の前後で
-体の位置がずれず、ゲーム側は向きを半回転させるだけでよい(体の位置を動かさなくてよい)。
+回る中心はモデルの原点(前足と後ろ足のちょうど中ほど)。原点の上で回るので、半回転の前後で体の位置がずれず、
+ゲーム側は向きを半回転させるだけでよい(体の位置を動かさなくてよい)。前足・後ろ足とも回る中心から近いので、
+回る内側の後ろ足を中心に回る(前足が半径約5を回る。以前の作り)より、1歩で回れる角度が大きい。
 
 体の向き(半回転)もこのモーションの中に入っている。足は地面に着いている間は地面の同じ場所に
 留めたまま(脚は2本の骨の IK で解く)なので、モーションだけを見ても足が床を滑らない。
@@ -29,12 +34,13 @@
 
 クリップの時間割(100 コマ/秒。キーの番号 = 秒 x 100):
   [  0,115) 溜め          1.15 秒  (Combat::Tuning::ENEMY_SPIN_ANTICIPATION)
-  [115,157) 1回目の半回転  0.42 秒  (ENEMY_SPIN_HALF_TURN_SECONDS)
-  [157,262) 半回転1回の隙  1.05 秒  (ENEMY_SPIN_RECOVERY)
-  [262,322) 一拍           0.60 秒  (ENEMY_SPIN_PAUSE_SECONDS)  ← ここから下は半回転2回のとき
-  [322,364) 2回目の半回転  0.42 秒
-  [364,469] 半回転2回の隙  1.05 秒
-  262 から先は 157 の姿勢(1回目の着地)の続きとして作ってある。
+  [115,195) 1回目の半回転  0.80 秒  (ENEMY_SPIN_HALF_TURN_SECONDS)
+  [195,300) 半回転1回の隙  1.05 秒  (ENEMY_SPIN_RECOVERY)
+  [300,360) 一拍           0.60 秒  (ENEMY_SPIN_PAUSE_SECONDS)  ← ここから下は半回転2回のとき
+  [360,440) 2回目の半回転  0.80 秒
+  [440,545] 半回転2回の隙  1.05 秒
+  300 から先は 195 の姿勢(1回目の着地)の続きとして作ってある。
+  半回転の向きの進み方(spin_curve)は Combat::EnemySpinTurnCurve と同じ式にしてある(当たり判定の向きと合わせる)。
 
 使い方(Blender 4.x / 5.x):
   blender --background --factory-startup --python tools/blender_make_wyvern_tail_spin.py -- [--preview <フォルダ>]
@@ -67,18 +73,25 @@ for i, a in enumerate(argv):
 # ---------------------------------------------------------------- 時間割
 FPS = 100
 WINDUP = 1.15
-TURN = 0.42
+TURN = 0.80
 PAUSE = 0.60
 RECOVER = 1.05
 # 半回転のうち、勢いよく回っている区間(Combat::Tuning::ENEMY_SPIN_HOP_START / END と同じ)。
 # この前は捻りを戻して前半身を起こし、この後は前足を下ろして受け止める。
 HOP_START = 0.16
 HOP_END = 0.84
-# 前足と外側の後ろ足を浮かせて運ぶ区間(半回転の中の割合)。軸足はずっと地面に着いている。
-FRONT_LIFT = 0.10
-FRONT_LAND = 0.86
-OUTER_LIFT = 0.12
-OUTER_LAND = 0.82
+# 半回転を何拍(何歩)に分けるか。1拍で対角の2本を踏み替え、体は 180/BEATS 度回る。
+BEATS = 4
+# 拍の中で足を上げる・下ろす時(拍の中の割合)。前足を少し先に上げ、少し先に下ろす。
+FRONT_UP, FRONT_DOWN = 0.04, 0.80
+HIND_UP, HIND_DOWN = 0.14, 0.94
+# 体の回り方のうち、拍ごとの「浮いている間に回る」分の割合(残りは半回転全体でなめらかに回る分)。
+PULSE_SHARE = 0.65
+# 着く所を、次の拍のどこまで体が回った向きに合わせるか(0=次の拍の始め、0.5=真ん中)。
+# 真ん中に合わせると、着いた瞬間は足が肩より先へ出すぎて、右回りの左前足が届かなかった(0.48足りなかった)。
+LAND_LEAD = 0.35
+# 回っている間の腰の低さ(低く構えるほど、地面に置いた足が届く範囲が広い)。隙の始まりの値と同じ。
+TURN_CROUCH = -0.16
 # 軸足を体の下へ踏み込む量。待機の構えの横の開きを、この割合まで狭める。
 PIVOT_INWARD = 0.55
 # 溜めで体を軸足の上へ寄せる区間(秒)と、隙で元へ戻す区間(着地からの秒)。
@@ -122,6 +135,16 @@ def lerp(a, b, t):
 def ease_out(t):
     t = clamp01(t)
     return 1.0 - (1.0 - t) * (1.0 - t)
+
+
+def spin_curve(u):
+    """半回転の向きの進み(0→1)。Combat::EnemySpinTurnCurve と同じ式。
+    拍ごとに浮いている足を運ぶ間だけ速く回り(足が着く所でいったん緩む)、全体としても出だしと止まり際をなめらかにする。"""
+    u = clamp01(u)
+    k = min(int(u * BEATS), BEATS - 1)
+    f = u * BEATS - k
+    pulse = (k + smooth(f)) / BEATS
+    return PULSE_SHARE * pulse + (1.0 - PULSE_SHARE) * smooth(u)
 
 
 def settle_window(r, start, length):
@@ -224,37 +247,20 @@ def body_values(ph):
     elif ph.kind == "turn":
         s = ph.u
         push = smooth(s / HOP_START)
-        air = clamp01((s - HOP_START) / (HOP_END - HOP_START))
-        land = clamp01((s - HOP_END) / (1.0 - HOP_END))
-        # 向き: 軸足で踏ん張りながら捻りを戻し、勢いよく半回転し、前足を下ろす時には回り切っている。
-        if s < HOP_START:
-            yaw = COIL["root_yaw"] * (1.0 - push)
-        elif s < HOP_END:
-            yaw = math.pi * smooth(air)
-        else:
-            yaw = math.pi
-        v["root_yaw"] = base_yaw + yaw
-        # 高さ: 沈んだ腰を伸ばして(跳ばずに)前半身を持ち上げ、前足を下ろすときに沈んで受け止める。
-        if s < HOP_START:
-            v["root_z"] = lerp(COIL["root_z"], 0.02, push)
-        elif s < HOP_END:
-            v["root_z"] = 0.02 + 0.05 * math.sin(math.pi * air)
-        else:
-            v["root_z"] = lerp(0.02, -0.16, math.sin(0.5 * math.pi * land))
-        # 前半身を起こして(軸足に体重を乗せて)回り、前足から下ろす。
-        if s < HOP_START:
-            v["pitch_up"] = lerp(COIL["pitch_up"], 0.06, push)
-        elif s < HOP_END:
-            v["pitch_up"] = lerp(0.06, -0.03, air) + 0.10 * math.sin(math.pi * air)
-        else:
-            v["pitch_up"] = -0.03 - 0.03 * math.sin(0.5 * math.pi * land)
-        v["roll"] = 0.06 * math.sin(math.pi * air)  # 回る内側(軸足の側)へ少し傾ける
+        # 向き: 溜めの逆への捻りを戻しながら、拍ごとに対角の2本を運ぶ間に回る(spin_curve)。
+        v["root_yaw"] = base_yaw + COIL["root_yaw"] * (1.0 - push) + math.pi * spin_curve(s)
+        # 高さ: 低く構えたまま回る(前半身は起こさない。起こすと前足が地面に届かず、踏み替えられない)。
+        # 拍ごとに、足を運ぶ間は少し伸び、着くときに沈んで受け止める。
+        f = s * BEATS - min(int(s * BEATS), BEATS - 1)
+        v["root_z"] = lerp(COIL["root_z"], TURN_CROUCH, smooth(s / 0.15)) + 0.025 * math.sin(math.pi * f)
+        v["pitch_up"] = lerp(COIL["pitch_up"], -0.06, smooth(s))
+        v["roll"] = 0.05 * math.sin(math.pi * s)  # 回る内側へ少し傾ける
         # 胸: 捻りを戻し、回る向きへ先に出て、回り終わりで勢い余って行き過ぎる。
         v["chest_yaw"] = (COIL["chest_yaw"] * (1.0 - push) + 0.16 * math.sin(math.pi * s) +
                           0.12 * smooth((s - 0.6) / 0.4))
         # 首: 回る向きを見たまま先に回り、回り終わりで戻り始める(着地で隙の始まりの値 0.18 へつなぐ)。
         v["neck_yaw"] = lerp(COIL["neck_yaw"], 0.18, smooth(s)) + 0.17 * math.sin(math.pi * s)
-        v["neck_down"] = COIL["neck_down"] * (1.0 - push) - 0.10 * math.sin(math.pi * air)
+        v["neck_down"] = COIL["neck_down"] * (1.0 - push) - 0.10 * math.sin(math.pi * s)
         v["jaw"] = COIL["jaw"] + 0.15 * math.sin(math.pi * s) - 0.10 * smooth(s)
         v["tail_lift"] = 1.0
     elif ph.kind == "recover":
@@ -272,12 +278,9 @@ def body_values(ph):
 
 
 def shift_weight(ph):
-    """体を軸足の上へ寄せている割合(0〜1)。溜めで寄せ、回っている間と一拍は寄せたまま、隙で戻す。"""
-    if ph.kind == "windup":
-        return smooth((ph.r - SHIFT_IN[0]) / (SHIFT_IN[1] - SHIFT_IN[0]))
-    if ph.kind == "recover":
-        return 1.0 - smooth((ph.r - SHIFT_OUT[0]) / (SHIFT_OUT[1] - SHIFT_OUT[0]))
-    return 1.0
+    """体を軸足の上へ寄せている割合(0〜1)。
+    体の中ほど(モデルの原点)を中心に回るようにしたので、今は寄せない(以前の、軸足を中心に回る作りの名残)。"""
+    return 0.0
 
 
 # 尾の左右(回る向きを正、溜めで -1)。根元から先へ、少しずつ遅れて伝わる。
@@ -528,34 +531,43 @@ def foot_events(turns, sign):
     """
     lead = "FL" if sign > 0 else "FR"     # 回る向きの側の前足
     trail = "FR" if sign > 0 else "FL"
-    pivot = pivot_leg(sign)
+    inner = pivot_leg(sign)               # 回る内側の後ろ足
     outer = outer_leg(sign)
+    # 対角の2本の組。先に踏み出すのは「回る向きの側の前足と、外側の後ろ足」(体の前は回る向きへ、
+    # 後ろは反対へ動くので、どちらも外へ開く1歩になる)。もう一方の組はその間地面で体を支える。
+    first = (lead, outer)
+    second = (trail, inner)
     ev = {k: [] for k in LEGS}
-    # 溜め: 軸足を体の下へ踏み込み、体をその上へ寄せながら、ほかの3本も1本ずつ踏み替えて構え直す。
-    settle_in = SHIFT_IN[1] + 0.02
-    # 1本ずつ順に踏む(同時に浮かせるのは2本まで。3本浮くと1本足で立っているように見える)。
-    ev[pivot].append((0.10, 0.30, "step", {"eval": settle_in, "pivot_spot": True}))
-    ev[outer].append((0.28, 0.46, "step", {"eval": settle_in}))
-    ev[lead].append((0.44, 0.62, "step", {"eval": settle_in}))
-    ev[trail].append((0.60, 0.78, "step", {"eval": settle_in}))
+    tb = TURN / BEATS
+
+    def pre_place(leg, a, b, start):
+        # 最初の拍で地面に残る足を、その拍の真ん中の体の向きに合う所へ先に踏み込ませる
+        # (回り始めの向きの所に置いたままだと、拍の終わりに足が体の後ろへ取り残されて脚が届かない)。
+        ev[leg].append((a, b, "step", {"eval": start + 0.5 * tb}))
+
+    # 溜め: 最初の拍で地面に残る2本を、1本ずつ回る向きへ踏み込ませて構える。
+    pre_place(second[0], 0.30, 0.52, T_TURN1)
+    pre_place(second[1], 0.46, 0.68, T_TURN1)
     starts = [T_TURN1] if turns == 1 else [T_TURN1, T_TURN2]
     for i, start in enumerate(starts):
         if i == 1:
-            # 一拍: 溜め直しで前足をもう一度踏み替える(軸足はそのまま)。
-            ev[lead].append((T_LAND1 + 0.16, T_LAND1 + 0.31, "step", None))
-            ev[trail].append((T_LAND1 + 0.27, T_LAND1 + 0.42, "step", None))
-        # 半回転: 軸足は地面に着けたまま向きだけ変え、ほかの3本は浮かせて体と一緒に運ぶ。
-        ev[pivot].append((start, start + TURN, "pivot", None))
-        ev[outer].append((start + OUTER_LIFT * TURN, start + OUTER_LAND * TURN, "hop", None))
-        for leg in (lead, trail):
-            ev[leg].append((start + FRONT_LIFT * TURN, start + FRONT_LAND * TURN, "hop", None))
-    # 隙: 寄せていた体を戻しながら、4本を1本ずつ待機の構えの所(隙の終わりの姿勢で決める)へ踏み替える。
+            # 一拍: 受け止めた後、次の最初の拍で地面に残る2本をもう一度回る向きへ踏み込ませる。
+            pre_place(second[0], T_LAND1 + 0.16, T_LAND1 + 0.34, start)
+            pre_place(second[1], T_LAND1 + 0.28, T_LAND1 + 0.46, start)
+        # 半回転: 拍ごとに対角の2本を交互に踏み替える。着く所は「次の拍の途中(LAND_LEAD)の体の向き」に合う所
+        # (次の拍の間ずっと地面に留めるので、その途中で脚が真っすぐになる所へ置く)。最後の拍は回り終えた向き。
+        for k in range(BEATS):
+            front, hind = first if k % 2 == 0 else second
+            b0 = start + k * tb
+            land_eval = start + min(TURN, (k + 1.0 + LAND_LEAD) * tb)
+            ev[front].append((b0 + FRONT_UP * tb, b0 + FRONT_DOWN * tb, "step", {"eval": land_eval}))
+            ev[hind].append((b0 + HIND_UP * tb, b0 + HIND_DOWN * tb, "step", {"eval": land_eval}))
+    # 隙: 最後から2番目の拍で着いた組(回り終えた向きより少し手前に着いている)を、1本ずつ待機の構えの所へ踏み直す。
     land = T_LAND1 if turns == 1 else T_LAND2
     settle_out = land + RECOVER
-    ev[lead].append((land + 0.22, land + 0.42, "step", {"eval": settle_out}))
-    ev[trail].append((land + 0.36, land + 0.56, "step", {"eval": settle_out}))
-    ev[pivot].append((land + 0.46, land + 0.68, "step", {"eval": settle_out}))
-    ev[outer].append((land + 0.60, land + 0.82, "step", {"eval": settle_out}))
+    early = first if (BEATS - 2) % 2 == 0 else second
+    ev[early[0]].append((land + 0.20, land + 0.40, "step", {"eval": settle_out}))
+    ev[early[1]].append((land + 0.34, land + 0.54, "step", {"eval": settle_out}))
     return ev
 
 
@@ -618,7 +630,13 @@ def foot_target(leg, turns, t, sign, events):
         s = (t - a) / (b - a)
         if mode == "step":
             k = smooth(s)
-            pos = p_lift.lerp(p_land, k) + UP * (STEP_HEIGHT[is_front(leg)] * math.sin(math.pi * s))
+            pos = p_lift.lerp(p_land, k)
+            # 運んでいる途中は、いまの体の真下(待機の構えの足の所)の方へ寄せる。上げた所と着く所を結ぶまっすぐな線のままだと、
+            # 体が回っている間はその線が肩から遠くなり、脚が伸び切っても届かなかった(右回りで最大0.5足りなかった)。
+            under, _ = natural_foot(leg, M)
+            # 上げ始めと着く瞬間には寄せない(sin の2乗)。そこで横へ動かすと、床すれすれの足が流れて見える。
+            pos = pos + horizontal(under - pos) * (0.5 * math.sin(math.pi * s) ** 2)
+            pos = pos + UP * (STEP_HEIGHT[is_front(leg)] * math.sin(math.pi * s))
             rot = q_lift.slerp(q_land, k)
         else:
             # 空中は体と一緒に回る。体から見た位置で上げた所から下ろす所へ運び、脚をたたむ。
@@ -678,11 +696,14 @@ def build(sign):
     events = {1: foot_events(1, sign), 2: foot_events(2, sign)}
     frames = []
     worst = 0.0
+    worst_leg = {}   # 足ごとの、届かなかった長さの最大と、そのコマ
     # 確かめ: 地面に着いている指の付け根が、コマの間にどれだけ横へ動いたか(m/秒。足が滑っていないか)と、
     # 地面に着いている足の数(4本とも浮くコマが無いか)。
     ball_ground = {leg: M0[name].translation.dot(UP) for leg, name in BALL.items()}
     previous_ball = {}
     slide = {leg: 0.0 for leg in BALL}
+    slide_frame = {leg: -1 for leg in BALL}
+    slides = []   # 地面に着いている足が毎秒0.5より速く動いたコマ(確かめ用)
     fewest_grounded = (5, -1)
     fewest_still = (5, -1)   # 半回転の外(溜め・一拍・隙)
     highest_lowest = (-1.0, -1)
@@ -692,7 +713,10 @@ def build(sign):
         M = {k: m.copy() for k, m in M.items()}
         for leg in LEGS:
             target, rot = foot_target(leg, turns, t, sign, events[turns])
-            worst = max(worst, solve_leg(M, leg, target, rot))
+            miss = solve_leg(M, leg, target, rot)
+            worst = max(worst, miss)
+            if miss > worst_leg.get(leg, (0.0, -1))[0]:
+                worst_leg[leg] = (round(miss, 3), f)
         grounded = 0
         lowest = 1e9
         for leg, name in BALL.items():
@@ -705,6 +729,10 @@ def build(sign):
             # 一拍の始まり(262)は別の筋書きの続きなので、そこをまたぐ差は見ない。
             if q is not None and f != F_PAUSE and on_ground and q.dot(UP) - ball_ground[leg] < 0.03:
                 d = horizontal(p - q)
+                if d.length * FPS > slide[leg]:
+                    slide_frame[leg] = f
+                if d.length * FPS > 0.5:
+                    slides.append((round(d.length * FPS, 2), leg, f))
                 slide[leg] = max(slide[leg], d.length * FPS)
             previous_ball[leg] = p
         fewest_grounded = min(fewest_grounded, (grounded, f))
@@ -715,7 +743,9 @@ def build(sign):
     print("tail spin sign", sign, "frames", len(frames), "worst IK miss", round(worst, 4),
           "max ball slide on ground (m/s)", {k: round(v, 3) for k, v in slide.items()},
           "fewest feet on ground (count, frame)", fewest_grounded, "outside half turns", fewest_still,
-          "highest lowest ball (m, frame)", (round(highest_lowest[0], 3), highest_lowest[1]))
+          "highest lowest ball (m, frame)", (round(highest_lowest[0], 3), highest_lowest[1]),
+          "IK miss per leg (m, frame)", worst_leg, "slide frame per leg", slide_frame,
+          "slides over 0.5 m/s", len(slides), sorted(slides, reverse=True)[:10])
     return frames
 
 
