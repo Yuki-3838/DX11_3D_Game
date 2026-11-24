@@ -8410,7 +8410,7 @@ float GameScene::CalcEnemyOccludedCameraDistance(float desiredDistance) const
 	return std::max(entry - MARGIN, 12.0f);
 }
 
-Matrix4x4 GameScene::BuildLightViewProjection() const
+Matrix4x4 GameScene::BuildLightViewProjection(float* outOrthoSize) const
 {
 	// 平行光源なので、ライトの位置そのものには意味が無く「向き」と
 	// 「影を掛ける範囲」だけが効く。闘技場全体を覆う正射影を作る。
@@ -8459,6 +8459,8 @@ Matrix4x4 GameScene::BuildLightViewProjection() const
 	const Matrix4x4 projection = Matrix4x4::CreateOrthographic(
 		orthoSize, orthoSize, 1.0f, LIGHT_DISTANCE * 2.0f);
 
+	if (outOrthoSize)
+		*outOrthoSize = orthoSize;
 	return view * projection;
 }
 
@@ -8470,36 +8472,49 @@ void GameScene::RenderShadowMap()
 		return;
 	}
 
-	const Matrix4x4 lightViewProjection = BuildLightViewProjection();
-	Renderer::SetLightViewProjection(lightViewProjection, true);
+	float orthoSize = 0.0f;
+	const Matrix4x4 lightViewProjection = BuildLightViewProjection(&orthoSize);
+	// キャラクターが自分の影を調べる位置を、法線の向きへ1.5テクセル分ずらす。
+	// 範囲を広げる登場演出ではテクセルも大きくなるので、範囲に合わせて変える。
+	constexpr float SHADOW_NORMAL_OFFSET_TEXELS = 1.5f;
+	const float normalOffset =
+		orthoSize / static_cast<float>(Renderer::SHADOW_MAP_SIZE) * SHADOW_NORMAL_OFFSET_TEXELS;
+	Renderer::SetLightViewProjection(lightViewProjection, true, normalOffset);
 
 	Renderer::BeginShadowPass();
+
+	// 体と、手に持たせた剣を影の深度へ描く。
+	// CAnimationMesh::Draw() は剣を本描画用のシェーダー(カメラの行列で変換する)で描くため、
+	// 影パスで使うと剣だけライトの視点で描かれず、剣の影が出なかった。剣も影用のシェーダーで描く。
+	auto drawCharacterDepth = [this](CAnimationMesh& mesh, const Matrix4x4& world, BoneCombMatrix& bones)
+	{
+		Matrix4x4 bodyWorld = world;
+		Renderer::SetWorldMatrix(&bodyWorld);
+		m_shadowDepthSkinShader.SetGPU();
+		bones.Update();
+		bones.SetGPU();
+		mesh.DrawSkinnedBody();
+
+		Matrix4x4 swordWorld{};
+		if (mesh.GetAttachedSwordWorldMatrix(swordWorld))
+		{
+			Renderer::SetWorldMatrix(&swordWorld);
+			m_shadowDepthShader.SetGPU();
+			mesh.DrawAttachedSwordGeometry();
+		}
+	};
 
 	// 影を落とす対象だけを描く。地面や壁は影の受け手であって落とし手ではないので
 	// ここでは描かない(自分自身の影で暗くなるのを避ける)。
 	if (m_playerAnimationMesh && m_player)
-	{
-		const SRT srt = m_player->getRenderSRT();
-		Matrix4x4 worldmtx = srt.GetMatrix();
-		Renderer::SetWorldMatrix(&worldmtx);
-		m_shadowDepthSkinShader.SetGPU();
-		m_playerBoneComb.Update();
-		m_playerBoneComb.SetGPU();
-		m_playerAnimationMesh->Draw();
-	}
+		drawCharacterDepth(*m_playerAnimationMesh, m_player->getRenderSRT().GetMatrix(), m_playerBoneComb);
 
 	if (m_enemyAnimationMesh)
 	{
 		for (const auto& e : m_enemies)
 		{
 			if (!e) continue;
-			const SRT srt = e->getRenderSRT();
-			Matrix4x4 worldmtx = srt.GetMatrix();
-			Renderer::SetWorldMatrix(&worldmtx);
-			m_shadowDepthSkinShader.SetGPU();
-			m_enemyBoneComb.Update();
-			m_enemyBoneComb.SetGPU();
-			m_enemyAnimationMesh->Draw();
+			drawCharacterDepth(*m_enemyAnimationMesh, e->getRenderSRT().GetMatrix(), m_enemyBoneComb);
 		}
 	}
 

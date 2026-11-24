@@ -9,9 +9,9 @@
 // 詳しい技術的背景と選定理由は docs/スキニング技術解説.md を参照。
 // =============================================================================
 
-PS_IN main(in VSONESKIN_IN In)
+SKIN_PS_IN main(in VSONESKIN_IN In)
 {
-    PS_IN Out;
+    SKIN_PS_IN Out;
     // 位置と法線を同じスキニングから求める。
     // 以前は法線をワールド行列だけで変換していたため、ボーンを動かしても
     // 陰影が追従せず、体を捻っても明暗が変わらなかった。
@@ -23,8 +23,12 @@ PS_IN main(in VSONESKIN_IN In)
     worldNormal = normalize(worldNormal);
     float light = -(dot(Light.Direction.xyz, worldNormal.xyz)) * 0.5f + 0.5f;
     light = saturate(light);
+    // 直接光の分だけをピクセルシェーダーで影に掛ける(SKIN_PS_IN の説明を参照)。
+    const float2 lightParts = SplitHalfLambert(light);
 
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
+    Out.Diffuse = In.Diffuse * Material.Diffuse * lightParts.x * Light.Diffuse;
+    Out.SunLight = In.Diffuse * Material.Diffuse * lightParts.y * Light.Diffuse;
+    Out.SunLight.a = 0.0f;
     Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
     // 鎧のキャラクターは黒に近い面が広いので、逆光でもシルエットと
     // 装甲のディテールが読めるように弱い環境項を残す。
@@ -34,6 +38,6 @@ PS_IN main(in VSONESKIN_IN In)
 
     Out.Position = mul(skinnedPosition, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(skinnedPosition, World));
+    Out.ShadowCoord = CalcShadowCoordOffset(mul(skinnedPosition, World), worldNormal.xyz);
     return Out;
 }

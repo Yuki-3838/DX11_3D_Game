@@ -229,8 +229,10 @@ public:
      * @brief ライトから見たビュー射影行列を設定する。
      * @param lightViewProjection 影の生成と参照の両方で使う行列。
      * @param enabled 影を有効にするか。falseなら本描画で影を落とさない。
+     * @param normalOffset キャラクターが影を調べる位置を法線の向きへずらす量(ワールド単位)。
+     *        斜めの面に出る縞(シャドウアクネ)を消すため。シャドウマップ1テクセルの大きさ程度にする。
      */
-    static void SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled);
+    static void SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled, float normalOffset = 0.0f);
 
     /**
      * @brief キャラクターへ加算する色を設定する(被弾フラッシュなど)。

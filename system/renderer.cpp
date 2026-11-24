@@ -58,7 +58,8 @@ namespace
         Matrix4x4 LightViewProjection;
         // x: シャドウマップ1テクセルのUVサイズ(PCFの参照間隔に使う)
         // y: 影を有効にするか(1で有効)
-        // z, w: 予備
+        // z: 影を調べる位置を法線の向きへずらす量(ワールド単位。ノーマルオフセット)
+        // w: 予備
         Vector4 Params;
     };
 }
@@ -303,9 +304,12 @@ void Renderer::Init()
 
     // 影生成時だけ深度に傾斜バイアスを掛け、自分自身を影と誤判定する
     // シャドウアクネ(縞模様)を防ぐ。
+    // 裏面も描く。ワイバーンの翼の膜のような厚みの無い(片面だけの)形は、
+    // 表がライトの反対を向いた瞬間に裏面カリングで消え、地面へ骨だけの影が落ちていた。
+    // 裏面はライトから見て表面より奥にあるので、光の当たる面の判定は変わらない。
     D3D11_RASTERIZER_DESC shadowRasterDesc{};
     shadowRasterDesc.FillMode = D3D11_FILL_SOLID;
-    shadowRasterDesc.CullMode = D3D11_CULL_BACK;
+    shadowRasterDesc.CullMode = D3D11_CULL_NONE;
     shadowRasterDesc.DepthClipEnable = TRUE;
     shadowRasterDesc.DepthBias = 2000;
     shadowRasterDesc.SlopeScaledDepthBias = 2.0f;
@@ -536,7 +540,7 @@ void Renderer::EndShadowPass()
         m_DeviceContext->PSSetShaderResources(1, 1, m_ShadowSRV.GetAddressOf());
 }
 
-void Renderer::SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled)
+void Renderer::SetLightViewProjection(const Matrix4x4& lightViewProjection, bool enabled, float normalOffset)
 {
     if (!m_ShadowBuffer)
         return;
@@ -547,7 +551,7 @@ void Renderer::SetLightViewProjection(const Matrix4x4& lightViewProjection, bool
     param.Params = Vector4(
         1.0f / static_cast<float>(SHADOW_MAP_SIZE),
         enabled ? 1.0f : 0.0f,
-        0.0f,
+        normalOffset,
         0.0f);
     m_DeviceContext->UpdateSubresource(m_ShadowBuffer.Get(), 0, nullptr, &param, 0, 0);
 }

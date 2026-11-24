@@ -57,6 +57,7 @@ cbuffer LINEWIDTH : register(b6)
 // ライトから見たビュー射影行列と、影の参照設定。
 // ShadowParams.x: シャドウマップ1テクセルのUVサイズ(PCFの参照間隔)
 // ShadowParams.y: 影を有効にするか(1で有効)
+// ShadowParams.z: 影を調べる位置を法線の向きへずらす量(ワールド単位。シャドウマップ1テクセル強)
 cbuffer ShadowBuffer : register(b7)
 {
     matrix LightViewProjection;
@@ -107,6 +108,21 @@ struct PS_IN
 	float4 ShadowCoord	: TEXCOORD1;
 };
 
+// キャラクター(スキンメッシュ)用。光の当たり方を2つに分けて渡す。
+//   Diffuse : 影に入っても残る明るさ(環境光・底上げ・光の裏側の陰影)
+//   SunLight: 光源から直接届く分。ピクセルシェーダーで影の濃さを掛ける。
+// 以前は色全体に影を掛けていたため、光の裏側の面(陰影で既に暗い)まで
+// 自分自身の影で二重に暗くなり、明暗の境目には段々の縞が出ていた。
+// 直接光の分にだけ影を掛ければ、裏側の面は影の判定に左右されなくなる。
+struct SKIN_PS_IN
+{
+    float4 Position		: SV_POSITION;
+    float4 Diffuse		: COLOR0;
+    float4 SunLight		: COLOR1;
+    float2 TexCoord		: TEXCOORD0;
+    float4 ShadowCoord	: TEXCOORD1;
+};
+
 /**
  * ワールド座標からライト空間の座標を求める。各頂点シェーダーの末尾で呼ぶ。
  */
@@ -116,10 +132,21 @@ float4 CalcShadowCoord(float4 worldPosition)
 }
 
 /**
- * 影の減光量を求める。1.0で影なし、小さいほど濃い影。
+ * 影を調べる位置を、面の法線の向きへ少しずらしてからライト空間の座標を求める(ノーマルオフセット)。
+ * 自分自身へ落ちる影は、光に対して斜めの面ほど深度の比較が際どくなり、
+ * 細かい縞(シャドウアクネ)が出る。面から浮かせた位置で調べると、この縞が消える。
+ * worldNormal は正規化済みのワールド空間の法線。
+ */
+float4 CalcShadowCoordOffset(float4 worldPosition, float3 worldNormal)
+{
+    return CalcShadowCoord(worldPosition + float4(worldNormal * ShadowParams.z, 0.0f));
+}
+
+/**
+ * 光が届いている割合を求める。1.0で影なし、0.0で完全に影の中。
  * 3x3のPCF(Percentage Closer Filtering)で、輪郭を少しぼかす。
  */
-float CalcShadowFactor(float4 shadowCoord)
+float CalcShadowVisibility(float4 shadowCoord)
 {
     // 影が無効なら常に影なし。
     if (ShadowParams.y < 0.5f)
@@ -154,10 +181,28 @@ float CalcShadowFactor(float4 shadowCoord)
                 g_ShadowSampler, shadowUv + offset, projected.z);
         }
     }
-    lit /= 9.0f;
+    return lit / 9.0f;
+}
 
+/**
+ * 影の減光量を求める。1.0で影なし、小さいほど濃い影。床などの影の受け手が使う。
+ */
+float CalcShadowFactor(float4 shadowCoord)
+{
     // 完全な黒にはせず、影の中でも形が見える程度の明るさを残す。
-    return lerp(0.45f, 1.0f, lit);
+    return lerp(0.45f, 1.0f, CalcShadowVisibility(shadowCoord));
+}
+
+/**
+ * 半ランバートの明るさを「影に入っても残る分」と「直接光の分」に分ける。
+ * 半ランバートは光に垂直な面(明暗の境目)で0.5になる。それより明るい分だけを直接光とみなす。
+ * 影の中の面は境目と同じ明るさになり、光の裏側の面(0.5以下)と明るさが滑らかにつながる。
+ * 戻り値: x = 影に入っても残る分、y = 直接光の分(影で消える)
+ */
+float2 SplitHalfLambert(float halfLambert)
+{
+    const float ambientPart = min(halfLambert, 0.5f);
+    return float2(ambientPart, halfLambert - ambientPart);
 }
 
 // 3x3 �t�s����v�Z����֐�
