@@ -143,7 +143,8 @@ public:
 
 	// 平行光源から見た深度を書き込み、キャラクターの形をした影を作る。
 	void RenderShadowMap();
-	Matrix4x4 BuildLightViewProjection() const;
+	// outOrthoSize: 影を掛ける範囲の一辺(ワールド単位)。テクセルの大きさを求めるのに使う。
+	Matrix4x4 BuildLightViewProjection(float* outOrthoSize = nullptr) const;
 	// キャラクターの動きを速度バッファへ描き、今の画面へブラーを掛ける。
 	// 剣の軌跡や火花までぼけないよう、キャラクターを描いた直後に呼ぶ。
 	void RenderCharacterMotionBlur();
