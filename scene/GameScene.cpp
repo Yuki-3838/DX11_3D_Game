@@ -3245,8 +3245,12 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 	const EnemyAttackClipBinding* const attackBinding = EnemyAttackBindingFor(attackKind);
 	const bool tailSpinAttack = inAttack && attackKind == Combat::EnemyAttackKind::TailSpin;
 	// 尾回転の専用モーション(あるモデルだけ)。回る向きに合わせて左回り・右回りを選ぶ。
+	// ゲームは左手系(上が+Y)なので、向き(yaw)が増える = 上から見て時計回り = 右回り。
+	// 回る向き spinSign が正のときは右回り([1] = _R)。以前は正で左回り([0] = _L)を選んでいたため、
+	// クリップの体が AI の決めた向き(尾がプレイヤーへ早く届く側)と逆へ回り、尾が反対側から回ってきていた
+	// (記録で、半回転の途中で見た目の向きと物理の向きが最大約140°ずれた。半回転の終わりではどちら回りでも同じ向きになる)。
 	aiAnimation* const tailSpinClip = tailSpinAttack && m_enemies.front()->getTailSpinClipSeconds() >= 0.0f
-		? m_enemyTailSpinAnimations[m_enemies.front()->getSpinSign() > 0.0f ? 0 : 1]
+		? m_enemyTailSpinAnimations[m_enemies.front()->getSpinSign() > 0.0f ? 1 : 0]
 		: nullptr;
 	// 攻撃クリップを使わない攻撃(尾回転・火球・突進)。立ち姿勢か歩きに、首や尾の構えを重ねて見せる。
 	// 火球は上を向いて吐き、突進は走るので、頭を地面へ振り下ろす攻撃クリップとは形が合わない。
@@ -8765,7 +8769,7 @@ void GameScene::DebugCombat()
 			ImGui::Text("敵の攻撃: %s (半回転%d回・%s回り、進み %.0f%%)",
 				Combat::EnemyAttackDebugName(m_enemies.front()->getAttackKind()),
 				m_enemies.front()->getSpinHalfTurns(),
-				m_enemies.front()->getSpinSign() >= 0.0f ? "左" : "右",
+				m_enemies.front()->getSpinSign() >= 0.0f ? "右" : "左", // 正 = 向きが増える = 上から見て時計回り
 				100.0f * m_enemies.front()->getSpinProgress());
 		}
 		else if (m_enemies.front()->isChargeStunned())
