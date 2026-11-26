@@ -3541,7 +3541,10 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				holdStandingPose = true;
 			if (!holdStandingPose)
 			{
-				aiAnimation* const turnClip = m_enemyTurnClipSign > 0.0f ? m_enemyTurnLeftAnimation : m_enemyTurnRightAnimation;
+				// 向き(yaw)が増える = 上から見て時計回り = 右へ回るので、正のときは right。
+				// 以前は正で left を選んでいて、脚は左へ踏み出しながら体は右へ回っていた
+				// (記録で、浮いた足が体に対して回る向きと逆へ動き、着いている足も体と一緒に大きく流れていた)。
+				aiAnimation* const turnClip = m_enemyTurnClipSign > 0.0f ? m_enemyTurnRightAnimation : m_enemyTurnLeftAnimation;
 				animation = turnClip != nullptr ? turnClip : m_enemyWalkAnimation;
 			}
 			break;
@@ -3569,9 +3572,10 @@ void GameScene::UpdateEnemyAnimation(float deltaSeconds)
 				}
 				else if (tailSpinAttack)
 				{
+					// 回る向きが正 = 右回り(上の Turn と同じ)。
 					aiAnimation* const turnClip = m_enemies.front()->getSpinSign() > 0.0f
-						? m_enemyTurnLeftAnimation
-						: m_enemyTurnRightAnimation;
+						? m_enemyTurnRightAnimation
+						: m_enemyTurnLeftAnimation;
 					animation = turnClip != nullptr ? turnClip : m_enemyWalkAnimation;
 				}
 				else
