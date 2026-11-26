@@ -1148,14 +1148,20 @@ void CAnimationMesh::ApplyBlendedRotationPose(
 	std::unordered_map<std::string, SRTQ> blendedPose;
 	blendedPose.reserve(std::max(fromPose.size(), toPose.size()));
 
-	// to側にあるボーンを基準にし、位置・スケールは補間せずto側を使う。
-	// 敵のワールド移動や接地はSRT側が管理するため、ここで位置を混ぜない。
+	// to側にあるボーンを基準にする。スケールは補間せずto側を使う。
+	// ボーンの位置(親から見た位置)も回転と同じ割合で混ぜる。敵のワールド移動はSRT側が管理するが、
+	// 腰の高さ・前後の位置はクリップのボーンの位置に入っている。以前は位置をto側にしていたため、
+	// 腰の高さが違うクリップへつなぐと、つなぎの最初のフレームで体ごと飛んだ
+	// (下がる走り→周りを歩く で、記録で体と4本の足が1フレームに約4下がった)。
 	for (const auto& [boneName, toSrtq] : toPose)
 	{
 		SRTQ blended = toSrtq;
 		const auto fromIt = fromPose.find(boneName);
 		if (fromIt != fromPose.end())
+		{
 			blended.quat = Quaternion::Slerp(fromIt->second.quat, toSrtq.quat, rate);
+			blended.pos = Vector3::Lerp(fromIt->second.pos, toSrtq.pos, rate);
+		}
 		blendedPose.emplace(boneName, blended);
 	}
 

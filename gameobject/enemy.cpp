@@ -448,10 +448,16 @@ SRT enemy::getRenderSRT() const
 	// 尾回転のモーションは体の向きの回転(半回転)まで入っている。回っている間と隙の間は、
 	// 物理の向き(当たり判定が見る、回り始めから回った向き)ではなく回り始めの向きで描き、回るのはクリップに任せる。
 	// クリップの回転と物理の向きは、半回転の始めと終わりで同じになるように作ってある。
-	if (s_tailSpinFromClip && m_attackKind == Combat::EnemyAttackKind::TailSpin &&
-		(m_motionState == MotionState::Active || m_motionState == MotionState::Recovery))
+	// 状態ではなく「いま骨に当てている姿勢が、回っている間・隙の尾回転のクリップか」で決める(GameScene が毎更新知らせる)。
+	// 状態で決めていたときは、回っている途中で殴られて怯むと(状態はアニメーションの更新の後で変わる)、
+	// その1フレームだけ回転の途中の姿勢を物理の向きで描き、体が一瞬別の向きを向いた(記録で約120°)。
+	if (m_renderSpinFromClip)
 	{
 		renderSrt.rot.y = m_spinStartYaw + pose.yaw;
+	}
+	else if (m_spinExitYawWeight > 0.0f)
+	{
+		renderSrt.rot.y -= m_spinExitYawWeight * WrapAngle(m_srt.rot.y - m_spinStartYaw);
 	}
 	return renderSrt;
 }

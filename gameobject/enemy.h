@@ -42,6 +42,14 @@ public:
 	float getAttackElapsedSeconds() const;
 	SRT getRenderSRT() const;
 	void setVisualGroundOffsetY(float offsetY);
+	// 尾回転のモーションを途中で抜けたとき(回っている途中で怯む・倒れるなど)のつなぎの間、描く向きを
+	// 回り始めの向きから物理の向きへ移す割合(1 = 回り始めの向き、0 = 物理の向き)。
+	// つなぎ元の姿勢(回転の途中のクリップの姿勢)には体の向きの回転が入っているので、描く向きを一気に物理の向きへ
+	// 変えると二重に回る。つなぎで体の回転が抜けていくのと同じ割合で描く向きを回し、見た目の向きを保つ。
+	void setSpinExitYawWeight(float weight) { m_spinExitYawWeight = weight; }
+	// いま骨に当てている姿勢が、回っている間・隙の尾回転のクリップか(体の向きの回転がクリップに入っているので、
+	// 描く向きは回り始めの向きにする)。GameScene がアニメーションを更新するたびに知らせる。
+	void setRenderSpinFromClip(bool fromClip) { m_renderSpinFromClip = fromClip; }
 
 	// 現在選択中の攻撃。戦闘判定(OneVsOneCombat)とHUDが同じものを参照することで、
 	// 「見えている予兆」と「実際に来る攻撃」が必ず一致する。
@@ -308,6 +316,8 @@ private:
 	float m_attackElapsed = 0.0f;
 	float m_circleDirection = 1.0f;
 	float m_visualGroundOffsetY = 0.0f;
+	float m_spinExitYawWeight = 0.0f;
+	bool m_renderSpinFromClip = false;
 	Combat::EnemyAttackKind m_attackKind = Combat::EnemyAttackKind::Slam;
 	// 同じ攻撃が続けて出ると読み合いにならないため、直前に使った攻撃を覚えておく。
 	Combat::EnemyAttackKind m_previousAttackKind = Combat::EnemyAttackKind::Slam;
