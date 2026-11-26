@@ -103,7 +103,7 @@ float enemy::windupSeconds() const
 float enemy::activeSeconds() const
 {
 	// 尾回転は「半回転 → 一拍 → 半回転」で、回数によって長さが変わる
-	// (1回なら0.42秒、2回なら0.42+0.30+0.42=1.14秒)。
+	// (1回なら0.80秒、2回なら0.80+0.60+0.80=2.20秒)。
 	// 戦闘判定(OneVsOneCombat)も同じ計算をするので、判定とアニメーションの時間はそろう。
 	if (m_attackKind == Combat::EnemyAttackKind::TailSpin)
 		return Combat::EnemySpinActiveSeconds(m_spinHalfTurns);

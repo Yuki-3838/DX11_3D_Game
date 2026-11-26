@@ -1,8 +1,8 @@
 #include "common.hlsl"
 
-PS_IN main(in VSONESKIN_IN In)
+SKIN_PS_IN main(in VSONESKIN_IN In)
 {
-    PS_IN Out;
+    SKIN_PS_IN Out;
 
     // FBXには、鎧の一部や小物などボーンウェイトを持たない頂点が
     // 混ざることがあります。BoneIndex=-1をGPU配列へ渡すと不正参照になり、
@@ -45,10 +45,12 @@ PS_IN main(in VSONESKIN_IN In)
 
     float4 worldNormal = mul(float4(In.Normal.xyz, 0.0f), World);
     worldNormal = normalize(worldNormal);
-    float light = -(dot(Light.Direction.xyz, worldNormal.xyz)) * 0.5f + 0.5f;
-    light = saturate(light);
+    // 陰影と、影に入ったときに失われる分(CalcCharacterLight を参照)。
+    const float2 lightParts = CalcCharacterLight(worldNormal.xyz);
 
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
+    Out.Diffuse = In.Diffuse * Material.Diffuse * lightParts.x * Light.Diffuse;
+    Out.ShadowLoss = In.Diffuse * Material.Diffuse * lightParts.y * Light.Diffuse;
+    Out.ShadowLoss.a = 0.0f;
     Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
     // Armored characters have large nearly-black surfaces.  Keep a small
     // neutral fill term so the silhouette and plate details remain readable
@@ -59,6 +61,6 @@ PS_IN main(in VSONESKIN_IN In)
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+    Out.ShadowCoord = CalcShadowCoordOffset(mul(In.Position, World), worldNormal.xyz);
     return Out;
 }

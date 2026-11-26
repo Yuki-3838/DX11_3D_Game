@@ -57,6 +57,7 @@ cbuffer LINEWIDTH : register(b6)
 // ライトから見たビュー射影行列と、影の参照設定。
 // ShadowParams.x: シャドウマップ1テクセルのUVサイズ(PCFの参照間隔)
 // ShadowParams.y: 影を有効にするか(1で有効)
+// ShadowParams.z: 影を調べる位置を法線の向きへずらす量(ワールド単位。シャドウマップ1テクセル強)
 cbuffer ShadowBuffer : register(b7)
 {
     matrix LightViewProjection;
@@ -107,6 +108,19 @@ struct PS_IN
 	float4 ShadowCoord	: TEXCOORD1;
 };
 
+// キャラクター(スキンメッシュ)用。光の当たり方を2つに分けて渡す。
+//   Diffuse   : 影が無いときの明るさ(光の裏側の面の暗さは、ここに含めてある)
+//   ShadowLoss: 影に入ったときに失われる明るさ。ピクセルシェーダーで影の濃さを掛けて引く。
+// 光の裏側の面は ShadowLoss が0で、シャドウマップを見ない(CalcCharacterLight を参照)。
+struct SKIN_PS_IN
+{
+    float4 Position		: SV_POSITION;
+    float4 Diffuse		: COLOR0;
+    float4 ShadowLoss	: COLOR1;
+    float2 TexCoord		: TEXCOORD0;
+    float4 ShadowCoord	: TEXCOORD1;
+};
+
 /**
  * ワールド座標からライト空間の座標を求める。各頂点シェーダーの末尾で呼ぶ。
  */
@@ -116,10 +130,21 @@ float4 CalcShadowCoord(float4 worldPosition)
 }
 
 /**
- * 影の減光量を求める。1.0で影なし、小さいほど濃い影。
+ * 影を調べる位置を、面の法線の向きへ少しずらしてからライト空間の座標を求める(ノーマルオフセット)。
+ * 自分自身へ落ちる影は、光に対して斜めの面ほど深度の比較が際どくなり、
+ * 細かい縞(シャドウアクネ)が出る。面から浮かせた位置で調べると、この縞が消える。
+ * worldNormal は正規化済みのワールド空間の法線。
+ */
+float4 CalcShadowCoordOffset(float4 worldPosition, float3 worldNormal)
+{
+    return CalcShadowCoord(worldPosition + float4(worldNormal * ShadowParams.z, 0.0f));
+}
+
+/**
+ * 光が届いている割合を求める。1.0で影なし、0.0で完全に影の中。
  * 3x3のPCF(Percentage Closer Filtering)で、輪郭を少しぼかす。
  */
-float CalcShadowFactor(float4 shadowCoord)
+float CalcShadowVisibility(float4 shadowCoord)
 {
     // 影が無効なら常に影なし。
     if (ShadowParams.y < 0.5f)
@@ -154,10 +179,57 @@ float CalcShadowFactor(float4 shadowCoord)
                 g_ShadowSampler, shadowUv + offset, projected.z);
         }
     }
-    lit /= 9.0f;
+    return lit / 9.0f;
+}
 
+/**
+ * 影の減光量を求める。1.0で影なし、小さいほど濃い影。床などの影の受け手が使う。
+ */
+float CalcShadowFactor(float4 shadowCoord)
+{
     // 完全な黒にはせず、影の中でも形が見える程度の明るさを残す。
-    return lerp(0.45f, 1.0f, lit);
+    return lerp(0.45f, 1.0f, CalcShadowVisibility(shadowCoord));
+}
+
+// --- キャラクターの陰影と影 ---
+// 光が当たる面が影に入ったときの明るさ(半ランバートの値)。
+// 0.25にすると、真上を向いた面は影の中で約45%の明るさになり、床の影(CalcShadowFactor)と濃さがそろう。
+// 以前は0.5(明暗の境目と同じ)にしていたが、光が強く明るい面が白飛びするため、
+// 背中のとげが胴体へ落とす影などが目で分からなかった。
+static const float CHARACTER_SHADOW_LEVEL = 0.25f;
+// 光の裏側の面を、影の中と同じ割合まで暗くする。0.5で半分。
+static const float CHARACTER_BACK_SIDE_SHADE = 0.5f;
+// 明暗の境目の両側で、影へ切り替える幅(光の向きと法線の内積で測る)。
+static const float CHARACTER_TERMINATOR_BLEND = 0.25f;
+
+/**
+ * キャラクターの面の明るさ(半ランバート)と、影に入ったときに失われる分を求める。
+ * 戻り値: x = 影が無いときの明るさ、y = 影に入ったときに失われる明るさ
+ *
+ * 光の裏側の面は、自分自身の影の中にあるのと同じなので、シャドウマップを見ずに
+ * 計算だけで暗くする。裏側をシャドウマップで判定すると、明暗の境目で判定が際どくなって縞が出る。
+ * 境目では両側とも半ランバートの0.5のままにし、そこから離れるほど影の濃さへ近づける。
+ * これで、光の当たる面が影に入ったときの暗さと、裏側の面の暗さが同じ程度になり、
+ * 影の中の面が裏側より暗い(または明るい)という逆転が起きない。
+ */
+float2 CalcCharacterLight(float3 worldNormal)
+{
+    const float cosLight = -dot(normalize(Light.Direction.xyz), worldNormal);
+    const float halfLambert = saturate(cosLight * 0.5f + 0.5f);
+
+    // 影を使わない場面(タイトルなど)では、以前と同じ半ランバートのままにする。
+    if (ShadowParams.y < 0.5f)
+        return float2(halfLambert, 0.0f);
+
+    if (cosLight <= 0.0f)
+    {
+        const float fade = smoothstep(0.0f, CHARACTER_TERMINATOR_BLEND, -cosLight);
+        return float2(halfLambert * lerp(1.0f, CHARACTER_BACK_SIDE_SHADE, fade), 0.0f);
+    }
+
+    // 光の当たる面。境目の近くでは影の判定が際どいので、影の効きを弱めて縞を出さない。
+    const float weight = smoothstep(0.0f, CHARACTER_TERMINATOR_BLEND, cosLight);
+    return float2(halfLambert, max(halfLambert - CHARACTER_SHADOW_LEVEL, 0.0f) * weight);
 }
 
 // 3x3 �t�s����v�Z����֐�

@@ -1,8 +1,8 @@
 #include "common.hlsl"
 
-PS_IN main(in VSONESKIN_IN In)
+SKIN_PS_IN main(in VSONESKIN_IN In)
 {
-    PS_IN Out;
+    SKIN_PS_IN Out;
 
 	// �����X�L�����_�u�����h�̏���
     float4x4 comb = (float4x4) 0;
@@ -27,17 +27,19 @@ PS_IN main(in VSONESKIN_IN In)
     worldNormal = mul(normal, World);
     worldNormal = normalize(worldNormal);
 
-    float light = -(dot(Light.Direction.xyz, worldNormal.xyz))* 0.5 + 0.5;
-    light = saturate(light);  // �����o�[�g���˂̌v�Z
 
-    Out.Diffuse = In.Diffuse * Material.Diffuse * light * Light.Diffuse;
+    // 陰影と、影に入ったときに失われる分(CalcCharacterLight を参照)。
+    const float2 lightParts = CalcCharacterLight(worldNormal.xyz);
+    Out.Diffuse = In.Diffuse * Material.Diffuse * lightParts.x * Light.Diffuse;
+    Out.ShadowLoss = In.Diffuse * Material.Diffuse * lightParts.y * Light.Diffuse;
+    Out.ShadowLoss.a = 0.0f;
     Out.Diffuse += In.Diffuse * Material.Ambient * Light.Ambient;
     Out.Diffuse += Material.Emission;
     Out.Diffuse.a = In.Diffuse.a * Material.Diffuse.a;
 
     Out.Position = mul(In.Position, wvp);
     Out.TexCoord = In.TexCoord;
-    Out.ShadowCoord = CalcShadowCoord(mul(In.Position, World));
+    Out.ShadowCoord = CalcShadowCoordOffset(mul(In.Position, World), worldNormal.xyz);
 
     return Out;
 }
